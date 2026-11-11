@@ -100,3 +100,11 @@ audio { width: 100%; margin: 8px 0 16px; }
 .transcript p { margin: 0 0 8px; }
 .transcript .ts { font-family: ui-monospace, Consolas, monospace; color: var(--muted); }
 form.filters .hint { display: block; font-weight: 400; font-size: 0.85rem; color: var(--muted); margin-top: 4px; }
+
+/* F003: MCP-sektionen på /konto (mindst muligt; redesign i F005) */
+section.mcp { margin-top: 24px; }
+section.mcp h3 { font-size: 1rem; margin: 20px 0 8px; }
+section.mcp .hint { display: block; font-weight: 400; font-size: 0.85rem; color: var(--muted); margin-top: 4px; }
+pre.config { font-family: ui-monospace, Consolas, monospace; font-size: 0.85rem; background: var(--bg); border: 1px solid var(--line);
+    border-radius: 6px; padding: 12px; overflow-x: auto; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); border: 0; }

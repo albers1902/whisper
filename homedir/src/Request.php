@@ -9,7 +9,9 @@ final class Request
     /**
      * @param array<mixed> $post
      * @param array<mixed> $query    query-strengen (F002: filtre)
-     * @param array<string, string> $headers  kun de headere, appen bruger, med små bogstaver (F002: range)
+     * @param array<string, string> $headers  kun de headere, appen bruger, med små bogstaver (F002: range;
+     *                                        F003: authorization, origin, host, content-type, mcp-protocol-version)
+     * @param string $body  rå body; læses kun for /mcp og med loft (F003)
      */
     public function __construct(
         public readonly string $method,
@@ -18,15 +20,30 @@ final class Request
         public readonly string $ip = '',
         public readonly array $query = [],
         public readonly array $headers = [],
+        public readonly string $body = '',
     ) {
     }
 
-    public static function fromGlobals(): self
+    /** @param int $maxBody >0: læs højst så mange bytes af body'en (F003: kun /mcp). 0: ingen body. */
+    public static function fromGlobals(int $maxBody = 0): self
     {
         $path = parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH);
+        $map = ['range' => 'HTTP_RANGE', 'origin' => 'HTTP_ORIGIN', 'host' => 'HTTP_HOST', 'content-type' => 'CONTENT_TYPE',
+            'mcp-protocol-version' => 'HTTP_MCP_PROTOCOL_VERSION', 'authorization' => 'HTTP_AUTHORIZATION'];
         $headers = [];
-        if (is_string($_SERVER['HTTP_RANGE'] ?? null)) {
-            $headers['range'] = $_SERVER['HTTP_RANGE'];
+        foreach ($map as $name => $key) {
+            if (is_string($_SERVER[$key] ?? null)) {
+                $headers[$name] = $_SERVER[$key];
+            }
+        }
+        // Uden CGIPassAuth i vhosten findes headeren kun her, hvis en RewriteRule har sat den (SERVERKONTRAKT §3)
+        if (!isset($headers['authorization']) && is_string($_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? null)) {
+            $headers['authorization'] = $_SERVER['REDIRECT_HTTP_AUTHORIZATION'];
+        }
+        $body = '';
+        if ($maxBody > 0) {
+            $read = file_get_contents('php://input', false, null, 0, $maxBody);
+            $body = is_string($read) ? $read : '';
         }
         return new self(
             strtoupper((string) ($_SERVER['REQUEST_METHOD'] ?? 'GET')),
@@ -36,6 +53,7 @@ final class Request
             (string) ($_SERVER['REMOTE_ADDR'] ?? ''),
             $_GET,
             $headers,
+            $body,
         );
     }
 

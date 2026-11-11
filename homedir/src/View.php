@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace Whisper;
 
+use Whisper\Mcp\Tokens;
+
 /**
  * Siderne som PHP-strenge (ingen template-filer: de er typede, og PHPStan kan læse dem). Al dynamisk tekst går
  * gennem e(). Fælles ramme med header, menu og log ud, som F002–F004 bygger videre på.
@@ -68,8 +70,12 @@ final class View
         return self::layout('Opkald', '<h1>Opkald</h1>' . self::message(null, $ok) . '<p>Opkald kommer her (F002)</p>', $user, $csrf);
     }
 
-    /** @param array<string, mixed> $user */
-    public static function account(array $user, string $csrf, ?string $error, ?string $ok): string
+    /**
+     * @param array<string, mixed> $user
+     * @param array{tokens: list<array<string, mixed>>, origin: string, new: array{token: string, name: string}|null,
+     *     error: ?string, name: string}|null $mcp  F003; null = skjult
+     */
+    public static function account(array $user, string $csrf, ?string $error, ?string $ok, ?array $mcp = null): string
     {
         $intro = (int) ($user['must_change_password'] ?? 0) === 1
             ? '<p class="msg info">Du skal vælge en ny adgangskode, før du kan bruge Whisper.</p>' : '';
@@ -82,7 +88,93 @@ final class View
             . Password::MIN_LENGTH . '" autocomplete="new-password"></label>'
             . '<label>Gentag ny adgangskode<input type="password" name="confirm" required minlength="' . Password::MIN_LENGTH
             . '" autocomplete="new-password"></label>'
-            . '<button type="submit">Skift adgangskode</button></form></section>', $user, $csrf);
+            . '<button type="submit">Skift adgangskode</button></form></section>'
+            . ($mcp !== null ? self::mcpSection($csrf, $mcp) : ''), $user, $csrf);
+    }
+
+    /** Version af mcp-remote i konfigurationsblokken: låst, og ældre end et par uger (F003 v0 §4c). */
+    public const MCP_REMOTE = 'mcp-remote@0.15.2';
+
+    /**
+     * Konfigurationsblokken til claude_desktop_config.json. Nøglen ligger i env og headeren skrives uden mellemrum,
+     * fordi Claude Desktop på Windows ikke escaper mellemrum i args (mcp-remote's README).
+     */
+    public static function mcpConfig(string $origin, string $token): string
+    {
+        $cfg = ['mcpServers' => ['whisper' => [
+            'command' => 'npx',
+            'args'    => ['-y', self::MCP_REMOTE, $origin . '/mcp', '--transport', 'http-only', '--header', 'Authorization:${WHISPER_AUTH}'],
+            'env'     => ['WHISPER_AUTH' => 'Bearer ' . $token],
+        ]]];
+        return (string) json_encode($cfg, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+    }
+
+    /**
+     * Sektionen "Claude Desktop (MCP)" efter design F005 §3.6. Kopiér-knapper og app.js kommer i F005: nøglen står i
+     * et readonly-felt og konfigurationen i en <pre>, som brugeren selv markerer. Intet inline script eller style (CSP).
+     *
+     * @param array{tokens: list<array<string, mixed>>, origin: string, new: array{token: string, name: string}|null,
+     *     error: ?string, name: string} $mcp
+     */
+    private static function mcpSection(string $csrf, array $mcp): string
+    {
+        $origin = $mcp['origin'] !== '' ? $mcp['origin'] : 'https://<din-whisper-adresse>';
+        $count = count($mcp['tokens']);
+        $rows = '';
+        foreach ($mcp['tokens'] as $t) {
+            $name = (string) $t['name'];
+            $used = $t['last_used_at'] ?? null;
+            $rows .= '<tr><td>' . self::e($name) . '</td><td><code>' . self::e((string) $t['prefix']) . '…</code></td>'
+                . '<td>' . self::e(self::dateTime($t['created_at'] ?? null)) . '</td>'
+                . '<td>' . (is_string($used) && $used !== '' ? self::e(self::dateTime($used)) : 'Aldrig') . '</td>'
+                . '<td><form method="post" action="/konto/mcp-noegle/' . (int) $t['id'] . '/tilbagekald" class="inline">' . self::csrfField($csrf)
+                . '<button type="submit" class="danger" aria-label="' . self::e('Tilbagekald nøglen «' . $name . '»') . '">Tilbagekald</button>'
+                . '</form></td></tr>';
+        }
+        $list = $rows === '' ? '<p class="muted">Du har ingen nøgler endnu.</p>'
+            : '<table><thead><tr><th>Navn</th><th>Nøgle</th><th>Oprettet</th><th>Sidst brugt</th><th><span class="sr-only">Handling</span></th></tr></thead>'
+                . '<tbody>' . $rows . '</tbody></table>';
+
+        $new = '';
+        if ($mcp['new'] !== null) {
+            $new = '<div class="msg ok" role="status"><p><strong>✓ Nøglen «' . self::e($mcp['new']['name']) . '» er oprettet</strong></p>'
+                . '<p>Kopiér nøglen nu. Den vises kun denne ene gang.</p>'
+                . '<p><input class="otp" id="mcp-noegle" type="text" readonly value="' . self::e($mcp['new']['token']) . '" aria-label="Din nye MCP-nøgle"></p>'
+                . '<h3>Sådan forbinder du Claude Desktop</h3><ol>'
+                . '<li>Installér Node.js (LTS) fra <a href="https://nodejs.org/">nodejs.org</a>, hvis du ikke har det.</li>'
+                . '<li>Åbn Claude Desktop → Indstillinger → Udvikler → Rediger konfiguration.<br>'
+                . 'Windows: <code>%APPDATA%\\Claude\\claude_desktop_config.json</code><br>'
+                . 'macOS: <code>~/Library/Application Support/Claude/claude_desktop_config.json</code></li>'
+                . '<li>Indsæt blokken herunder. Har filen allerede "mcpServers", så tilføj kun "whisper"-delen.'
+                . '<pre class="config"><code tabindex="0" aria-label="Konfiguration til Claude Desktop">'
+                . self::e(self::mcpConfig($origin, $mcp['new']['token'])) . '</code></pre></li>'
+                . '<li>Genstart Claude Desktop helt (luk den også i proceslinjen).</li>'
+                . '<li>Spørg fx: "Find opkald fra i går, hvor kunden nævner flytning."</li></ol>'
+                . '<p>Får du en login-side, en browserfane eller en OAuth-fejl, når Claude Desktop forbinder, er nøglen forkert eller '
+                . 'tilbagekaldt. Opret en ny nøgle, og skift den i filen.</p></div>';
+        }
+
+        $form = '';
+        if ($count >= Tokens::MAX_ACTIVE) {
+            $form = '<p class="muted">' . self::e(Tokens::FULL) . '</p>';
+        } else {
+            $invalid = $mcp['error'] !== null && in_array($mcp['error'], [Tokens::NAME_EMPTY, Tokens::NAME_LONG], true);
+            $form = '<h3>Opret ny nøgle</h3>'
+                . ($mcp['error'] !== null && $mcp['error'] !== Tokens::FULL
+                    ? '<p class="msg error" role="alert" id="mcp-navn-fejl">' . self::e($mcp['error']) . '</p>' : '')
+                . '<form method="post" action="/konto/mcp-noegle">' . self::csrfField($csrf)
+                . '<label>Navn på nøglen<input type="text" name="name" maxlength="80" value="' . self::e($mcp['name']) . '"'
+                . ($invalid ? ' aria-invalid="true" aria-describedby="mcp-navn-fejl mcp-navn-hjaelp"' : ' aria-describedby="mcp-navn-hjaelp"') . '>'
+                . '<span class="hint" id="mcp-navn-hjaelp">Fx navnet på computeren, så du kan kende nøglen igen.</span></label>'
+                . '<button type="submit">Opret nøgle</button></form>';
+        }
+        return '<section class="card narrow mcp" aria-labelledby="mcp-overskrift"><h2 id="mcp-overskrift">Claude Desktop (MCP)</h2>'
+            . $new
+            . '<p>Forbind Claude Desktop til Whisper, så Claude kan søge i og læse transcripts.</p>'
+            . '<p>Claude får kun læseadgang. Nøglen er personlig – del den ikke.</p>'
+            . '<h3>Dine nøgler (' . $count . ' af ' . Tokens::MAX_ACTIVE . ')</h3>' . $list . $form
+            . '<p class="muted">Har din Claude-konto "Request headers" under custom connectors, kan du i stedet tilføje <code>'
+            . self::e($origin) . '/mcp</code> med headeren <code>authorization</code> = <code>Bearer &lt;nøgle&gt;</code>.</p></section>';
     }
 
     /**

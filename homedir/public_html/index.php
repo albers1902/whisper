@@ -12,6 +12,7 @@ use Whisper\App;
 use Whisper\ArraySessionDriver;
 use Whisper\Config;
 use Whisper\Flags;
+use Whisper\Mcp\Server;
 use Whisper\NativeSessionDriver;
 use Whisper\Request;
 use Whisper\Response;
@@ -24,8 +25,14 @@ if (!Flags::enabled(App::FLAG)) {
 }
 
 try {
-    $request = Request::fromGlobals();
-    if (NativeSessionDriver::hasCookie() || rtrim($request->path, '/') === '/login') {
+    $isMcp = Server::isPath((string) parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH));
+    // F003: kun /mcp læser body (med loft: én byte over, så Server kan svare 413 uden at læse resten)
+    $request = Request::fromGlobals($isMcp ? Server::MAX_BODY + 1 : 0);
+    if ($isMcp) {
+        // Bearer-nøgle i stedet for session: ingen session startes og ingen cookie sendes, heller ikke hvis klienten
+        // har en med. App's login- og CSRF-kæde er uændret for alle andre ruter.
+        $response = (new Server())->handle($request);
+    } elseif (NativeSessionDriver::hasCookie() || rtrim($request->path, '/') === '/login') {
         $driver = NativeSessionDriver::start(Config::baseDir());
         $session = new Session($driver, $driver->load());
         $response = (new App())->handle($request, $session);
