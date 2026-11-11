@@ -10,21 +10,26 @@ Status: `bash shared/report.sh status` og `bash shared/report.sh check`. Ingen t
 
 ## Denne sprint
 - H001 er merget (#1, 2452e31).
-- F001 (brugere og login, PR #4): begge critics har godkendt v2 (d72ba88). Efter merge skal ejeren gøre tre ting på
-  DEV som `whisperdev`:
-  1. Skriv `[app] env = dev` i `~/config/config.ini` (PROJEKTVIDEN.md). Ellers svarer F001 404.
-  2. Opret den første admin med `cron/opret-admin.php`.
-  3. Kør proxy-målingen for F001-S2 (PROJEKTVIDEN.md, DECISIONS #10).
-  Bagefter: tester mod DEV.
+- F001 (brugere og login) er merget (#4, 67e1e8b) og kører på DEV. Ejeren er logget ind som admin, `env = dev` er sat,
+  og proxy-målingen er OK (PROJEKTVIDEN.md).
+- F002 (Zendesk, PR #6): begge critics har godkendt v2 (9003841). QA N-1 er afklaret: 0003 er ikke kørt i nogen
+  miljødatabase, fordi DEV kun udruller main, og CI-basen genskabes. Efter merge skal ejeren lave sine trin på DEV
+  (config, probe, setup og cron, se PROJEKTVIDEN.md).
 - LIFECYCLE §12-gaten: serveropsætning af DEV efter merge af H001. STABLE venter (ejeren 2026-11-11).
   - DEV er sat op 2026-11-11 (§3a trin 0–8, S-20261111-1 til -4). Kontrol-pre-release `ctrl-2026.11.11-1` er udgivet,
     og `/health` på DEV svarer `ok` uden redirect, så QA H001 v1 fund 4 er afklaret.
+  - `SERVER: KLAR (dev)` 2026-11-11 efter ejerens chown af `logs/` og `mkdir ~/var`.
   - Mangler: DRIFT.md og ACCESS.md skal udfyldes med rigtige konti og datoer (DECISIONS #6), og backup-beviset kommer
-    efter første nat.
-- Ejerskab af logfilerne i `logs/`: ejeren kørte `chown -R whisperdev:whisperdev logs` som root (DECISIONS #7). Til
-  sysadmin-siden: `sitectl new` lægger root-ejede Apache- og FPM-logfiler i `logs/`, og det er ikke besluttet i
-  kontrakten. Hold øje med, om logrotate laver dem root-ejede igen (`server.sh check dev`).
-- Senere H (ikke blokerende): `/health` rate limit/cache (DECISIONS #5); `migrate.php --status` uden lås (QA H001 v2 A).
+    efter første nat. Står `!` om backup der stadig 2026-11-12, skal sysadmin-subagenten spørges.
+- Ejerskab af logfilerne i `logs/` er afklaret (sysadmin-siden 2026-11-11). Ejerens `chown` på DEV står ved magt og
+  overlever logrotate, fordi den globale `create` kopierer den gamle ejer. **Det må ikke gentages på STABLE**, hvor
+  det går gennem sysadmin-siden (DECISIONS #7).
+- Senere H (ikke blokerende):
+  - `/health` rate limit/cache (DECISIONS #5)
+  - `migrate.php --status` uden lås (QA H001 v2 A)
+  - fejl i agent-opslag fjerner opkaldet, og poison-opkald logges ofte (QA F002 v2 N-2 og N-3)
+  - flag-hook kun i CLI (DECISIONS #17)
+  - retention og sletning af opkald før STABLE (DECISIONS #16)
 
 ## Besluttet (ejeren 2026-11-11, skrives i DECISIONS.md i første docs-PR)
 - Lokal transcription. Ingen lyd forlader serveren.
@@ -39,6 +44,5 @@ Status: `bash shared/report.sh status` og `bash shared/report.sh check`. Ingen t
   ejeren beslutter andet.
 
 ## Næste op (ROADMAP.md)
-1. F002 Zendesk Talk: liste over tickets med opkald, afspilning, transcription og download.
-2. F003 MCP-server til Claude Desktop (søg i og læs transcripts).
-3. F004 Adversus: samme flow.
+1. F003 MCP-server til Claude Desktop (søg i og læs transcripts).
+2. F004 Adversus: samme flow.

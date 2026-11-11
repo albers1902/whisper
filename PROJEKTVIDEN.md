@@ -20,6 +20,30 @@ Målt viden om kodebasen og miljøerne. Kurateret.
   ```
 - En eksempelfil kan ikke ligge i repoet, fordi `.gitignore` udelukker `**/config/*.ini` (frameworket).
 
+## Zendesk og whisper i config.ini (F002)
+- `~/config/config.ini` ligger ikke i git. Sektionerne skrives af ejeren med `vi ~/config/config.ini`:
+  ```
+  [zendesk]
+  subdomain = trygenergidanmarkhelp
+  client_id = <OAuth-klientens Identifier>
+  client_secret = <OAuth-klientens Secret>
+  since = 2026-10-01
+  scope = read
+  ; recording_hosts = <vært>   (kun hvis zendesk-probe.php siger "ikke godkendt")
+
+  [whisper]
+  model = turbo
+  ```
+- Auth sker med OAuth `client_credentials`, for API-tokens er fjernet af Zendesk (DECISIONS #14). Tokenet caches i
+  `~/var/zendesk-token.json` (0600).
+- Motoren: `bash ~/cron/whisper-setup.sh` laver venv'et og modellen i `~/var/whisper/` og skriver markøren
+  `ready-<model>`. Uden markøren tager transcription intet. Skiftes modellen, skal setup køres igen.
+- Cron: `bash ~/cron/whisper-cron.sh` tilføjer `zendesk-sync.php` (hvert 10. minut) og `transcribe.php` (hvert
+  minut) til sitets egen crontab. `server.sh` lægger kun frameworkets egne linjer.
+- Begge cron-scripts gør intet, når `F001_brugere` eller `F002_zendesk` er slukket i miljøet.
+- Fejlede opkald sendes tilbage i køen med `php ~/cron/whisper-requeue.php [--id=N]`.
+- Hvem der har hentet lyd, transcripts og zip, står i `~/logs/adgang.log`.
+
 ## Sessioner (F001)
 - PHP-sessionerne ligger i `~/var/sessions` (0700, oprettes af appen). `var/` er projektets efter SERVERKONTRAKT §2,
   står i `open_basedir` (S-20261111-3), og deploy rører den ikke.
@@ -29,8 +53,12 @@ Målt viden om kodebasen og miljøerne. Kurateret.
 - Appen bruger kun `REMOTE_ADDR` og stoler aldrig på `X-Forwarded-For`.
 - Contabos firewall er kun et portfilter. Port 80 og 443 er åbne direkte på prøvebanen (84.46.252.242) og på drift
   (169.58.51.76), målt udefra 2026-10-21 (MASKINER.md). Der er altså ingen dokumenteret proxy eller CDN.
-- Ikke målt endnu på DEV: `grep -Ri remoteip /etc/apache2/` og `apachectl -M | grep -i remoteip` skal være tomme, og
-  access-loggen skal vise klientens egen IP. Det skal måles igen på STABLE, før `stable = on`.
+- Målt på DEV 2026-11-11 af ejeren. `mod_remoteip` er indlæst (`mods-enabled/remoteip.load`), men `grep -Ri remoteip
+  /etc/apache2/` finder ingen `RemoteIPHeader`- eller `RemoteIPTrustedProxy`-direktiver, kun en kommentar i
+  `apache2.conf`. Modulet ændrer derfor ikke `REMOTE_ADDR`, og den er klientens egen adresse. F001-S2 er dermed
+  bekræftet for DEV.
+- Det skal måles igen på STABLE, før `stable = on` (DECISIONS #10). Hvis nogen senere sætter `RemoteIPHeader` uden
+  `RemoteIPTrustedProxy`, kan `REMOTE_ADDR` forfalskes via headeren. Det er serverens sag.
 
 ## Ruter
 - `/health` rammes af den første regel i `public_html/.htaccess`. Den er aldrig bag login eller flag.
