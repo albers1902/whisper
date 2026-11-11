@@ -26,7 +26,8 @@ final class AccessLog
     /** @param array<string, int|string> $fields kun id'er, tal og hashes */
     public static function write(int $userId, string $action, array $fields): void
     {
-        $line = gmdate('Y-m-d\TH:i:s\Z') . ' bruger=' . $userId . ' ' . preg_replace('/[^a-z]/', '', $action);
+        // _ er tilladt i handlingen (F003: mcp_search_calls); mellemrum og alt andet fjernes stadig
+        $line = gmdate('Y-m-d\TH:i:s\Z') . ' bruger=' . $userId . ' ' . preg_replace('/[^a-z_]/', '', $action);
         foreach ($fields as $k => $v) {
             $line .= ' ' . preg_replace('/[^a-z_]/', '', $k) . '=' . preg_replace('/[^0-9a-f]/', '', strtolower((string) $v));
         }

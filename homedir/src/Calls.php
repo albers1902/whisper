@@ -103,6 +103,24 @@ final class Calls
     }
 
     /**
+     * Et udsnit af samme liste som search() (samme WHERE og rækkefølge) med frit offset og højst PAGE_SIZE rækker —
+     * til MCP (F003), hvor klienten vælger limit. Et offset ud over listen giver ingen rækker og ingen dyr OFFSET-query.
+     *
+     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int} $f
+     * @return array{rows: list<array<string, mixed>>, total: int}
+     */
+    public static function range(array $f, int $offset, int $limit): array
+    {
+        [$w, $p] = self::where($f);
+        $total = (int) DB::scalar('SELECT COUNT(*) FROM calls c WHERE ' . $w, $p);
+        $limit = max(1, min($limit, self::PAGE_SIZE));
+        $offset = max(0, $offset);
+        $rows = $offset >= $total ? [] : DB::all('SELECT c.* FROM calls c WHERE ' . $w . ' ORDER BY c.started_at DESC, c.id DESC LIMIT '
+            . $limit . ' OFFSET ' . $offset, $p);
+        return ['rows' => $rows, 'total' => $total];
+    }
+
+    /**
      * Id'erne på de færdige transcripts i filtret til zip (nyeste først, højst ZIP_MAX). Teksterne læses bagefter i
      * batches med zipRows(), så hukommelsen ikke vokser med antallet (QA F-4).
      *

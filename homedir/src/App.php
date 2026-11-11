@@ -4,6 +4,8 @@ declare(strict_types=1);
 namespace Whisper;
 
 use Closure;
+use Whisper\Mcp\Server;
+use Whisper\Mcp\Tokens;
 
 /**
  * Router og controllere for F001 (login, konto, brugeradministration) og ruterne for F002 (opkald; controllerne er i
@@ -18,6 +20,8 @@ final class App
 {
     public const FLAG = 'F001_brugere';
     public const IDLE_SECONDS = 8 * 3600;
+    /** Appens version (MCP serverInfo, F003). Følger den seneste migrations version. */
+    public const VERSION = '0.4.0';
 
     private const BAD_LOGIN = 'Forkert e-mail eller adgangskode.';
     private const LOCKED = 'For mange forsøg — prøv igen om lidt.';
@@ -116,11 +120,13 @@ final class App
             'call_txt'   => CallPages::transcript($id, $user),
             'call_zip'   => CallPages::zip($req, $user, $csrf),
             'konto'     => $method === 'POST' ? $this->accountPost($req, $s, $user, $now)
-                : Response::html(View::account($user, $csrf, null, $this->flash($s))),
+                : Response::html(View::account($user, $csrf, null, $this->flash($s), self::mcp($user, $req))),
             'users'     => Response::html(View::users($user, $csrf, Users::all(), $this->flash($s))),
             'user_new'  => $method === 'POST' ? $this->userNewPost($req, $s, $user, $now)
                 : Response::html(View::userNew($user, $csrf, null, ['email' => '', 'name' => '', 'role' => 'user'])),
             'user_confirm' => $this->userConfirm($s, $user, $id, $action),
+            'mcp_create'   => $this->mcpCreate($req, $s, $user, $now),
+            'mcp_revoke'   => $this->mcpRevoke($s, $user, $id, $now),
             default     => $this->userEdit($req, $method, $s, $user, $id, $now),
         };
     }
@@ -139,6 +145,8 @@ final class App
         'call_audio'   => ['GET'],
         'call_txt'     => ['GET'],
         'call_zip'     => ['GET'],
+        'mcp_create'   => ['POST'],
+        'mcp_revoke'   => ['POST'],
     ];
 
     /** @return array{0: ?string, 1: int, 2: string} rute, bruger-id, handling (kun for bekræftelsessiden) */
@@ -157,6 +165,15 @@ final class App
             if (preg_match('#^/opkald/([1-9][0-9]{0,9})(/lyd|/transcript)?$#', $path, $m) === 1) {
                 $sub = $m[2] ?? '';
                 return [$sub === '/lyd' ? 'call_audio' : ($sub === '/transcript' ? 'call_txt' : 'call_show'), (int) $m[1], ''];
+            }
+        }
+        if (Server::enabled()) {
+            // F003: nøgle-handlingerne findes kun med flaget (og F002) tændt
+            if ($path === '/konto/mcp-noegle') {
+                return ['mcp_create', 0, ''];
+            }
+            if (preg_match('#^/konto/mcp-noegle/([1-9][0-9]{0,9})/tilbagekald$#', $path, $m) === 1) {
+                return ['mcp_revoke', (int) $m[1], ''];
             }
         }
         if (preg_match('#^/brugere/([1-9][0-9]{0,9})$#', $path, $m) === 1) {
@@ -235,10 +252,10 @@ final class App
         // gætte den uendeligt
         $attempt = LoginThrottle::begin((string) $user['email'], $req->ip, $now);
         if ($attempt === null) {
-            return Response::html(View::account($user, Csrf::token($s), self::LOCKED, null), 429);
+            return Response::html(View::account($user, Csrf::token($s), self::LOCKED, null, self::mcp($user, $req)), 429);
         }
         if (!password_verify($current, (string) $user['password_hash'])) {
-            return Response::html(View::account($user, Csrf::token($s), 'Den nuværende adgangskode er forkert.', null), 422);
+            return Response::html(View::account($user, Csrf::token($s), 'Den nuværende adgangskode er forkert.', null, self::mcp($user, $req)), 422);
         }
         LoginThrottle::succeed($attempt);
         $error = null;
@@ -250,7 +267,7 @@ final class App
             $error = 'Den nye adgangskode skal være forskellig fra den nuværende.';
         }
         if ($error !== null) {
-            return Response::html(View::account($user, Csrf::token($s), $error, null), 422);
+            return Response::html(View::account($user, Csrf::token($s), $error, null, self::mcp($user, $req)), 422);
         }
 
         $wasForced = (int) $user['must_change_password'] === 1;
@@ -353,6 +370,51 @@ final class App
         }
         $s->set('flash', $msg);
         return Response::redirect('/brugere/' . $id);
+    }
+
+    /**
+     * Data til MCP-sektionen på /konto, eller null, når F003 er slukket (så vises sektionen ikke).
+     *
+     * @param array<string, mixed> $user
+     * @param array{token: string, name: string}|null $new  den netop oprettede nøgle (kun i POST-svaret)
+     * @return array{tokens: list<array<string, mixed>>, origin: string, new: array{token: string, name: string}|null,
+     *     error: ?string, name: string}|null
+     */
+    private static function mcp(array $user, Request $req, ?array $new = null, ?string $error = null): ?array
+    {
+        if (!Server::enabled()) {
+            return null;
+        }
+        return ['tokens' => Tokens::active((int) $user['id']), 'origin' => Server::siteOrigin($req), 'new' => $new, 'error' => $error,
+            'name' => $error !== null ? $req->str('name') : ''];
+    }
+
+    /**
+     * POST /konto/mcp-noegle: nøglen vises kun i DETTE svar (200, ikke redirect), aldrig i session, flash eller log.
+     *
+     * @param array<string, mixed> $user
+     */
+    private function mcpCreate(Request $req, Session $s, array $user, int $now): Response
+    {
+        try {
+            $token = Tokens::create((int) $user['id'], $req->str('name'), $now);
+        } catch (UserError $e) {
+            return Response::html(View::account($user, Csrf::token($s), null, null, self::mcp($user, $req, null, $e->getMessage())), 422);
+        }
+        $new = ['token' => $token, 'name' => Tokens::validName($req->str('name'))];
+        return Response::html(View::account($user, Csrf::token($s), null, null, self::mcp($user, $req, $new)));
+    }
+
+    /** @param array<string, mixed> $user */
+    private function mcpRevoke(Session $s, array $user, int $id, int $now): Response
+    {
+        $name = Tokens::revoke((int) $user['id'], $id, $now);
+        if ($name === null) {
+            // Også en andens nøgle: samme svar, så id'er ikke kan afprøves
+            return Response::html(View::error(404, 'Nøglen findes ikke eller er allerede tilbagekaldt.', Csrf::token($s), $user), 404);
+        }
+        $s->set('flash', 'Nøglen «' . $name . '» er tilbagekaldt. Claude Desktop med den nøgle har ikke længere adgang.');
+        return Response::redirect('/konto');
     }
 
     /** @param array<string, mixed>|null $user */
