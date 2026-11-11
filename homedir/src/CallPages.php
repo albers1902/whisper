@@ -17,6 +17,8 @@ use Whisper\Zendesk\ZendeskError;
 final class CallPages
 {
     public const FLAG = 'F002_zendesk';
+    public const CFG_MISSING = 'Zendesk er ikke sat op.';
+    public const CFG_INVALID = 'Zendesk-opsætningen i config.ini er ugyldig.';
     private const ZIP_TMP_MAX_AGE = 3600;
 
     /** @param array<string, mixed> $user */
@@ -26,6 +28,14 @@ final class CallPages
         $res = Calls::search($f);
         $f['side'] = $res['side'];   // klemt til sidste side (QA F-9)
         [$cfg, $cfgError] = self::zendesk();
+        if (Ui::modern()) {
+            // F005: beskederne vælges efter rolle i UiCalls; uddrag kun for den viste side (højst PAGE_SIZE)
+            $ids = array_map(static fn(array $r): int => (int) $r['id'], $res['rows']);
+            $snippets = $f['q'] !== '' && $ids !== [] ? Calls::snippets($ids, $f['q']) : [];
+            $config = $cfgError === null ? 'ok' : ($cfgError === self::CFG_INVALID ? 'invalid' : 'missing');
+            return Response::html(UiCalls::list($user, $csrf, $flash, $f, $res['rows'], $res['total'], Calls::agents(), Calls::status(),
+                $config, self::engineReady(), $cfg?->subdomain, $snippets, time()));
+        }
         $notices = [];
         if ($cfgError !== null) {
             $notices[] = $cfgError;
@@ -37,15 +47,26 @@ final class CallPages
             $notices, $cfg?->subdomain));
     }
 
-    /** @param array<string, mixed> $user */
-    public static function show(int $id, array $user, string $csrf): Response
+    /**
+     * Listens filtre og side kommer med i query-strengen (F005), så detaljen kan linke tilbage til samme liste.
+     *
+     * @param array<string, mixed> $user
+     */
+    public static function show(int $id, Request $req, array $user, string $csrf): Response
     {
         $call = Calls::find($id);
+        $modern = Ui::modern();
+        $f = Calls::filter($req->query);
         if ($call === null) {
-            return Response::html(View::error(404, 'Opkaldet findes ikke.', $csrf, $user), 404);
+            $ctx = CallView::query($f, $f['side']);
+            return Response::html($modern ? UiPages::error(404, 'Opkaldet findes ikke.', $csrf, $user, $ctx !== '' ? '/?' . $ctx : '/')
+                : View::error(404, 'Opkaldet findes ikke.', $csrf, $user), 404);
         }
         [$cfg] = self::zendesk();
         $onDisk = Calls::audioFile(is_string($call['audio_path'] ?? null) ? $call['audio_path'] : null) !== null;
+        if ($modern) {
+            return Response::html(UiCalls::show($user, $csrf, $call, Calls::transcript($id), $onDisk, $cfg?->subdomain, $f));
+        }
         return Response::html(CallView::show($user, $csrf, $call, Calls::transcript($id), $onDisk, $cfg?->subdomain));
     }
 
@@ -139,14 +160,14 @@ final class CallPages
         if ($ids === []) {
             return Response::html(View::layout('Download', '<section class="card narrow"><h1>Download</h1>'
                 . '<p>Der er ingen færdige transcripts i filtret.</p><p><a href="/?' . View::e(CallView::query($f)) . '">Tilbage</a></p></section>',
-                $user, $csrf));
+                $user, $csrf, 'opkald'));
         }
         // Højst én zip ad gangen på hele sitet (security S3): den næste får 429 og en dansk besked
         $lock = Lock::tryAcquire('zip');
         if ($lock === null) {
             $r = Response::html(View::layout('Download', '<section class="card narrow"><h1>Download</h1>'
                 . '<p class="msg info">Der laves allerede en zip-fil. Prøv igen om et øjeblik.</p>'
-                . '<p><a href="/?' . View::e(CallView::query($f)) . '">Tilbage</a></p></section>', $user, $csrf), 429);
+                . '<p><a href="/?' . View::e(CallView::query($f)) . '">Tilbage</a></p></section>', $user, $csrf, 'opkald'), 429);
             $r->headers['Retry-After'] = '30';
             return $r;
         }
@@ -201,9 +222,9 @@ final class CallPages
     {
         try {
             $cfg = ZendeskConfig::fromSection(Config::section('zendesk'));
-            return $cfg === null ? [null, 'Zendesk er ikke sat op.'] : [$cfg, null];
+            return $cfg === null ? [null, self::CFG_MISSING] : [$cfg, null];
         } catch (ZendeskError) {
-            return [null, 'Zendesk-opsætningen i config.ini er ugyldig.'];
+            return [null, self::CFG_INVALID];
         }
     }
 

@@ -15,6 +15,8 @@ final class Calls
     public const PAGE_SIZE = 50;
     public const ZIP_MAX = 2000;
     public const ZIP_BATCH = 50;
+    private const SNIPPET_LEAD = 120;
+    private const SNIPPET_WINDOW = 480;
     public const TZ = 'Europe/Copenhagen';
     private const AUDIO_PATH = '#^recordings/[0-9]{4}/[0-9]{2}/[1-9][0-9]{0,9}\.(mp3|wav)$#';
 
@@ -68,11 +70,10 @@ final class Calls
             $p[] = $f['agent'];
         }
         if ($f['q'] !== '') {
-            $words = preg_match_all('/[\p{L}\p{N}]+/u', $f['q'], $m) > 0 ? $m[0] : [];
-            $long = array_values(array_filter($words, static fn(string $w): bool => mb_strlen($w) >= 3));
-            if ($long !== []) {
+            $words = self::searchWords($f['q']);
+            if ($words !== [] && mb_strlen($words[0]) >= 3) {
                 $sql[] = 'c.id IN (SELECT call_id FROM transcripts WHERE MATCH(`text`) AGAINST (? IN BOOLEAN MODE))';
-                $p[] = implode(' ', array_map(static fn(string $w): string => '+' . $w . '*', $long));
+                $p[] = implode(' ', array_map(static fn(string $w): string => '+' . $w . '*', $words));
             } elseif ($words !== []) {
                 $sql[] = 'c.id IN (SELECT call_id FROM transcripts WHERE `text` LIKE ?)';   // \ er LIKE's standard-escape
                 $p[] = '%' . addcslashes(implode(' ', $words), '%_\\') . '%';
@@ -82,6 +83,47 @@ final class Calls
             $sql[] = "c.transcript_status = 'faerdig'";
         }
         return [implode(' AND ', $sql), $p];
+    }
+
+    /**
+     * Ordene, som fritekst-søgningen bruger: ord på mindst 3 tegn (FULLTEXT indekserer kun dem), og kun hvis der
+     * ingen er, de korte (LIKE). F005 fremhæver præcis de samme ord.
+     *
+     * @return list<string>
+     */
+    public static function searchWords(string $q): array
+    {
+        $words = preg_match_all('/[\p{L}\p{N}]+/u', $q, $m) > 0 ? $m[0] : [];
+        $long = array_values(array_filter($words, static fn(string $w): bool => mb_strlen($w) >= 3));
+        return $long !== [] ? $long : $words;
+    }
+
+    /**
+     * Søgeuddrag til listen (F005): for hvert id et vindue på SNIPPET_WINDOW tegn omkring første forekomst af det
+     * første søgeord. Vinduet skæres i SQL, så hverken hele transcriptet eller mere end én side (højst PAGE_SIZE
+     * rækker) når PHP.
+     *
+     * @param list<int> $ids
+     * @return array<int, array{text: string, cut_start: bool, cut_end: bool}>
+     */
+    public static function snippets(array $ids, string $q): array
+    {
+        $words = self::searchWords($q);
+        $ids = array_slice(array_values(array_unique(array_map('intval', $ids))), 0, self::PAGE_SIZE);
+        if ($ids === [] || $words === []) {
+            return [];
+        }
+        $from = 'GREATEST(1, LOCATE(?, `text`) - ' . self::SNIPPET_LEAD . ')';
+        $rows = DB::all('SELECT call_id, ' . $from . ' AS off, SUBSTRING(`text`, ' . $from . ', ' . self::SNIPPET_WINDOW . ') AS win, '
+            . 'CHAR_LENGTH(`text`) AS len FROM transcripts WHERE call_id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')',
+            array_merge([$words[0], $words[0]], $ids));
+        $out = [];
+        foreach ($rows as $r) {
+            $off = (int) $r['off'];
+            $out[(int) $r['call_id']] = ['text' => (string) $r['win'], 'cut_start' => $off > 1,
+                'cut_end' => $off - 1 + self::SNIPPET_WINDOW < (int) $r['len']];
+        }
+        return $out;
     }
 
     /**

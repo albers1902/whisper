@@ -8,6 +8,7 @@ use Whisper\Mcp\Tokens;
 /**
  * Siderne som PHP-strenge (ingen template-filer: de er typede, og PHPStan kan læse dem). Al dynamisk tekst går
  * gennem e(). Fælles ramme med header, menu og log ud, som F002–F004 bygger videre på.
+ * Med F005_ui tændt sender hver side videre til det nye UI (Ui, UiPages) som det første; resten er det gamle UI.
  */
 final class View
 {
@@ -16,9 +17,15 @@ final class View
         return htmlspecialchars($s, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
     }
 
-    /** @param array<string, mixed>|null $user */
-    public static function layout(string $title, string $body, ?array $user, string $csrf): string
+    /**
+     * @param array<string, mixed>|null $user
+     * @param string $section  kun det nye UI (F005) bruger den: opkald|brugere|konto|''
+     */
+    public static function layout(string $title, string $body, ?array $user, string $csrf, string $section = ''): string
     {
+        if (Ui::modern()) {
+            return Ui::layout($title, $body, $user, $csrf, $section);
+        }
         $nav = '';
         if ($user !== null) {
             $items = ['<a href="/">Opkald</a>'];
@@ -33,7 +40,7 @@ final class View
         return '<!doctype html><html lang="da"><head><meta charset="utf-8">'
             . '<meta name="viewport" content="width=device-width, initial-scale=1">'
             . '<title>' . self::e($title) . ' · Whisper</title>'
-            . '<link rel="stylesheet" href="/assets/app.css"></head><body>'
+            . '<link rel="stylesheet" href="/assets/legacy.css"></head><body>'
             . '<header class="top"><a class="brand" href="/">Whisper</a>' . $nav . '</header>'
             . '<main>' . $body . '</main></body></html>';
     }
@@ -57,6 +64,9 @@ final class View
 
     public static function login(string $csrf, ?string $error, string $email): string
     {
+        if (Ui::modern()) {
+            return UiPages::login($csrf, $error, $email);
+        }
         return self::layout('Log ind', '<section class="card narrow"><h1>Log ind</h1>' . self::message($error)
             . '<form method="post" action="/login">' . self::csrfField($csrf)
             . '<label>E-mail<input type="email" name="email" value="' . self::e($email) . '" required autofocus autocomplete="username"></label>'
@@ -67,6 +77,9 @@ final class View
     /** @param array<string, mixed> $user */
     public static function home(array $user, string $csrf, ?string $ok): string
     {
+        if (Ui::modern()) {
+            return UiPages::home($user, $csrf, $ok);
+        }
         return self::layout('Opkald', '<h1>Opkald</h1>' . self::message(null, $ok) . '<p>Opkald kommer her (F002)</p>', $user, $csrf);
     }
 
@@ -77,6 +90,9 @@ final class View
      */
     public static function account(array $user, string $csrf, ?string $error, ?string $ok, ?array $mcp = null): string
     {
+        if (Ui::modern()) {
+            return UiPages::account($user, $csrf, $error, $ok, $mcp);
+        }
         $intro = (int) ($user['must_change_password'] ?? 0) === 1
             ? '<p class="msg info">Du skal vælge en ny adgangskode, før du kan bruge Whisper.</p>' : '';
         return self::layout('Konto', '<section class="card narrow"><h1>Konto</h1>'
@@ -183,6 +199,9 @@ final class View
      */
     public static function users(array $user, string $csrf, array $users, ?string $ok): string
     {
+        if (Ui::modern()) {
+            return UiPages::users($user, $csrf, $users, $ok);
+        }
         $rows = '';
         foreach ($users as $u) {
             $rows .= '<tr><td>' . self::e((string) $u['name']) . '</td><td>' . self::e((string) $u['email']) . '</td>'
@@ -203,6 +222,9 @@ final class View
      */
     public static function userNew(array $user, string $csrf, ?string $error, array $values): string
     {
+        if (Ui::modern()) {
+            return UiPages::userNew($user, $csrf, $error, $values);
+        }
         return self::layout('Opret bruger', '<section class="card narrow"><h1>Opret bruger</h1>' . self::message($error)
             . '<form method="post" action="/brugere/ny">' . self::csrfField($csrf)
             . '<label>E-mail<input type="email" name="email" value="' . self::e($values['email']) . '" required maxlength="190"></label>'
@@ -219,6 +241,9 @@ final class View
      */
     public static function oneTimePassword(array $user, string $csrf, array $target, string $password, string $heading): string
     {
+        if (Ui::modern()) {
+            return UiPages::oneTimePassword($user, $csrf, $target, $password, $heading);
+        }
         return self::layout($heading, '<section class="card narrow"><h1>' . self::e($heading) . '</h1>'
             . '<p>Engangsadgangskode til <strong>' . self::e((string) $target['email']) . '</strong>:</p>'
             . '<p><input class="otp" id="engangskode" type="text" readonly value="' . self::e($password) . '" aria-label="Engangsadgangskode"></p>'
@@ -233,6 +258,9 @@ final class View
      */
     public static function userEdit(array $user, string $csrf, array $target, ?string $error, ?string $ok): string
     {
+        if (Ui::modern()) {
+            return UiPages::userEdit($user, $csrf, $target, $error, $ok);
+        }
         $id = (int) $target['id'];
         $active = (int) $target['active'] === 1;
         $self = (int) $target['id'] === (int) ($user['id'] ?? 0);
@@ -267,6 +295,9 @@ final class View
      */
     public static function confirm(array $user, string $csrf, array $target, string $action): string
     {
+        if (Ui::modern()) {
+            return UiPages::confirm($user, $csrf, $target, $action);
+        }
         $id = (int) $target['id'];
         $name = self::e((string) $target['name']);
         [$title, $text, $button] = $action === 'reset'
@@ -295,6 +326,9 @@ final class View
     /** @param array<string, mixed>|null $user */
     public static function error(int $status, string $text, ?string $csrf = null, ?array $user = null): string
     {
+        if (Ui::modern()) {
+            return UiPages::error($status, $text, $csrf, $user);
+        }
         $titles = [400 => 'Ugyldig forespørgsel', 403 => 'Ingen adgang', 404 => 'Ikke fundet', 405 => 'Metoden er ikke tilladt',
             500 => 'Der skete en fejl'];
         $title = $titles[$status] ?? 'Fejl';
