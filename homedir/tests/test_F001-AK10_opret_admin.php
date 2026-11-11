@@ -59,6 +59,41 @@ mkdir($noCfg, 0700, true);
 F001Check::that('AK10', $code !== 0 && str_contains($out, 'config.ini'), 'uden config.ini: exit ≠ 0');
 @rmdir($noCfg);
 
+// Terminal-input (QA F-1): uden virkende stty afvises indtastningen, så koden aldrig vises med ekko
+$mem = static function (string $s) {
+    $h = fopen('php://memory', 'w+');
+    fwrite($h, $s);
+    rewind($h);
+    return $h;
+};
+$calls = [];
+$noStty = static function (string $mode) use (&$calls): bool {
+    $calls[] = $mode;
+    return false;
+};
+$silent = static function (string $s): void {
+};
+$err = '';
+try {
+    \Whisper\SecretInput::read($mem("hemmelig-kode-123\n"), true, $noStty, $silent, 'Adgangskode: ');
+} catch (\Whisper\UserError $e) {
+    $err = $e->getMessage();
+}
+F001Check::that('AK10', str_contains($err, 'Pipe adgangskoden ind via stdin'), 'tty uden stty: afvist med besked om at pipe via stdin');
+F001Check::that('AK10', $calls === ['-echo'], 'tty uden stty: intet læst, intet prompt vist');
+$calls = [];
+$okStty = static function (string $mode) use (&$calls): bool {
+    $calls[] = $mode;
+    return true;
+};
+$got = \Whisper\SecretInput::read($mem("hemmelig-kode-123\n"), true, $okStty, $silent, 'Adgangskode: ');
+F001Check::that('AK10', $got === 'hemmelig-kode-123' && $calls === ['-echo', 'echo'], 'tty med stty: ekko slås fra og til igen');
+$calls = [];
+$got = \Whisper\SecretInput::read($mem("fra-pipe-kode-123\r\n"), false, $okStty, $silent, 'x');
+F001Check::that('AK10', $got === 'fra-pipe-kode-123' && $calls === [], 'pipe: læses uden stty');
+F001Check::that('AK10', \Whisper\SecretInput::systemStty('; rm -rf /') === false, 'systemStty tager kun faste argumenter');
+F001Check::that('AK10', str_contains($src = (string) file_get_contents($script), 'register_shutdown_function'), 'ekkoet gendannes i et shutdown-hook');
+
 // Kun CLI: guarden står først i filen, og filen ligger uden for webroden
 $src = (string) file_get_contents($script);
 $guard = strpos($src, "if (PHP_SAPI !== 'cli')");

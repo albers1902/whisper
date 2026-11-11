@@ -15,6 +15,11 @@ foreach (['/', '/brugere', '/konto', '/brugere/ny', '/brugere/1', '/konto/'] as 
     $r = $c->get($path);
     F001Check::that('AK1', $r->status === 303 && $r->header('Location') === '/login', "anonym GET $path → 303 /login (fik {$r->status})");
 }
+F001Check::that('AK1', $c->session->all() === [], 'anonyme GET skriver intet i sessionen');
+$r = $c->app->handle(new \Whisper\Request('HEAD', '/', [], $c->ip), $c->session);
+F001Check::that('AK1', $r->status === 303 && $r->header('Location') === '/login', 'anonym HEAD / → 303 /login (HEAD som GET)');
+$r = $c->app->handle(new \Whisper\Request('HEAD', '/login', [], $c->ip), $c->session);
+F001Check::that('AK1', $r->status === 200, 'HEAD /login → 200');
 $r = $c->post('/brugere/ny', ['email' => 'x@example.com', 'name' => 'X', 'role' => 'admin']);
 F001Check::that('AK1', $r->status === 303 && $r->header('Location') === '/login', 'anonym POST /brugere/ny → /login');
 F001Check::that('AK1', (int) DB::scalar('SELECT COUNT(*) FROM users') === 0, 'anonym POST oprettede ingen bruger');

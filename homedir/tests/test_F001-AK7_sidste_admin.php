@@ -23,7 +23,7 @@ F001Check::that('AK7', $row['role'] === 'admin' && (int) $row['active'] === 1, '
 
 // Med to admins: admin1 kan nedgradere admin2; derefter er admin1 sidste og kan ikke nedgraderes
 $a2 = f001_user('admin2@example.com', 'admin');
-$r = $c->post("/brugere/$a2", ['action' => 'deactivate']);
+$r = $c->post("/brugere/$a2", ['action' => 'deactivate', 'bekraeftet' => '1']);
 F001Check::that('AK7', $r->status === 303 && (int) f001_row($a2)['active'] === 0, 'en anden admin kan deaktiveres, når der er flere');
 $r = $c->post("/brugere/$a1", ['action' => 'save', 'name' => 'Admin1', 'role' => 'user']);
 F001Check::that('AK7', $r->status === 422 && f001_row($a1)['role'] === 'admin', 'en deaktiveret admin tæller ikke: admin1 er stadig sidste');

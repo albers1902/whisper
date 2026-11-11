@@ -27,8 +27,8 @@ $before = f001_row($uid);
 $cases = [
     ['/brugere/ny', ['email' => 'ny@example.com', 'name' => 'Ny', 'role' => 'admin']],
     ["/brugere/$uid", ['action' => 'save', 'name' => 'Ændret', 'role' => 'admin']],
-    ["/brugere/$uid", ['action' => 'reset']],
-    ["/brugere/$uid", ['action' => 'deactivate']],
+    ["/brugere/$uid", ['action' => 'reset', 'bekraeftet' => '1']],
+    ["/brugere/$uid", ['action' => 'deactivate', 'bekraeftet' => '1']],
     ['/konto', ['current' => F001_PW, 'new' => 'en-helt-ny-adgangskode', 'confirm' => 'en-helt-ny-adgangskode']],
     ['/logout', []],
 ];

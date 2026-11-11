@@ -9,6 +9,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/../src/Bootstrap.php';
 
 use Whisper\App;
+use Whisper\ArraySessionDriver;
 use Whisper\Config;
 use Whisper\Flags;
 use Whisper\NativeSessionDriver;
@@ -22,12 +23,18 @@ if (!Flags::enabled(App::FLAG)) {
     exit;
 }
 
-$driver = null;
 try {
-    $driver = NativeSessionDriver::start(Config::baseDir());
-    $session = new Session($driver, $driver->load());
-    $response = (new App())->handle(Request::fromGlobals(), $session);
-    $driver->save($session->all());
+    $request = Request::fromGlobals();
+    if (NativeSessionDriver::hasCookie() || rtrim($request->path, '/') === '/login') {
+        $driver = NativeSessionDriver::start(Config::baseDir());
+        $session = new Session($driver, $driver->load());
+        $response = (new App())->handle($request, $session);
+        $driver->save($session->all());
+    } else {
+        // Uden sessionscookie kan ingen være logget ind, og kun /login har brug for et CSRF-token. Så oprettes
+        // ingen sessionsfil for bots og anonyme besøg (de får redirect til /login, 404 eller 403).
+        $response = (new App())->handle($request, new Session(new ArraySessionDriver()));
+    }
 } catch (Throwable $e) {
     // Fejlen må ikke nå browseren; serverens fejllog får den
     error_log('whisper: ' . get_class($e) . ': ' . $e->getMessage() . ' i ' . $e->getFile() . ':' . $e->getLine());

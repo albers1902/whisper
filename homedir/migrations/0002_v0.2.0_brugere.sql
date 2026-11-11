@@ -23,5 +23,6 @@ CREATE TABLE IF NOT EXISTS login_attempts (
     success    TINYINT(1)      NOT NULL,
     created_at DATETIME        NOT NULL,
     INDEX login_attempts_email (email, created_at),
-    INDEX login_attempts_ip (ip, created_at)
+    INDEX login_attempts_ip (ip, created_at),
+    INDEX login_attempts_created (created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

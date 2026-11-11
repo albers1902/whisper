@@ -64,10 +64,47 @@ for ($i = 0; $i < 5; $i++) {
 }
 F001Check::that('AK3', !LoginThrottle::isLocked('carl@example.com', '10.4.0.9', F001_T0 + 1201), '5 fejl over 20 min låser ikke');
 
-// Forsøg ældre end 30 dage slettes ved login
+// Forsøg ældre end 30 dage slettes (purge kører ved ca. hvert 50. login; her kaldt direkte)
 LoginThrottle::record('gammel@example.com', '10.5.0.1', false, F001_T0 - 31 * 86400);
-(new F001Client('10.5.0.2'))->login('carl@example.com', F001_PW);
+LoginThrottle::record('ny@example.com', '10.5.0.1', false, F001_T0 - 29 * 86400);
+LoginThrottle::purge(F001_T0);
 F001Check::that('AK3', (int) DB::scalar("SELECT COUNT(*) FROM login_attempts WHERE email = 'gammel@example.com'") === 0, 'forsøg over 30 dage slettes');
+F001Check::that('AK3', (int) DB::scalar("SELECT COUNT(*) FROM login_attempts WHERE email = 'ny@example.com'") === 1, 'forsøg under 30 dage bliver');
 F001Check::that('AK3', Users::findByEmail('carl@example.com') !== null, 'brugeren er uberørt');
+$idx = DB::all("SELECT index_name FROM information_schema.statistics WHERE table_schema = DATABASE()
+                AND table_name = 'login_attempts' AND column_name = 'created_at' AND seq_in_index = 1");
+F001Check::that('AK3', $idx !== [], 'login_attempts har et indeks, der starter med created_at (purge uden fuld scanning)');
+
+// Race (security S1): forsøg, der er i gang (registreret som fejl før bcrypt), tæller med. Fem samtidige
+// requests, der endnu ikke er afgjort, låser den sjette
+DB::exec('DELETE FROM login_attempts');
+$ids = [];
+for ($i = 0; $i < 5; $i++) {
+    $ids[] = LoginThrottle::begin('carl@example.com', "10.6.0.$i", F001_T0);
+}
+F001Check::that('AK3', !in_array(null, $ids, true), 'de første fem samtidige forsøg slipper igennem');
+F001Check::that('AK3', LoginThrottle::begin('carl@example.com', '10.6.0.9', F001_T0) === null, 'det sjette samtidige forsøg afvises, før nogen er afgjort');
+F001Check::that('AK3', (int) DB::scalar('SELECT COUNT(*) FROM login_attempts') === 5, 'det afviste forsøg tælles ikke (låsen forlænges ikke)');
+foreach ($ids as $id) {
+    LoginThrottle::succeed((int) $id);
+}
+F001Check::that('AK3', LoginThrottle::begin('carl@example.com', '10.6.0.9', F001_T0) !== null, 'afgjorte succeser låser ikke');
+
+// IPv6 grupperes på /64 (security S2)
+F001Check::that('AK3', LoginThrottle::normalizeIp('2001:db8:1:2:aaaa::1') === '2001:db8:1:2::/64', 'IPv6 → /64');
+F001Check::that('AK3', LoginThrottle::normalizeIp('::ffff:10.7.0.1') === '10.7.0.1', 'IPv4-mappet IPv6 → IPv4');
+F001Check::that('AK3', LoginThrottle::normalizeIp('10.7.0.1') === '10.7.0.1', 'IPv4 uændret');
+DB::exec('DELETE FROM login_attempts');
+for ($i = 1; $i <= 5; $i++) {
+    $x = new F001Client("2001:db8:1:2::$i");
+    $x->now = F001_T0 + $i;
+    $x->login("v6gaet$i@example.com", 'forkert-adgangskode');
+}
+$x = new F001Client('2001:db8:1:2:ffff:ffff:ffff:ffff');
+$x->now = F001_T0 + 10;
+F001Check::that('AK3', $x->login('carl@example.com', F001_PW)->status === 429, 'ny IPv6-adresse i samme /64 er låst');
+$y = new F001Client('2001:db8:1:3::1');
+$y->now = F001_T0 + 10;
+F001Check::that('AK3', $y->login('carl@example.com', F001_PW)->status === 303, 'et andet /64 er ikke låst');
 
 F001Check::done();

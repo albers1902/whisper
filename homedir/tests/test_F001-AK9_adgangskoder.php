@@ -50,6 +50,25 @@ F001Check::that('AK9', str_contains($err, 'mindst 12 tegn') && Users::findByEmai
 F001Check::that('AK9', Password::problem('æøåæøåæøåæøå') === null, '12 tegn med æøå tælles som 12 (ikke bytes)');
 F001Check::that('AK9', Password::problem(str_repeat('a', 12) . "\0") !== null, 'NUL-tegn afvises');
 
+// Over 72 byte afvises (bcrypt ville stille ignorere resten), også når æøå fylder 2 byte
+F001Check::that('AK9', Password::problem(str_repeat('a', 72)) === null, '72 byte accepteres');
+F001Check::that('AK9', str_contains((string) Password::problem(str_repeat('a', 73)), 'højst være 72 byte'), '73 byte afvises med dansk tekst');
+F001Check::that('AK9', Password::problem(str_repeat('æ', 37)) !== null, '37 × æ (74 byte) afvises');
+$long = str_repeat('b', 80);
+$r = $g->post('/konto', ['current' => 'gyldig-ny-kode-123', 'new' => $long, 'confirm' => $long]);
+F001Check::that('AK9', $r->status === 422 && str_contains($r->body, 'højst være 72 byte'), '/konto: 80 tegn afvises');
+F001Check::that('AK9', password_verify('gyldig-ny-kode-123', (string) f001_row($uid)['password_hash']), 'koden er uændret efter afvisning');
+
+// "Nuværende adgangskode" på /konto begrænses som et login (security S1, QA F-8)
+for ($i = 0; $i < 5; $i++) {
+    $g->post('/konto', ['current' => "forkert-gaet-$i", 'new' => 'endnu-en-ny-kode', 'confirm' => 'endnu-en-ny-kode']);
+}
+$r = $g->post('/konto', ['current' => 'gyldig-ny-kode-123', 'new' => 'endnu-en-ny-kode', 'confirm' => 'endnu-en-ny-kode']);
+F001Check::that('AK9', $r->status === 429 && str_contains($r->body, 'For mange forsøg'), '/konto: efter 5 forkerte gæt afvises også den rigtige kode');
+F001Check::that('AK9', password_verify('gyldig-ny-kode-123', (string) f001_row($uid)['password_hash']), 'koden er uændret under låsen');
+F001Check::that('AK9', (new F001Client('10.9.9.9'))->login('gro@example.com', 'gyldig-ny-kode-123')->status === 429,
+    'låsen gælder også login for samme e-mail');
+
 // Tabellerne har den kollation, kontrakten kræver
 $coll = DB::all("SELECT table_name AS t, table_collation AS c FROM information_schema.tables
                  WHERE table_schema = DATABASE() AND table_name IN ('users', 'login_attempts')");

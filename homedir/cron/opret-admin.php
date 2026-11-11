@@ -43,6 +43,7 @@ if (!is_readable($home . '/config/config.ini')) {
 define('BASE_DIR', $home);
 require_once __DIR__ . '/../src/Bootstrap.php';
 
+use Whisper\SecretInput;
 use Whisper\Users;
 use Whisper\UserError;
 
@@ -51,28 +52,22 @@ set_exception_handler(static function (\Throwable $e): void {
     exit(1);
 });
 
-/** Læser én linje fra stdin; i en terminal uden ekko. */
-$readSecret = static function (string $prompt): string {
-    $tty = stream_isatty(STDIN);
-    if ($tty) {
-        fwrite(STDERR, $prompt);
-        shell_exec('stty -echo 2>/dev/null');
-    }
-    $line = fgets(STDIN);
-    if ($tty) {
-        shell_exec('stty echo 2>/dev/null');
-        fwrite(STDERR, "\n");
-    }
-    return $line === false ? '' : rtrim($line, "\r\n");
+$tty = stream_isatty(STDIN);
+if ($tty) {
+    // Dør processen (Ctrl-C, fejl) mens ekkoet er slukket, tændes det igen, så terminalen ikke står "død"
+    register_shutdown_function(static function (): void {
+        SecretInput::systemStty('echo');
+    });
+}
+$prompt = static function (string $s): void {
+    fwrite(STDERR, $s);
 };
 
-$password = $readSecret('Adgangskode (mindst 12 tegn): ');
-if (stream_isatty(STDIN) && $readSecret('Gentag adgangskoden: ') !== $password) {
-    fwrite(STDERR, "opret-admin.php: de to adgangskoder er ikke ens.\n");
-    exit(1);
-}
-
 try {
+    $password = SecretInput::read(STDIN, $tty, [SecretInput::class, 'systemStty'], $prompt, 'Adgangskode (mindst 12 tegn): ');
+    if ($tty && SecretInput::read(STDIN, true, [SecretInput::class, 'systemStty'], $prompt, 'Gentag adgangskoden: ') !== $password) {
+        throw new UserError('de to adgangskoder er ikke ens.');
+    }
     $id = Users::create($email, $name, 'admin', $password, false, time());
 } catch (UserError $e) {
     fwrite(STDERR, 'opret-admin.php: ' . $e->getMessage() . "\n");

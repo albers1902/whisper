@@ -14,6 +14,12 @@ final class NativeSessionDriver implements SessionDriver
 {
     private const NAME = 'whisper_session';
 
+    public static function hasCookie(): bool
+    {
+        $v = $_COOKIE[self::NAME] ?? null;
+        return is_string($v) && $v !== '';
+    }
+
     public static function start(string $baseDir): self
     {
         $dir = $baseDir . '/var/sessions';

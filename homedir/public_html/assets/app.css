@@ -62,7 +62,8 @@ button, .button {
   text-decoration: none;
   cursor: pointer;
 }
-button.danger { background: var(--danger); }
+button.danger, .button.danger { background: var(--danger); }
+div.actions { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 button.link { background: none; color: var(--accent); padding: 0; text-decoration: underline; }
 form.inline { display: inline; }
 form.actions { display: flex; gap: 12px; flex-wrap: wrap; }

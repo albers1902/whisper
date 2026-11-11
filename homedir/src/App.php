@@ -20,6 +20,7 @@ final class App
 
     private const BAD_LOGIN = 'Forkert e-mail eller adgangskode.';
     private const LOCKED = 'For mange forsøg — prøv igen om lidt.';
+    private const SELF_RESET = 'Skift din adgangskode under Konto.';
 
     /** @var Closure(): int */
     private Closure $clock;
@@ -47,17 +48,19 @@ final class App
     private function dispatch(Request $req, Session $s): Response
     {
         $path = $req->path === '/' ? '/' : rtrim($req->path, '/');
-        $method = $req->method;
+        // HEAD er en GET uden body (PHP/Apache dropper body'en), så link-forhåndsvisning og tjek får samme svar
+        $method = $req->method === 'HEAD' ? 'GET' : $req->method;
         $now = ($this->clock)();
 
-        [$route, $id] = self::route($path);
+        [$route, $id, $action] = self::route($path);
         if ($route === null) {
             return Response::html(View::error(404, 'Siden findes ikke.'), 404);
         }
         $allowed = self::ROUTES[$route];
         if (!in_array($method, $allowed, true)) {
+            $allow = in_array('GET', $allowed, true) ? array_merge($allowed, ['HEAD']) : $allowed;
             return new Response(405, View::error(405, 'Metoden er ikke tilladt.'),
-                ['Content-Type' => 'text/html; charset=utf-8', 'Allow' => implode(', ', $allowed)]);
+                ['Content-Type' => 'text/html; charset=utf-8', 'Allow' => implode(', ', $allow)]);
         }
 
         $last = $s->get('last_seen');
@@ -65,9 +68,11 @@ final class App
             $s->clear();
             $s->regenerate();
         }
-        $s->set('last_seen', $now);
 
         $user = $this->currentUser($s);
+        if ($user !== null) {
+            $s->set('last_seen', $now);   // kun for indloggede: anonyme GET skriver intet i sessionen
+        }
         $csrfOk = $method !== 'POST' || Csrf::valid($s, $req->str(Csrf::FIELD));
 
         if ($route === 'login') {
@@ -94,7 +99,7 @@ final class App
         if ((int) $user['must_change_password'] === 1 && $route !== 'konto') {
             return Response::redirect('/konto');
         }
-        if (in_array($route, ['users', 'user_new', 'user_edit'], true) && $user['role'] !== 'admin') {
+        if (in_array($route, ['users', 'user_new', 'user_edit', 'user_confirm'], true) && $user['role'] !== 'admin') {
             return $this->forbidden($s, $user, 'Kun administratorer har adgang til brugeradministration.');
         }
         if (!$csrfOk) {
@@ -109,33 +114,38 @@ final class App
             'users'     => Response::html(View::users($user, $csrf, Users::all(), $this->flash($s))),
             'user_new'  => $method === 'POST' ? $this->userNewPost($req, $s, $user, $now)
                 : Response::html(View::userNew($user, $csrf, null, ['email' => '', 'name' => '', 'role' => 'user'])),
-            default     => $this->userEdit($req, $s, $user, $id, $now),
+            'user_confirm' => $this->userConfirm($s, $user, $id, $action),
+            default     => $this->userEdit($req, $method, $s, $user, $id, $now),
         };
     }
 
     /** @var array<string, list<string>> */
     private const ROUTES = [
-        'home'      => ['GET'],
-        'login'     => ['GET', 'POST'],
-        'logout'    => ['POST'],
-        'konto'     => ['GET', 'POST'],
-        'users'     => ['GET'],
-        'user_new'  => ['GET', 'POST'],
-        'user_edit' => ['GET', 'POST'],
+        'home'         => ['GET'],
+        'login'        => ['GET', 'POST'],
+        'logout'       => ['POST'],
+        'konto'        => ['GET', 'POST'],
+        'users'        => ['GET'],
+        'user_new'     => ['GET', 'POST'],
+        'user_edit'    => ['GET', 'POST'],
+        'user_confirm' => ['GET'],
     ];
 
-    /** @return array{0: ?string, 1: int} */
+    /** @return array{0: ?string, 1: int, 2: string} rute, bruger-id, handling (kun for bekræftelsessiden) */
     private static function route(string $path): array
     {
         $fixed = ['/' => 'home', '/login' => 'login', '/logout' => 'logout', '/konto' => 'konto',
             '/brugere' => 'users', '/brugere/ny' => 'user_new'];
         if (isset($fixed[$path])) {
-            return [$fixed[$path], 0];
+            return [$fixed[$path], 0, ''];
         }
         if (preg_match('#^/brugere/([1-9][0-9]{0,9})$#', $path, $m) === 1) {
-            return ['user_edit', (int) $m[1]];
+            return ['user_edit', (int) $m[1], ''];
         }
-        return [null, 0];
+        if (preg_match('#^/brugere/([1-9][0-9]{0,9})/(nulstil|deaktiver)$#', $path, $m) === 1) {
+            return ['user_confirm', (int) $m[1], $m[2] === 'nulstil' ? 'reset' : 'deactivate'];
+        }
+        return [null, 0, ''];
     }
 
     /**
@@ -164,9 +174,11 @@ final class App
     {
         $email = Users::normalizeEmail($req->str('email'));
         $password = $req->str('password');
-        LoginThrottle::purge($now);
+        LoginThrottle::maybePurge($now);
 
-        if (LoginThrottle::isLocked($email, $req->ip, $now)) {
+        // Forsøget registreres som fejl FØR bcrypt (begin), så samtidige requests tæller hinanden med
+        $attempt = LoginThrottle::begin($email, $req->ip, $now);
+        if ($attempt === null) {
             return Response::html(View::login(Csrf::token($s), self::LOCKED, $email), 429);
         }
 
@@ -175,16 +187,13 @@ final class App
             // Ukendt e-mail: én bcrypt-beregning med standard-cost som for en rigtig bruger, så svartiden ikke
             // afslører, om e-mailen findes (en hash koster det samme som en verify)
             Password::hash(str_replace("\0", '', $password));   // bcrypt afviser NUL-tegn
-
-            LoginThrottle::record($email, $req->ip, false, $now);
             return Response::html(View::login(Csrf::token($s), self::BAD_LOGIN, $email));
         }
         $hash = (string) $user['password_hash'];
-        $ok = password_verify($password, $hash) && (int) $user['active'] === 1;
-        LoginThrottle::record($email, $req->ip, $ok, $now);
-        if (!$ok) {
+        if (!password_verify($password, $hash) || (int) $user['active'] !== 1) {
             return Response::html(View::login(Csrf::token($s), self::BAD_LOGIN, $email));
         }
+        LoginThrottle::succeed($attempt);
 
         $id = (int) $user['id'];
         Users::touchLogin($id, $password, $hash, $now);
@@ -202,10 +211,18 @@ final class App
     {
         $current = $req->str('current');
         $new = $req->str('new');
-        $error = null;
+        // Den nuværende adgangskode begrænses som et login (samme e-mail og IP), så en stjålet session ikke kan
+        // gætte den uendeligt
+        $attempt = LoginThrottle::begin((string) $user['email'], $req->ip, $now);
+        if ($attempt === null) {
+            return Response::html(View::account($user, Csrf::token($s), self::LOCKED, null), 429);
+        }
         if (!password_verify($current, (string) $user['password_hash'])) {
-            $error = 'Den nuværende adgangskode er forkert.';
-        } elseif (($problem = Password::problem($new)) !== null) {
+            return Response::html(View::account($user, Csrf::token($s), 'Den nuværende adgangskode er forkert.', null), 422);
+        }
+        LoginThrottle::succeed($attempt);
+        $error = null;
+        if (($problem = Password::problem($new)) !== null) {
             $error = $problem;
         } elseif (!hash_equals($new, $req->str('confirm'))) {
             $error = 'De to nye adgangskoder er ikke ens.';
@@ -243,24 +260,60 @@ final class App
         return Response::html(View::oneTimePassword($admin, Csrf::token($s), $target, $password, 'Bruger oprettet'));
     }
 
-    /** @param array<string, mixed> $admin */
-    private function userEdit(Request $req, Session $s, array $admin, int $id, int $now): Response
+    /**
+     * GET /brugere/{id}/nulstil og /deaktiver: bekræftelsessiden (QA F-4). Egen nulstilling og egen deaktivering
+     * afvises allerede her.
+     *
+     * @param array<string, mixed> $admin
+     */
+    private function userConfirm(Session $s, array $admin, int $id, string $action): Response
     {
         $target = Users::find($id);
         if ($target === null) {
             return Response::html(View::error(404, 'Brugeren findes ikke.', Csrf::token($s), $admin), 404);
         }
-        if ($req->method !== 'POST') {
+        $self = $id === (int) $admin['id'];
+        if ($self) {
+            $msg = $action === 'reset' ? self::SELF_RESET : 'Du kan ikke deaktivere dig selv.';
+            return Response::html(View::userEdit($admin, Csrf::token($s), $target, $msg, null), 422);
+        }
+        if ($action === 'deactivate' && (int) $target['active'] !== 1) {
+            return Response::redirect('/brugere/' . $id);
+        }
+        return Response::html(View::confirm($admin, Csrf::token($s), $target, $action));
+    }
+
+    /** @param array<string, mixed> $admin */
+    private function userEdit(Request $req, string $method, Session $s, array $admin, int $id, int $now): Response
+    {
+        $target = Users::find($id);
+        if ($target === null) {
+            return Response::html(View::error(404, 'Brugeren findes ikke.', Csrf::token($s), $admin), 404);
+        }
+        if ($method !== 'POST') {
             return Response::html(View::userEdit($admin, Csrf::token($s), $target, null, $this->flash($s)));
         }
         $action = $req->str('action');
+        $self = $id === (int) $admin['id'];
+        // Nulstil og deaktiver kræver bekræftelsessiden; uden den sendes man dertil, og intet ændres
+        if (in_array($action, ['reset', 'deactivate'], true) && $req->str('bekraeftet') !== '1' && !$self) {
+            return Response::redirect('/brugere/' . $id . ($action === 'reset' ? '/nulstil' : '/deaktiver'));
+        }
         try {
             switch ($action) {
                 case 'save':
                     Users::update($id, $req->str('name'), $req->str('role'), $now);
+                    if ($self && $req->str('role') !== 'admin') {
+                        // Selv-nedgradering: /brugere er nu 403, så send til forsiden med en forklaring (QA F-5)
+                        $s->set('flash', 'Du er nu Bruger og har ikke længere adgang til Brugere.');
+                        return Response::redirect('/');
+                    }
                     $msg = 'Ændringerne er gemt.';
                     break;
                 case 'reset':
+                    if ($self) {
+                        throw new UserError(self::SELF_RESET);
+                    }
                     $password = Users::resetPassword($id, $now);
                     return Response::html(View::oneTimePassword($admin, Csrf::token($s), $target, $password, 'Adgangskode nulstillet'));
                 case 'deactivate':

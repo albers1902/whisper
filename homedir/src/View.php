@@ -96,7 +96,7 @@ final class View
             $rows .= '<tr><td>' . self::e((string) $u['name']) . '</td><td>' . self::e((string) $u['email']) . '</td>'
                 . '<td>' . self::roleName((string) $u['role']) . '</td>'
                 . '<td>' . ((int) $u['active'] === 1 ? 'Aktiv' : '<span class="muted">Deaktiveret</span>') . '</td>'
-                . '<td>' . self::e((string) ($u['last_login_at'] ?? '—')) . '</td>'
+                . '<td>' . self::e(self::dateTime($u['last_login_at'] ?? null)) . '</td>'
                 . '<td><a href="/brugere/' . (int) $u['id'] . '">Rediger</a></td></tr>';
         }
         return self::layout('Brugere', '<div class="row"><h1>Brugere</h1><a class="button" href="/brugere/ny">Opret bruger</a></div>'
@@ -143,9 +143,18 @@ final class View
     {
         $id = (int) $target['id'];
         $active = (int) $target['active'] === 1;
-        $toggle = $active
-            ? '<button type="submit" name="action" value="deactivate" class="danger">Deaktiver bruger</button>'
-            : '<button type="submit" name="action" value="activate">Genaktiver bruger</button>';
+        $self = (int) $target['id'] === (int) ($user['id'] ?? 0);
+        // Nulstil og Deaktiver går via en bekræftelsesside (uden JS), så et fejlklik ikke ændrer noget
+        $access = [];
+        if ($self) {
+            $access[] = '<p>Din egen adgangskode skifter du under <a href="/konto">Konto</a>.</p>';
+        } else {
+            $access[] = '<a class="button" href="/brugere/' . $id . '/nulstil">Nulstil adgangskode …</a>';
+            $access[] = $active
+                ? '<a class="button danger" href="/brugere/' . $id . '/deaktiver">Deaktiver bruger …</a>'
+                : '<form method="post" action="/brugere/' . $id . '" class="inline">' . self::csrfField($csrf)
+                    . '<button type="submit" name="action" value="activate">Genaktiver bruger</button></form>';
+        }
         return self::layout('Rediger bruger', '<section class="card narrow"><h1>' . self::e((string) $target['name']) . '</h1>'
             . '<p>' . self::e((string) $target['email']) . ' · ' . ($active ? 'Aktiv' : 'Deaktiveret') . '</p>'
             . self::message($error, $ok)
@@ -153,9 +162,42 @@ final class View
             . '<label>Navn<input type="text" name="name" value="' . self::e((string) $target['name']) . '" required maxlength="120"></label>'
             . self::roleSelect((string) $target['role'])
             . '<button type="submit" name="action" value="save">Gem</button></form>'
-            . '<h2>Adgang</h2><form method="post" action="/brugere/' . $id . '" class="actions">' . self::csrfField($csrf)
-            . '<button type="submit" name="action" value="reset">Nulstil adgangskode</button> ' . $toggle . '</form>'
+            . '<p class="muted">Sidste login: ' . self::e(self::dateTime($target['last_login_at'] ?? null)) . '</p>'
+            . '<h2>Adgang</h2><div class="actions">' . implode(' ', $access) . '</div>'
             . '<p><a href="/brugere">Til listen</a></p></section>', $user, $csrf);
+    }
+
+    /**
+     * Bekræftelse før en handling, der ikke kan fortrydes (nulstil) eller logger brugeren ud (deaktiver).
+     *
+     * @param array<string, mixed> $user
+     * @param array<string, mixed> $target
+     */
+    public static function confirm(array $user, string $csrf, array $target, string $action): string
+    {
+        $id = (int) $target['id'];
+        $name = self::e((string) $target['name']);
+        [$title, $text, $button] = $action === 'reset'
+            ? ['Nulstil adgangskode', "Nulstil adgangskoden for <strong>$name</strong>? Den nuværende adgangskode holder op med at "
+                . "virke med det samme, $name logges ud, og du får en engangskode, som kun vises én gang.", 'Ja, nulstil adgangskoden']
+            : ['Deaktiver bruger', "Deaktiver <strong>$name</strong>? $name logges ud med det samme og kan ikke logge ind, "
+                . 'før en administrator genaktiverer brugeren.', 'Ja, deaktiver brugeren'];
+        return self::layout($title, '<section class="card narrow"><h1>' . self::e($title) . '</h1><p>' . $text . '</p>'
+            . '<form method="post" action="/brugere/' . $id . '" class="actions">' . self::csrfField($csrf)
+            . '<input type="hidden" name="action" value="' . self::e($action) . '">'
+            . '<input type="hidden" name="bekraeftet" value="1">'
+            . '<button type="submit" class="danger">' . self::e($button) . '</button> <a href="/brugere/' . $id . '">Annuller</a>'
+            . '</form></section>', $user, $csrf);
+    }
+
+    /** Databasens DATETIME som dd.mm.åååå tt:mm; tom værdi som "—". */
+    public static function dateTime(mixed $value): string
+    {
+        if (!is_string($value) || $value === '') {
+            return '—';
+        }
+        $d = \DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $value);
+        return $d === false ? '—' : $d->format('d.m.Y H:i');
     }
 
     /** @param array<string, mixed>|null $user */
