@@ -81,3 +81,22 @@ th { font-size: 0.875rem; color: var(--muted); }
   tr { border-bottom: 1px solid var(--line); padding: 8px 0; }
   td { border: 0; padding: 2px 12px; }
 }
+
+/* F002: opkald */
+form.filters { display: flex; flex-wrap: wrap; gap: 12px; align-items: flex-end; margin: 0 0 16px; }
+form.filters label { flex: 1 1 140px; margin: 0; }
+form.filters label.wide { flex: 2 1 240px; }
+form.filters .actions { padding-bottom: 2px; }
+.status { margin: 0 0 12px; }
+.empty { padding: 24px; background: var(--card); border: 1px solid var(--line); border-radius: 8px; }
+.pager { margin-top: 12px; }
+.badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 0.85rem; background: var(--info-bg); }
+.badge.s-faerdig { background: var(--ok-bg); color: var(--ok-text); }
+.badge.s-fejlet { background: var(--err-bg); color: var(--danger); }
+dl.meta { display: grid; grid-template-columns: max-content 1fr; gap: 4px 16px; margin: 0 0 16px; }
+dl.meta dt { color: var(--muted); }
+dl.meta dd { margin: 0; }
+audio { width: 100%; margin: 8px 0 16px; }
+.transcript p { margin: 0 0 8px; }
+.transcript .ts { font-family: ui-monospace, Consolas, monospace; color: var(--muted); }
+form.filters .hint { display: block; font-weight: 400; font-size: 0.85rem; color: var(--muted); margin-top: 4px; }

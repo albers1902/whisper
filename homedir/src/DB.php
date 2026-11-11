@@ -32,6 +32,22 @@ final class DB
     }
 
     /**
+     * Ny forbindelse, hvis den gamle er lukket af serveren (wait_timeout) — fx efter en transcription, der har kørt i
+     * timer (F002).
+     */
+    public static function ensureAlive(): void
+    {
+        if (self::$pdo === null) {
+            return;
+        }
+        try {
+            @self::$pdo->query('SELECT 1');   // en lukket forbindelse giver også en PHP-advarsel
+        } catch (\Throwable) {
+            self::$pdo = null;
+        }
+    }
+
+    /**
      * @param list<mixed> $params
      * @return list<array<string, mixed>>
      */
