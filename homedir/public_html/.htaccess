@@ -1,0 +1,4 @@
+# Web-roden. /health er frameworkets faste adresse (coworker.ini [health]); filen hedder health.php.
+# deploy.sh og monitor.sh kalder med curl uden -L, så det skal være en intern rewrite — ikke en redirect.
+RewriteEngine On
+RewriteRule ^health/?$ health.php [L]

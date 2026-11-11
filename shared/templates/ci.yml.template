@@ -1,0 +1,2 @@
+# FILE_VERSION: 5.42 — UDGÅET. Erstattet af shared/install/ci.yml, som installeres uændret med
+# bash shared/report.sh install. Projektets værdier står i coworker.ini.

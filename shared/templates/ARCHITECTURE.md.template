@@ -1,0 +1,10 @@
+<!-- FILE_VERSION: 5.42 — SKABELON. Team Lead skriver den til ARCHITECTURE.md i roden, hvis den mangler. C4 niveau 1–2 — intet dybere. "Sidst gennemgået" højst 90 dage gammel. -->
+# Arkitektur — <projekt>
+Sidst gennemgået: ÅÅÅÅ-MM-DD
+
+## Systemkontekst (C4 niveau 1)
+Hvem bruger systemet, og hvilke eksterne systemer taler det med (se SUBPROCESSORS.md).
+
+## Containere (C4 niveau 2)
+| Container | Teknologi | Ansvar | Data | Taler med |
+|---|---|---|---|---|

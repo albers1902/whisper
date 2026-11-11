@@ -1,0 +1,8 @@
+# FILE_VERSION: 5.42 — frameworkets gitleaks-regler (låst). Standardreglerne + én undtagelse:
+# shared/selftest.sh i ældre framework-versioner (≤ 5.5) indeholdt en bevidst falsk testtoken.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Frameworkets egen selvtest (falsk token i v5.5)"
+paths = ['''^shared/selftest\.sh$''']

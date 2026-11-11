@@ -1,0 +1,27 @@
+<!-- FILE_VERSION: 5.42 — SKABELON. Team Lead skriver incidents/I0NN.md (nummer: bash shared/report.sh nextid I). Ændres kun ved tilføjelser nederst. -->
+# I0NN: <kort titel>
+Alvor: S1 | S2 | S3 | S4   (S1 = kunder kan ikke arbejde / data i fare · S2 = vigtig funktion nede · S3 = begrænset · S4 = kosmetisk)
+Status: åben | løst <dato> | postmortem <dato>
+Opdaget: <ÅÅÅÅ-MM-DD HH:MM> af <monitor | deploy-alarm | kunde | agent | menneske>
+Miljøer: DEV | TEST | STABLE   · Berørte kunder/tenants: <liste eller "ingen">
+
+## Tidslinje (UTC)
+- <tid> — <hvad skete / hvad blev gjort>
+
+## Persondata (GDPR art. 33)
+Persondatabrud: ja | nej — begrundelse: <…>
+Ja: anmeldes til Datatilsynet senest <opdaget + 72 timer>. Anmeldt: <dato / "ikke krævet">.
+Den dataansvarlige kunde underrettet: <dato / "ikke relevant">
+
+## Kundebesked
+<tekst, der er sendt — af mennesket — eller "ingen">
+
+## Årsag
+<rodårsag, målt — ikke antaget>
+
+## Handlinger
+- H0NN: <rettelse> — <status>
+- Rotation af hemmelighed: <hvilken, dato>   (gælder altid, hvis en hemmelighed har været uden for de godkendte steder, SERVERKONTRAKT §8)
+
+## Forebyggelse
+<hvad ændres i kode, test eller proces, så det ikke sker igen>

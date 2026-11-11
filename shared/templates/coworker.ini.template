@@ -1,0 +1,26 @@
+; FILE_VERSION: 5.42 — SKABELON. Team Lead skriver coworker.ini i repoets rod (overskriv aldrig).
+; Projektets værdier til frameworkets CI og deploy. KONTROLFIL: en ændring tvinger tier 1 og når
+; først serverne, når ejeren har trykket Publish (bash shared/report.sh ctrl <sha>).
+[ci]
+php = 8.4                                                   ; samme version som serveren
+tests = homedir/vendor/bin/phpunit --log-junit junit.xml    ; SKAL skrive junit.xml i repoets rod. Databasen: CW_DB_HOST/PORT/NAME/USER/PASS
+analyse = homedir/src                                       ; mapper til PHPStan (level 5)
+
+[deploy]
+repo = <ejer>/<repo>
+php = /usr/local/bin/php84
+migrate = /usr/local/bin/php84 repo/homedir/migrations/migrate.php   ; køres fra hjemmemappen, ≠ 0 ved fejl
+
+[migrations]
+; baseline = 0116   ; KUN i et projekt, der havde kørte migrationer, før frameworket kom ind: højeste nummer
+;                   ; på det tidspunkt. De undtages fra header-tjek, genkørsel og down/up (LIFECYCLE §6).
+
+[backup]
+; external = hostingens daglige snapshot   ; KUN hvis backup ligger uden for maskinens site-backup (5.27).
+;                                           ; Så kræver launch-tjek/check/monitor ikke backup-/restore-bevis,
+;                                           ; og release-noterne viser "Backup: ekstern (<tekst>)".
+
+[health]
+dev = https://<dev-domæne>/health
+test = https://<test-domæne>/health
+stable = https://<domæne>/health

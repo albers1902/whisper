@@ -1,0 +1,8 @@
+# LF overalt - CRLF ødelægger bash/cron-scripts på Linux-serveren
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.jpg binary
+*.gif binary
+*.pdf binary
+*.woff2 binary
