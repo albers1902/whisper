@@ -1,0 +1,261 @@
+<?php
+declare(strict_types=1);
+
+namespace Whisper;
+
+use DateTimeImmutable;
+use DateTimeZone;
+
+/**
+ * Opkald og transcripts til siderne (F002). Tider gemmes i UTC og vises i dansk tid; filtrenes datoer er danske.
+ * Fritekst søger med FULLTEXT i BOOLEAN MODE (InnoDB indekserer kun ord på mindst 3 tegn), ellers LIKE.
+ */
+final class Calls
+{
+    public const PAGE_SIZE = 50;
+    public const ZIP_MAX = 2000;
+    public const TZ = 'Europe/Copenhagen';
+    private const AUDIO_PATH = '#^recordings/[0-9]{4}/[0-9]{2}/[1-9][0-9]{0,9}\.(mp3|wav)$#';
+
+    /**
+     * Filtrene fra query-strengen, renset. Ugyldige værdier ignoreres.
+     *
+     * @param array<mixed> $q
+     * @return array{fra: string, til: string, retning: string, agent: string, q: string, side: int}
+     */
+    public static function filter(array $q): array
+    {
+        $s = static fn(string $k): string => is_string($q[$k] ?? null) ? trim($q[$k]) : '';
+        $date = static fn(string $v): string => preg_match('/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/', $v) === 1
+            && DateTimeImmutable::createFromFormat('!Y-m-d', $v) !== false ? $v : '';
+        $side = ctype_digit($s('side')) ? (int) $s('side') : 1;
+        return [
+            'fra'     => $date($s('fra')),
+            'til'     => $date($s('til')),
+            'retning' => in_array($s('retning'), ['inbound', 'outbound'], true) ? $s('retning') : '',
+            'agent'   => mb_substr($s('agent'), 0, 120),
+            'q'       => mb_substr($s('q'), 0, 200),
+            'side'    => max(1, min($side, 100000)),
+        ];
+    }
+
+    /**
+     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int} $f
+     * @return array{0: string, 1: list<mixed>} WHERE-del (faste SQL-stykker) og parametre
+     */
+    private static function where(array $f, bool $onlyDone = false): array
+    {
+        $sql = ['1 = 1'];
+        $p = [];
+        if ($f['fra'] !== '') {
+            $sql[] = 'c.started_at >= ?';
+            $p[] = self::utcDayStart($f['fra'], 0);
+        }
+        if ($f['til'] !== '') {
+            $sql[] = 'c.started_at < ?';
+            $p[] = self::utcDayStart($f['til'], 1);
+        }
+        if ($f['retning'] !== '') {
+            $sql[] = 'c.direction = ?';
+            $p[] = $f['retning'];
+        }
+        if ($f['agent'] !== '') {
+            $sql[] = 'c.agent_name = ?';
+            $p[] = $f['agent'];
+        }
+        if ($f['q'] !== '') {
+            $words = preg_match_all('/[\p{L}\p{N}]+/u', $f['q'], $m) > 0 ? $m[0] : [];
+            $long = array_values(array_filter($words, static fn(string $w): bool => mb_strlen($w) >= 3));
+            if ($long !== []) {
+                $sql[] = 'c.id IN (SELECT call_id FROM transcripts WHERE MATCH(`text`) AGAINST (? IN BOOLEAN MODE))';
+                $p[] = implode(' ', array_map(static fn(string $w): string => '+' . $w . '*', $long));
+            } elseif ($words !== []) {
+                $sql[] = 'c.id IN (SELECT call_id FROM transcripts WHERE `text` LIKE ?)';   // \ er LIKE's standard-escape
+                $p[] = '%' . addcslashes(implode(' ', $words), '%_\\') . '%';
+            }
+        }
+        if ($onlyDone) {
+            $sql[] = "c.transcript_status = 'faerdig'";
+        }
+        return [implode(' AND ', $sql), $p];
+    }
+
+    /**
+     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int} $f
+     * @return array{rows: list<array<string, mixed>>, total: int}
+     */
+    public static function search(array $f): array
+    {
+        [$w, $p] = self::where($f);
+        $total = (int) DB::scalar('SELECT COUNT(*) FROM calls c WHERE ' . $w, $p);
+        $offset = ($f['side'] - 1) * self::PAGE_SIZE;
+        $rows = DB::all('SELECT c.* FROM calls c WHERE ' . $w . ' ORDER BY c.started_at DESC, c.id DESC LIMIT '
+            . self::PAGE_SIZE . ' OFFSET ' . (int) $offset, $p);
+        return ['rows' => $rows, 'total' => $total];
+    }
+
+    /**
+     * Færdige transcripts i filtret til zip (nyeste først, højst ZIP_MAX).
+     *
+     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int} $f
+     * @return array{rows: list<array<string, mixed>>, total: int}
+     */
+    public static function forZip(array $f): array
+    {
+        [$w, $p] = self::where($f, true);
+        $total = (int) DB::scalar('SELECT COUNT(*) FROM calls c WHERE ' . $w, $p);
+        $rows = DB::all('SELECT c.*, t.`text` AS t_text, t.segments_json AS t_segments FROM calls c JOIN transcripts t ON t.call_id = c.id '
+            . 'WHERE ' . $w . ' ORDER BY c.started_at DESC, c.id DESC LIMIT ' . self::ZIP_MAX, $p);
+        return ['rows' => $rows, 'total' => $total];
+    }
+
+    /** @return array<string, mixed>|null */
+    public static function find(int $id): ?array
+    {
+        $rows = DB::all('SELECT * FROM calls WHERE id = ?', [$id]);
+        return $rows[0] ?? null;
+    }
+
+    /** @return array{text: string, segments: list<array{start: float, end: float, text: string}>}|null */
+    public static function transcript(int $id): ?array
+    {
+        $rows = DB::all('SELECT `text`, segments_json FROM transcripts WHERE call_id = ?', [$id]);
+        if ($rows === []) {
+            return null;
+        }
+        return ['text' => (string) $rows[0]['text'], 'segments' => self::segments((string) $rows[0]['segments_json'])];
+    }
+
+    /** @return list<array{start: float, end: float, text: string}> */
+    public static function segments(string $json): array
+    {
+        $out = [];
+        $data = json_decode($json, true);
+        foreach (is_array($data) ? $data : [] as $s) {
+            if (is_array($s) && is_numeric($s['start'] ?? null) && is_string($s['text'] ?? null)) {
+                $out[] = ['start' => (float) $s['start'], 'end' => (float) ($s['end'] ?? $s['start']), 'text' => $s['text']];
+            }
+        }
+        return $out;
+    }
+
+    /** @return list<string> */
+    public static function agents(): array
+    {
+        $rows = DB::all("SELECT DISTINCT agent_name FROM calls WHERE agent_name <> '' ORDER BY agent_name");
+        return array_map(static fn(array $r): string => (string) $r['agent_name'], $rows);
+    }
+
+    /** @return array{last_ok_at: ?string, last_error: ?string, waiting: int, audio_waiting: int} */
+    public static function status(): array
+    {
+        $s = DB::all('SELECT last_ok_at, last_error FROM sync_state WHERE `source` = ?', ['zendesk']);
+        $waiting = (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE transcript_status IN ('ventende', 'transcriberer')");
+        $audio = (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE audio_status = 'venter'");
+        $ok = $s[0]['last_ok_at'] ?? null;
+        $err = $s[0]['last_error'] ?? null;
+        return ['last_ok_at' => is_string($ok) ? $ok : null, 'last_error' => is_string($err) ? $err : null,
+            'waiting' => $waiting, 'audio_waiting' => $audio];
+    }
+
+    /**
+     * Den fulde sti til en optagelse, kun hvis stien fra databasen har den form, appen selv skriver, og filen ligger
+     * under var/recordings (realpath: ingen ../ og ingen symlink ud af mappen). Ellers null.
+     */
+    public static function audioFile(?string $rel): ?string
+    {
+        if ($rel === null || preg_match(self::AUDIO_PATH, $rel) !== 1) {
+            return null;
+        }
+        $root = realpath(Paths::varDir() . '/recordings');
+        $file = realpath(Paths::varDir() . '/' . $rel);
+        if ($root === false || $file === false || !str_starts_with($file, $root . DIRECTORY_SEPARATOR) || !is_file($file)) {
+            return null;
+        }
+        return $file;
+    }
+
+    /** Lokal dato (dansk tid) + $plusDays som UTC-tidspunkt for døgnets start. */
+    public static function utcDayStart(string $ymd, int $plusDays): string
+    {
+        $d = new DateTimeImmutable($ymd . ' 00:00:00', new DateTimeZone(self::TZ));
+        if ($plusDays !== 0) {
+            $d = $d->modify('+' . $plusDays . ' day');
+        }
+        return $d->setTimezone(new DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+    }
+
+    /** UTC fra databasen som dansk tid i det givne format; '' ved en tom værdi. */
+    public static function local(mixed $utc, string $format = 'd.m.Y H:i'): string
+    {
+        if (!is_string($utc) || $utc === '') {
+            return '';
+        }
+        $d = DateTimeImmutable::createFromFormat('Y-m-d H:i:s', $utc, new DateTimeZone('UTC'));
+        return $d === false ? '' : $d->setTimezone(new DateTimeZone(self::TZ))->format($format);
+    }
+
+    /** [mm:ss] eller [t:mm:ss] for et tidsstempel i sekunder. */
+    public static function stamp(float $sec): string
+    {
+        $s = (int) floor($sec);
+        return $s >= 3600 ? sprintf('%d:%02d:%02d', intdiv($s, 3600), intdiv($s % 3600, 60), $s % 60)
+            : sprintf('%02d:%02d', intdiv($s, 60), $s % 60);
+    }
+
+    /** Varighed som m:ss eller t:mm:ss. */
+    public static function duration(int $sec): string
+    {
+        return $sec >= 3600 ? sprintf('%d:%02d:%02d', intdiv($sec, 3600), intdiv($sec % 3600, 60), $sec % 60)
+            : sprintf('%d:%02d', intdiv($sec, 60), $sec % 60);
+    }
+
+    public static function directionName(string $d): string
+    {
+        return $d === 'outbound' ? 'Udgående' : 'Indgående';
+    }
+
+    public static function statusName(string $s): string
+    {
+        return ['ventende' => 'Venter', 'transcriberer' => 'Transcriberer', 'faerdig' => 'Færdig', 'fejlet' => 'Fejlet'][$s] ?? $s;
+    }
+
+    /**
+     * Transcriptet som tekst med hoved-blok (spec: dato, retning, nummer, agent, ticket).
+     *
+     * @param array<string, mixed> $call
+     * @param list<array{start: float, end: float, text: string}> $segments
+     */
+    public static function transcriptText(array $call, array $segments, string $text, ?string $ticketUrl): string
+    {
+        $ticket = (int) ($call['ticket_id'] ?? 0);
+        $head = [
+            'Opkald:   ' . self::local($call['started_at'] ?? null) . ' (dansk tid)',
+            'Retning:  ' . self::directionName((string) $call['direction']),
+            'Nummer:   ' . (string) $call['customer_phone'],
+            'Agent:    ' . (string) $call['agent_name'],
+            'Varighed: ' . self::duration((int) $call['duration_sec']),
+            'Ticket:   ' . ($ticket > 0 ? $ticket . ($ticketUrl !== null ? ' (' . $ticketUrl . ')' : '') : '—'),
+        ];
+        $body = [];
+        foreach ($segments as $s) {
+            $body[] = '[' . self::stamp($s['start']) . '] ' . $s['text'];
+        }
+        if ($body === []) {
+            $body[] = $text;
+        }
+        return implode("\n", $head) . "\n\n" . implode("\n", $body) . "\n";
+    }
+
+    /**
+     * Filnavnet ÅÅÅÅ-MM-DD_HHMM_<retning>_<ticket>.txt (dansk tid; retning ind/ud).
+     *
+     * @param array<string, mixed> $call
+     */
+    public static function fileName(array $call): string
+    {
+        $ticket = (int) ($call['ticket_id'] ?? 0);
+        return self::local($call['started_at'] ?? null, 'Y-m-d_Hi') . '_' . ($call['direction'] === 'outbound' ? 'ud' : 'ind')
+            . '_' . ($ticket > 0 ? (string) $ticket : 'ingen') . '.txt';
+    }
+}

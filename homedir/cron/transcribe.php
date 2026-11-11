@@ -1,0 +1,63 @@
+<?php
+declare(strict_types=1);
+
+/**
+ * F002: transcriberer ventende opkald ét ad gangen med faster-whisper (src/Transcription/). Cron hvert minut, lagt i
+ * sitets egen crontab af cron/whisper-cron.sh:
+ *
+ *   * * * * * /usr/bin/php /home/<bruger>/cron/transcribe.php >> /home/<bruger>/logs/transcribe.log 2>&1
+ *
+ * Låsen var/locks/transcribe.lock gør det til én kø: kører et job (det kan tage lang tid), afslutter de næste kørsler
+ * straks. Kun den, der holder låsen, sætter hængende opkald (over 2 timer i "transcriberer") tilbage — så kører der
+ * beviseligt ingen motor. Jobbet tager opkald, til køen er tom, en udrulning starter, eller der er gået 50 minutter.
+ */
+
+if (PHP_SAPI !== 'cli') {
+    http_response_code(404);
+    exit(2);
+}
+// Framework (LIFECYCLE §8): workers holder pause under en udrulning — som [ -e logs/deploying ] && exit 0
+$deploying = dirname(__DIR__) . '/logs/deploying';
+if (file_exists($deploying)) {
+    exit(0);
+}
+
+require_once __DIR__ . '/../src/Bootstrap.php';
+
+$log = static function (string $line): void {
+    echo gmdate('Y-m-d\TH:i:s\Z'), ' ', $line, "\n";
+};
+
+$lock = \Whisper\Lock::tryAcquire('transcribe');
+if ($lock === null) {
+    exit(0);   // et job kører allerede
+}
+\Whisper\Paths::heartbeat('transcribe');
+
+try {
+    $engine = \Whisper\Transcription\ProcessEngine::fromConfig();
+} catch (\Whisper\Transcription\EngineError $e) {
+    $log('transcribe: ' . $e->getMessage());
+    exit(1);
+}
+$t = new \Whisper\Transcription\Transcriber($engine, null, $log);
+$reset = $t->resetStale();
+if ($reset > 0) {
+    $log('transcribe: ' . $reset . ' hængende opkald sat tilbage');
+}
+if (!$engine->available()) {
+    $waiting = (int) \Whisper\DB::scalar("SELECT COUNT(*) FROM calls WHERE transcript_status = 'ventende' AND audio_status = 'hentet'");
+    if ($waiting > 0 && (int) gmdate('i') === 0) {   // én linje i timen, ikke hvert minut
+        $log('transcribe: motoren er ikke sat op (kør cron/whisper-setup.sh) — ' . $waiting . ' opkald venter');
+    }
+    exit(0);
+}
+
+$start = time();
+while (time() - $start < 3000 && !file_exists($deploying)) {
+    if ($t->runOnce() === null) {
+        break;
+    }
+}
+$lock->release();
+exit(0);

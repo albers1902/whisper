@@ -6,7 +6,8 @@ namespace Whisper;
 use Closure;
 
 /**
- * Router og controllere for F001 (login, konto, brugeradministration). handle() tager en Request og en Session og
+ * Router og controllere for F001 (login, konto, brugeradministration) og ruterne for F002 (opkald; controllerne er i
+ * CallPages). handle() tager en Request og en Session og
  * returnerer en Response, så alt kan testes uden webserver; public_html/index.php er den tynde web-indgang.
  *
  * Rækkefølgen for hver request: flag → rute → inaktivitets-timeout → bruger fra databasen (rolle og aktiv-status
@@ -108,7 +109,12 @@ final class App
 
         $csrf = Csrf::token($s);
         return match ($route) {
-            'home'      => Response::html(View::home($user, $csrf, $this->flash($s))),
+            'home'      => Flags::enabled(CallPages::FLAG) ? CallPages::list($req, $user, $csrf, $this->flash($s))
+                : Response::html(View::home($user, $csrf, $this->flash($s))),
+            'call_show'  => CallPages::show($id, $user, $csrf),
+            'call_audio' => CallPages::audio($id, $req),
+            'call_txt'   => CallPages::transcript($id),
+            'call_zip'   => CallPages::zip($req, $user, $csrf),
             'konto'     => $method === 'POST' ? $this->accountPost($req, $s, $user, $now)
                 : Response::html(View::account($user, $csrf, null, $this->flash($s))),
             'users'     => Response::html(View::users($user, $csrf, Users::all(), $this->flash($s))),
@@ -129,6 +135,10 @@ final class App
         'user_new'     => ['GET', 'POST'],
         'user_edit'    => ['GET', 'POST'],
         'user_confirm' => ['GET'],
+        'call_show'    => ['GET'],
+        'call_audio'   => ['GET'],
+        'call_txt'     => ['GET'],
+        'call_zip'     => ['GET'],
     ];
 
     /** @return array{0: ?string, 1: int, 2: string} rute, bruger-id, handling (kun for bekræftelsessiden) */
@@ -138,6 +148,16 @@ final class App
             '/brugere' => 'users', '/brugere/ny' => 'user_new'];
         if (isset($fixed[$path])) {
             return [$fixed[$path], 0, ''];
+        }
+        if (Flags::enabled(CallPages::FLAG)) {
+            // F002: findes kun med flaget tændt (slukket: 404 som enhver ukendt sti, også for anonyme)
+            if ($path === '/opkald/download') {
+                return ['call_zip', 0, ''];
+            }
+            if (preg_match('#^/opkald/([1-9][0-9]{0,9})(/lyd|/transcript)?$#', $path, $m) === 1) {
+                $sub = $m[2] ?? '';
+                return [$sub === '/lyd' ? 'call_audio' : ($sub === '/transcript' ? 'call_txt' : 'call_show'), (int) $m[1], ''];
+            }
         }
         if (preg_match('#^/brugere/([1-9][0-9]{0,9})$#', $path, $m) === 1) {
             return ['user_edit', (int) $m[1], ''];
