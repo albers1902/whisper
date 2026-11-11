@@ -21,7 +21,7 @@ use Whisper\Paths;
  *    allerede er gemt, kun får sine metadata opdateret uden et nyt kald efter kommentarer.
  * 2. Optagelsens URL står ikke i exporten, kun i ticketens VoiceComment (data.recording_url). Opkald og kommentar
  *    matches på data.call_id; findes den ikke, på started_at ±2 min og varighed ±5 s (Team Lead, F002 v0).
- * 3. Opkald uden optagelse gemmes ikke (F002 v0, punkt 1b.4).
+ * 3. Opkald uden optagelse gemmes ikke (F002 v0, punkt 1b.4). Hvem der slås op: recordingHint() (H002).
  * 4. En HTTP-fejl på ét ticket (fx 403 eller 500) springer kun det opkald over (logges med id) — 429 og netværksfejl
  *    stopper kørslen pænt (QA F-1). Optagelserne hentes også, når opkaldshentningen er stoppet.
  * 5. Lydfilen hentes til var/recordings/ÅÅÅÅ/MM/<id>.<ext> (0600) via en .part-fil, højst 5 forsøg pr. opkald.
@@ -34,6 +34,8 @@ final class Sync
     public const MAX_AUDIO_ATTEMPTS = 5;
     public const LOOKBACK = 86400;
     public const RATE_LIMIT_PREFIX = 'rate limit';
+    public const HINT_RECORDED = 'recording_time';
+    public const HINT_ANSWERED = 'besvaret';
     private const MAX_PAGES = 8;
     private const MAX_DOWNLOADS = 50;
     private const CURSOR_BATCH = 25;
@@ -49,6 +51,7 @@ final class Sync
     /** @var array<int, string> */
     private array $agentCache = [];
     private int $storedCursor = 0;
+    private int $runCursor = 0;
 
     /**
      * @param (Closure(): int)|null $clock
@@ -111,6 +114,7 @@ final class Sync
     {
         $cursor = DB::scalar('SELECT cursor_value FROM sync_state WHERE `source` = ?', [self::SOURCE]);
         $this->storedCursor = is_string($cursor) && ctype_digit($cursor) ? (int) $cursor : 0;
+        $this->runCursor = $this->storedCursor;
         $start = max($this->cfg->since, $this->storedCursor - self::LOOKBACK);
         $saved = 0;
         for ($page = 0; $page < self::MAX_PAGES; $page++) {
@@ -152,6 +156,41 @@ final class Sync
         return $saved;
     }
 
+    /**
+     * Kan opkaldet have en optagelse, der er værd et kommentaropslag? Feltbeskrivelserne fra developer.zendesk.com
+     * (Talk API, Incremental Exports, Calls):
+     * - recording_time: "How long in seconds spent recording on the call" > 0 → HINT_RECORDED.
+     * - Ellers et besvaret opkald: duration ("Call duration in seconds") > 0 og enten completion_status "completed" eller
+     *   talk_time ("Sum of how long in seconds the customer was in conference with an agent(s)") > 0 → HINT_ANSWERED.
+     *   Hos ejeren er recording_time 0 på opkald, der ER optaget (H002), så recording_time alene er ikke nok.
+     * VoiceComment med recording_url afgør stadig, om der er en optagelse; reglen styrer kun, hvem der slås op.
+     *
+     * @param array<mixed> $call
+     * @return string HINT_RECORDED | HINT_ANSWERED | '' (intet opslag)
+     */
+    public static function recordingHint(array $call): string
+    {
+        $num = static fn(string $k): int => is_numeric($call[$k] ?? null) ? (int) $call[$k] : 0;
+        if ($num('recording_time') > 0) {
+            return self::HINT_RECORDED;
+        }
+        if ($num('duration') > 0 && (($call['completion_status'] ?? null) === 'completed' || $num('talk_time') > 0)) {
+            return self::HINT_ANSWERED;
+        }
+        return '';
+    }
+
+    /**
+     * Nyt siden sidste kørsel: updated_at efter cursoren, som den stod, da kørslen startede (ikke i lookback-vinduet).
+     *
+     * @param array<mixed> $call
+     */
+    private function isNew(array $call): bool
+    {
+        $u = strtotime(is_string($call['updated_at'] ?? null) ? $call['updated_at'] : '');
+        return $u === false || $u > $this->runCursor;
+    }
+
     /** Cursoren flyttes kun fremad. */
     private function moveCursor(int $t): void
     {
@@ -169,8 +208,8 @@ final class Sync
         $extId = is_scalar($call['id'] ?? null) ? (string) $call['id'] : '';
         $ticketId = is_int($call['ticket_id'] ?? null) ? $call['ticket_id'] : 0;
         $direction = $call['direction'] ?? '';
-        $recTime = is_numeric($call['recording_time'] ?? null) ? (int) $call['recording_time'] : 0;
-        if (preg_match('/^[0-9]{1,30}$/', $extId) !== 1 || $ticketId <= 0 || $recTime <= 0
+        $hint = self::recordingHint($call);
+        if (preg_match('/^[0-9]{1,30}$/', $extId) !== 1 || $ticketId <= 0 || $hint === ''
             || !in_array($direction, ['inbound', 'outbound'], true)) {
             return false;   // ingen optagelse (eller intet at hente den fra): gemmes ikke
         }
@@ -187,6 +226,9 @@ final class Sync
             return true;
         }
 
+        if ($hint === self::HINT_ANSWERED && !$this->isNew($call)) {
+            return false;   // kun recording_time > 0 prøves igen i lookback-vinduet; besvarede opkald slås op én gang
+        }
         $voice = $this->voiceComment($ticketId, $extId, $callStart, $duration);
         if ($voice === null) {
             return false;   // endnu ingen optagelse: prøves igen i lookback-vinduet

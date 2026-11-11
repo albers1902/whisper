@@ -2,14 +2,17 @@
 declare(strict_types=1);
 
 /**
- * F002: read-only måling af Zendesk-integrationen. Køres af ejeren én gang på DEV, efter [zendesk] er skrevet:
+ * F002: read-only måling af Zendesk-integrationen. Køres af ejeren på DEV, efter [zendesk] er skrevet:
  *
- *   php ~/cron/zendesk-probe.php
+ *   php ~/cron/zendesk-probe.php                 scopes, token, op til 5 sider af Talk-exporten, felter, statuskæde
+ *   php ~/cron/zendesk-probe.php --ticket=3901   ét tickets VoiceComments og opkaldene med det ticket_id (H002)
  *
  * Den afgør det, Zendesks dokumentation ikke siger (F002 v0 §4): om et smalt scope kan læse Talk-exporten, hvilke felter
  * opkald og voice-kommentarer har (findes data.call_id?), og hvilke værter optagelsen hentes fra (statuskæden).
- * Udskriver KUN HTTP-status, værtsnavne, antal og feltnavne — aldrig værdier, URL'er, tokens eller persondata.
- * Den skriver intet i databasen og rører ikke token-cachen. En hentet optagelse slettes straks.
+ * Udskriver KUN HTTP-status, værtsnavne, antal, feltnavne og exportens rene tal (recording_time, duration …) —
+ * aldrig URL'er, tokens, telefonnumre, navne eller tekst. Afvises tokenet, står Zendesks egen fejlkode renset i
+ * parentesen (H002). Den skriver intet i databasen og rører ikke token-cachen. En hentet optagelse slettes straks.
+ * Målingerne ligger i src/Zendesk/Probe.php.
  */
 
 if (PHP_SAPI !== 'cli') {
@@ -19,23 +22,26 @@ if (PHP_SAPI !== 'cli') {
 require_once __DIR__ . '/../src/Bootstrap.php';
 
 use Whisper\Config;
-use Whisper\Paths;
 use Whisper\Zendesk\Client;
 use Whisper\Zendesk\CurlTransport;
+use Whisper\Zendesk\Probe;
+use Whisper\Zendesk\Sync;
 use Whisper\Zendesk\ZendeskConfig;
 use Whisper\Zendesk\ZendeskError;
 
 $say = static function (string $line): void {
     echo $line, "\n";
 };
-$keys = static function (mixed $a): string {
-    if (!is_array($a)) {
-        return '(intet)';
+
+$ticket = null;
+foreach (array_slice($argv, 1) as $arg) {
+    if (preg_match('/^--ticket=([1-9][0-9]{0,15})$/', $arg, $m) === 1) {
+        $ticket = (int) $m[1];
+    } else {
+        $say('✘ ukendt argument (brug: --ticket=<ticket-id>)');
+        exit(2);
     }
-    $k = array_map('strval', array_keys($a));
-    sort($k);
-    return implode(', ', $k);
-};
+}
 
 try {
     $cfg = ZendeskConfig::fromSection(Config::section('zendesk'));
@@ -52,51 +58,47 @@ if (!CurlTransport::available()) {
     exit(1);
 }
 $say('✔ curl findes · scope i config: ' . $cfg->scope);
+$say('token-request: POST /oauth/tokens · request-format: ' . Client::TOKEN_REQUEST_FORMAT . ' · grant_type: client_credentials');
 $http = new CurlTransport();
-$callsPath = '/api/v2/channels/voice/stats/incremental/calls.json?start_time=' . $cfg->since;
 
-// 1. Scope-varianter: token og ét kald til Talk-exporten pr. variant (ingen token-cache)
-$variants = array_values(array_unique([$cfg->scope, 'tickets:read users:read', 'read']));
-foreach ($variants as $scope) {
-    $c = new Client(new ZendeskConfig($cfg->subdomain, $cfg->clientId, $cfg->clientSecret, $scope, $cfg->since), $http);
+if ($ticket !== null) {
+    $client = new Client($cfg, $http);
     try {
-        $c->accessToken(true);
+        $client->accessToken(true);
     } catch (ZendeskError $e) {
-        $say("scope \"$scope\": token afvist (" . $e->getMessage() . ')');
-        continue;
+        $say('✘ token afvist (' . $e->getMessage() . ')');
+        exit(1);
     }
-    try {
-        $c->getJson($callsPath);
-        $say("scope \"$scope\": token OK · Talk-export HTTP 200");
-    } catch (ZendeskError $e) {
-        $say("scope \"$scope\": token OK · Talk-export " . $e->getMessage());
-    }
+    $code = Probe::ticketReport($client, $ticket, $say);
+    $say('PROBE: FÆRDIG');
+    exit($code);
 }
 
-// 2. Felterne med det konfigurerede scope
+// 1. Scope-varianter: token og ét kald til Talk-exporten pr. variant (ingen token-cache)
+foreach (array_values(array_unique([$cfg->scope, 'tickets:read users:read', 'read'])) as $scope) {
+    $say(Probe::scopeLine($cfg, $http, $scope, $cfg->since));
+}
+
+// 2. Op til 5 sider af exporten med det konfigurerede scope
 $client = new Client($cfg, $http);
 try {
-    $data = $client->getJson($callsPath);
+    $scan = Probe::scanExport($client, $cfg->since);
 } catch (ZendeskError $e) {
     $say('✘ Talk-export: ' . $e->getMessage());
     exit(1);
 }
-$calls = is_array($data['calls'] ?? null) ? $data['calls'] : [];
-$say('Talk-export: svar-felter: ' . $keys($data) . ' · count ' . count($calls));
-$withRec = null;
-foreach ($calls as $c) {
-    if (is_array($c) && (int) ($c['recording_time'] ?? 0) > 0 && is_int($c['ticket_id'] ?? null)) {
-        $withRec = $c;
-        break;
-    }
-}
-$say('Opkald: felter: ' . $keys($calls[0] ?? null));
-$say('Opkald: recording_url i exporten: ' . (is_array($calls[0] ?? null) && array_key_exists('recording_url', $calls[0]) ? 'ja' : 'nej'));
+$say('Talk-export: svar-felter: ' . implode(', ', $scan['response_fields']));
+$say(sprintf('Talk-export: %d side(r) · %d opkald · recording_time > 0: %d · med ticket_id: %d · begge: %d · Sync slår op: %d',
+    $scan['pages'], $scan['calls'], $scan['recording'], $scan['ticket'], $scan['both'], $scan['candidates']));
+$say('Opkald: felter: ' . (implode(', ', Probe::keys($scan['first'])) ?: '(intet)'));
+$say('Opkald: recording_url i exporten: ' . (is_array($scan['first']) && array_key_exists('recording_url', $scan['first']) ? 'ja' : 'nej'));
+$withRec = $scan['recorded'] ?? $scan['candidate'];
 if ($withRec === null) {
-    $say('! intet opkald med recording_time > 0 og ticket_id siden since — vælg en tidligere since og kør igen');
+    $say('! intet opkald med ticket_id, som Sync ville slå op, i de skannede sider — kør med --ticket=<id> for et kendt optaget opkald');
     exit(0);
 }
-$say('Opkald med optagelse fundet (direction: ' . (is_string($withRec['direction'] ?? null) ? $withRec['direction'] : '?') . ')');
+$say('Opkald valgt (' . ($scan['recorded'] !== null ? 'recording_time > 0' : 'besvaret, recording_time 0') . '): '
+    . Probe::numbers($withRec) . ' · Sync-regel: ' . Sync::recordingHint($withRec));
 
 // 3. Ticketens kommentarer: findes VoiceComment, data-felterne, og matcher data.call_id?
 try {
@@ -111,12 +113,13 @@ foreach (is_array($cm['comments'] ?? null) ? $cm['comments'] : [] as $c) {
         $voice[] = is_array($c['data'] ?? null) ? $c['data'] : [];
     }
 }
-$say('Kommentarer: svar-felter: ' . $keys($cm) . ' · VoiceComment: ' . count($voice));
+$say('Kommentarer: svar-felter: ' . implode(', ', Probe::keys($cm)) . ' · VoiceComment: ' . count($voice));
 $recUrl = null;
 foreach ($voice as $i => $d) {
     $match = !array_key_exists('call_id', $d) ? 'mangler'
-        : ((string) (is_scalar($d['call_id']) ? $d['call_id'] : '') === (string) $withRec['id'] ? 'matcher opkaldets id' : 'et andet id');
-    $say('VoiceComment ' . ($i + 1) . ': data-felter: ' . $keys($d) . ' · call_id: ' . $match
+        : ((string) (is_scalar($d['call_id']) ? $d['call_id'] : '') === (string) (is_scalar($withRec['id'] ?? null) ? $withRec['id'] : '')
+            ? 'matcher opkaldets id' : 'et andet id');
+    $say('VoiceComment ' . ($i + 1) . ': data-felter: ' . implode(', ', Probe::keys($d)) . ' · call_id: ' . $match
         . ' · recording_url-vært: ' . (is_string($d['recording_url'] ?? null) ? (Client::hostOf($d['recording_url']) ?: '(ikke https)') : '(ingen)'));
     if ($recUrl === null && is_string($d['recording_url'] ?? null)) {
         $recUrl = $d['recording_url'];
@@ -127,7 +130,7 @@ foreach ($voice as $i => $d) {
 if (is_int($withRec['agent_id'] ?? null)) {
     try {
         $u = $client->getJson('/api/v2/users/' . $withRec['agent_id'] . '.json');
-        $say('Bruger (agent): HTTP 200 · felter: ' . $keys($u['user'] ?? null));
+        $say('Bruger (agent): HTTP 200 · felter: ' . implode(', ', Probe::keys($u['user'] ?? null)));
     } catch (ZendeskError $e) {
         $say('Bruger (agent): ' . $e->getMessage());
     }
@@ -135,18 +138,7 @@ if (is_int($withRec['agent_id'] ?? null)) {
 
 // 5. Optagelsen: statuskæden (kun værter). recording_hosts fra config gælder; ellers stopper den ved første fremmede vært.
 if ($recUrl !== null) {
-    $tmp = Paths::dir('tmp') . '/probe-' . bin2hex(random_bytes(6)) . '.part';
-    try {
-        $type = $client->download($recUrl, $tmp);
-        $say('Optagelse: hentet · Content-Type: ' . $type . ' · ' . (int) @filesize($tmp) . ' bytes');
-    } catch (ZendeskError $e) {
-        $say('Optagelse: ' . $e->getMessage());
-    } finally {
-        @unlink($tmp);
-    }
-    foreach ($client->lastChain as $i => $hop) {
-        $say('  ' . ($i + 1) . '. ' . $hop['host'] . ' → HTTP ' . $hop['status']);
-    }
+    Probe::tryDownload($client, $recUrl, $say);
     $say('  (Står der "ikke godkendt" ved en vært: skriv den i [zendesk] recording_hosts, og kør proben igen.)');
 }
 $say('PROBE: FÆRDIG');
