@@ -115,7 +115,7 @@ final class App
         return match ($route) {
             'home'      => Flags::enabled(CallPages::FLAG) ? CallPages::list($req, $user, $csrf, $this->flash($s))
                 : Response::html(View::home($user, $csrf, $this->flash($s))),
-            'call_show'  => CallPages::show($id, $user, $csrf),
+            'call_show'  => CallPages::show($id, $req, $user, $csrf),
             'call_audio' => CallPages::audio($id, $req, $user),
             'call_txt'   => CallPages::transcript($id, $user),
             'call_zip'   => CallPages::zip($req, $user, $csrf),
