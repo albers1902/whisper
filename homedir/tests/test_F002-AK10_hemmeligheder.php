@@ -74,7 +74,9 @@ $sync = new Sync(new Client($cfg, $bad, $var . '/t2.json'), $cfg, static fn(): i
     $logs[] = $l;
 });
 $r = $sync->run();
-F002Check::that('AK10', $r['error'] === 'Zendesk afviste OAuth-klienten (HTTP 401)', 'afvist klient: kort fejltekst');
+// H002: Zendesks fejlkode vises, men secret'en i error_description er fjernet
+F002Check::that('AK10', $r['error'] === 'Zendesk afviste OAuth-klienten (HTTP 401: invalid_client - [fjernet])'
+    && !str_contains((string) $r['error'], $cfg->clientSecret), 'afvist klient: kort fejltekst uden secret');
 F002Check::that('AK10', !is_file($var . '/t2.json'), 'intet token caches ved en afvisning');
 
 // 5. Download-fejl, UI og logs: ingen secret, token, optagelses-URL eller sti

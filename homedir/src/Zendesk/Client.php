@@ -9,7 +9,7 @@ use Whisper\Paths;
 /**
  * Zendesk-API med OAuth client_credentials (API-tokens er fjernet af Zendesk).
  *
- * - Token: POST https://<sub>.zendesk.com/oauth/tokens (JSON), kun read-scopes, ingen refresh token. Det caches i
+ * - Token: POST https://<sub>.zendesk.com/oauth/tokens (JSON: developer.zendesk.com grant_type_tokens kræver JSON), kun read-scopes, ingen refresh token. Det caches i
  *   var/zendesk-token.json (0600) med udløbstid og hentes igen 60 s før udløb, eller én gang ved 401.
  * - 429: venter Retry-After (højst 60 s, højst 3 gange); ellers RateLimited, så sync stopper pænt.
  * - Alle kald går kun til https://<sub>.zendesk.com. En optagelse må desuden hentes fra eller redirectes til værterne i
@@ -19,6 +19,8 @@ use Whisper\Paths;
 final class Client
 {
     public const TOKEN_LIFETIME = 3600;
+    /** Request-formatet til /oauth/tokens (proben udskriver det). */
+    public const TOKEN_REQUEST_FORMAT = 'JSON';
     private const RENEW_MARGIN = 60;
     private const MAX_RETRY_WAIT = 60;
     private const MAX_429 = 3;
@@ -178,7 +180,8 @@ final class Client
         $data = json_decode($res->body, true);
         $tok = is_array($data) ? ($data['access_token'] ?? null) : null;
         if ($res->status !== 200 || !is_string($tok) || $tok === '') {
-            throw new ZendeskError('Zendesk afviste OAuth-klienten (HTTP ' . $res->status . ')');
+            throw new ZendeskError('Zendesk afviste OAuth-klienten ('
+                . self::oauthErrorText($res->status, $res->body, [$this->cfg->clientId, $this->cfg->clientSecret]) . ')');
         }
         $life = is_array($data) && is_int($data['expires_in'] ?? null) ? $data['expires_in'] : 1800;
         $this->token = $tok;
@@ -189,6 +192,50 @@ final class Client
             ]));
         }
         return $tok;
+    }
+
+    /**
+     * "HTTP 400: invalid_client - <beskrivelse>" ud fra Zendesks OAuth-fejlsvar (RFC 6749 §5.2: error, error_description).
+     * Teksten ender i proben, loggen, sync_state.last_error og på siden, så den renses (ZendeskError-reglen): de kendte
+     * hemmeligheder og alt token-lignende fjernes, kun printbar ASCII, højst 200 tegn. Er svaret ikke JSON (fx en
+     * HTML-side), vises kun HTTP-status.
+     *
+     * @param list<string> $secrets client_id, client_secret
+     */
+    public static function oauthErrorText(int $status, string $body, array $secrets): string
+    {
+        $head = 'HTTP ' . $status;
+        $data = json_decode($body, true);
+        if (!is_array($data)) {
+            return $head;
+        }
+        $parts = [];
+        foreach (['error', 'error_description'] as $k) {
+            if (is_string($data[$k] ?? null) && trim($data[$k]) !== '') {
+                $parts[] = $data[$k];
+            }
+        }
+        if ($parts === []) {
+            return $head;
+        }
+        $text = implode(' - ', $parts);
+        // Hemmelighederne først (råt), så rensningen af tegn ikke kan skille dem ad. Under 4 tegn er ikke en hemmelighed,
+        // og en så kort værdi ville ødelægge almindelige ord.
+        $known = array_values(array_filter($secrets, static fn(string $v): bool => strlen($v) >= 4));
+        $text = str_replace($known, '[fjernet]', $text);
+        $text = (string) preg_replace('/[^\x20-\x7E]+/', ' ', $text);
+        $text = str_replace($known, '[fjernet]', $text);
+        // Navngivne felter med værdi (client_secret=…, "access_token": "…", Bearer …)
+        $text = (string) preg_replace(
+            '/\b(client_id|client_secret|secret|access_token|refresh_token|token|password|authorization)(["\']?\s*[:=]\s*["\']?)[^\s"\',;]+/i',
+            '$1$2[fjernet]', $text);
+        $text = (string) preg_replace('/\b(bearer|basic)\s+[^\s"\',;]+/i', '$1 [fjernet]', $text);
+        // Token-lignende ord: 16+ tegn med et ciffer, eller 32+ tegn (base64/hex/JWT). Fejlkoder som
+        // unsupported_grant_type (22 tegn, ingen cifre) bevares.
+        $text = (string) preg_replace('/(?=[A-Za-z0-9_\-+\/=.]*\d)[A-Za-z0-9_\-+\/=.]{16,}|[A-Za-z0-9_\-+\/=.]{32,}/', '[fjernet]', $text);
+        $text = trim((string) preg_replace('/\s+/', ' ', $text));
+        $text = $head . ': ' . $text;
+        return strlen($text) > 200 ? substr($text, 0, 197) . '...' : $text;
     }
 
     /** Skifter klient-id eller scope, gælder et cachet token ikke længere. Hash, så id'et ikke står i filen. */
