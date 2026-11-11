@@ -1,0 +1,16 @@
+<!-- FILE_VERSION: 5.42 — SKABELON. Team Lead skriver den til launched/compliance/SECURITY-OVERVIEW.md, hvis den mangler. Svar-bank til kunders sikkerhedsspørgeskemaer. Kun fakta, der kan peges på (fil, kontrol, dato). Gennemgås kvartalsvis og ved hver tier 1. -->
+# Sikkerhedsoversigt — <projekt>
+Sidst gennemgået: ÅÅÅÅ-MM-DD
+
+| Område | Svar (kort, sandt) | Bevis (fil / kontrol / dato) |
+|---|---|---|
+| Hosting og datalokation | | |
+| Kryptering i transit / i hvile | | |
+| Adgangsstyring og adgangsregister | | launched/compliance/ACCESS.md |
+| Ændringsstyring (CI, review, release) | | shared/LIFECYCLE.md, CI-kørsler |
+| Hemmeligheder | | gitleaks i CI, config uden for git |
+| Backup og gendannelse (RPO/RTO) | | /health: backup_last_ok, restore_last_ok, restore_rto_min |
+| Overvågning og hændelser | | cron/monitor.sh, incidents/ |
+| Persondata (GDPR) | | ROPA.md, DPIA.md, SUBPROCESSORS.md |
+| Sårbarhedsscanning | | Semgrep, composer audit i CI |
+| Penetrationstest | | <dato / ikke udført> |

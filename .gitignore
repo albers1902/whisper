@@ -1,0 +1,55 @@
+# Frameworkets krav til .gitignore (v5.4). Projektets .gitignore SKAL indeholde mindst disse linjer.
+# Team Lead tilføjer manglende linjer (CLAUDE.md Trin 0, tjek 6) — kun tilføj, aldrig fjern.
+# Mønstrene er forankrede med / : på Windows (core.ignorecase) rammer "logs/" også src/Logs/.
+# Secrets - aldrig i git
+**/config/*.ini
+!**/config/features.ini
+**/config/*.env
+**/config/deployed_sha.php
+**/config/github.token
+*.key
+*.pem
+*.p12
+*.pfx
+.env
+# Runtime
+/logs/
+/homedir/logs/
+/homedir/var/*
+!/homedir/var/.htaccess
+*.log
+# Claude Code
+.claude/worktrees/
+.claude/settings.local.json
+# Genereret / afhængigheder
+/homedir/docs/
+/junit.xml
+/homedir/vendor/
+/vendor/
+/node_modules/
+/homedir/node_modules/
+.DS_Store
+Thumbs.db
+# Rester fra kopien af master-mappen — committes aldrig
+/_claude/
+/_claude - Copy/
+/_indifferent/
+/_til-sysadmin/
+/_framework/
+/_deleted*/
+/KOPIER-DETTE*/
+/tmp/
+/mytools-studio/
+/Claude outputs/
+/launched/homedir/
+/shared/FRAMEWORK-REVISION-*.md
+/shared/SYSTEM_VERSION.md
+/PROJECT_INSTRUCTIONS_v4.1.md
+/UPGRADE_PROMPT.md
+/coworker-framework-*.zip
+# Linjer, et projekt må fjerne fra sin .gitignore (erstattet af de forankrede ovenfor). CI læser dem.
+#erstattet: logs/
+#erstattet: var/
+#erstattet: vendor/
+#erstattet: node_modules/
+#erstattet: /docs/

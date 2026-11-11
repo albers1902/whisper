@@ -1,0 +1,17 @@
+<!-- FILE_VERSION: 5.42 — SKABELON. Team Lead skriver launched/compliance/ACCESS.md, hvis den mangler (overskriv aldrig). Ingen hemmeligheder her — kun hvem/hvad har adgang. -->
+# Adgangsregister — <projekt>
+
+Én række pr. konto eller nøgle med adgang til kode, server, database eller kundedata.
+`bash shared/report.sh check` melder rækker, der ikke er gennemgået de sidste 90 dage
+(datoen i sidste kolonne). Rotation skrives som en ny dato, ikke som en ny række.
+
+| System | Konto / nøgle | Rolle / rettigheder | Ejer | Oprettet | Roteret | Gennemgået |
+|---|---|---|---|---|---|---|
+| GitHub | <bruger> | admin | <ejer> | ÅÅÅÅ-MM-DD | — | ÅÅÅÅ-MM-DD |
+| GitHub | token "agenter" (fine-grained) | Contents/PR/Issues RW, Commit statuses R | <ejer> | ÅÅÅÅ-MM-DD | ÅÅÅÅ-MM-DD | ÅÅÅÅ-MM-DD |
+| Server | token `config/github.token` (deploy, CI, monitor) | Contents R, Commit statuses/PR/Issues RW | <ejer> | ÅÅÅÅ-MM-DD | ÅÅÅÅ-MM-DD | ÅÅÅÅ-MM-DD |
+| Server | Linux-bruger <p> | shell | <ejer> | ÅÅÅÅ-MM-DD | — | ÅÅÅÅ-MM-DD |
+| Database | <db-bruger> | læs/skriv <db> | <ejer> | ÅÅÅÅ-MM-DD | ÅÅÅÅ-MM-DD | ÅÅÅÅ-MM-DD |
+| Database (DEV) | <projekt>_ci | kun testdatabasen <projekt>_ci | <ejer> | ÅÅÅÅ-MM-DD | ÅÅÅÅ-MM-DD | ÅÅÅÅ-MM-DD |
+| Backup | restic-kodeord | læs alle backups | <ejer> | ÅÅÅÅ-MM-DD | — | ÅÅÅÅ-MM-DD |
+| <ekstern API> | <nøgle> | <scope> | <ejer> | ÅÅÅÅ-MM-DD | ÅÅÅÅ-MM-DD | ÅÅÅÅ-MM-DD |

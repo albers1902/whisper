@@ -1,0 +1,22 @@
+<!-- FILE_VERSION: 5.42 — SKABELON. Team Lead skriver den til launched/RUNBOOK.md, hvis den mangler. Én sektion pr. situation. En engineer skriver, mennesket afprøver; datoen for sidste afprøvning står ved hver. -->
+# Runbook — <projekt>
+
+## Deploy fejlet (alarm fra deploy.sh)
+Sidst afprøvet: ÅÅÅÅ-MM-DD
+1. Se `logs/deploy.log` og `logs/incidents.log` på serveren.
+2. Koden er allerede rullet tilbage automatisk. Migrationer er IKKE — se `bash shared/report.sh restore <tag>`.
+3. En fejlet commit prøves ikke igen af sig selv. Normal vej: en rettelse (ny commit på main). Var fejlen
+   forbigående (netværk, ekstern tjeneste): `~/cron/deploy.sh <dev|test|stable> retry` i miljøets hjemmemappe.
+
+## Kø / cron hænger
+Sidst afprøvet: ÅÅÅÅ-MM-DD
+
+## Ekstern tjeneste nede (<navn>)
+Sidst afprøvet: ÅÅÅÅ-MM-DD
+
+## Nøgle eller token kompromitteret
+Sidst afprøvet: ÅÅÅÅ-MM-DD
+1. Rotér i udbyderens konsol. 2. Opdatér config på serveren. 3. Ny række-dato i ACCESS.md. 4. Incident (nextid I).
+
+## Gendannelse fra backup
+Sidst afprøvet: ÅÅÅÅ-MM-DD (automatisk restore-test: /health restore_last_ok)

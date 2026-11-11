@@ -1,0 +1,6 @@
+<!-- FILE_VERSION: 5.42 — SKABELON. Team Lead skriver den til launched/compliance/THREAT-MODEL.md, hvis den mangler. STRIDE pr. tillidsgrænse. security-critic opdaterer ved tier 1 (auth, eksterne modtagere, delte kontrakter). -->
+# Trusselsmodel — <projekt>
+Sidst gennemgået: ÅÅÅÅ-MM-DD
+
+| Tillidsgrænse | Trussel (S/T/R/I/D/E) | Konsekvens | Kontrol i dag | Rest / H-nummer |
+|---|---|---|---|---|

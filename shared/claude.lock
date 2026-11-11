@@ -1,0 +1,10 @@
+# coworker-framework 5.42 — guard og agenter (_claude/). Genereret 2026-11-10. Rettes aldrig i hånden.
+879de758056921646853996a73870708bca613e58972b31c19304221d69aa7b2  agents/fullstack-engineer.md
+c81c6684cd4818f58eb102def86a19142633aa20a23278fe73e06bfdc8369827  agents/graphic-designer.md
+3e8ec7e0a7f8b4b3647ce3102c4041696f421547abf857af8c403b67bb83d2aa  agents/qa-critic.md
+42b52282ed48a7af60b6da3616aab087624905d58ea7f0fe840d2794c4fa22fd  agents/security-critic.md
+348028e26eb9ccc3afd7b376b42108f60083b1c0dbed8f7e79dd2a152accc2a4  agents/sysadmin.md
+32b5880fcb9a13f43185a9f4a2f539bb1e4be2749f9a9f2137bd4730f37ef66e  agents/tester.md
+dacb71f63f438ae12c8480d077d8e754739130760b5e97c3ed7736794701af2a  agents/ui-ux-designer.md
+7c570efe5fcebbdc73afa3e97a82dc01704aa3d836d874c94bc7b65bdc52616f  hooks/guard.ps1
+ccc5425e16778508e3b2c88ac9c09fa0b9c48946f1d01804a0ea5cf8188188d1  settings.json

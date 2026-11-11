@@ -1,0 +1,6 @@
+<!-- FILE_VERSION: 5.42 — SKABELON. Team Lead skriver den til launched/compliance/SUBPROCESSORS.md, hvis den mangler (overskriv aldrig). Opdateres i samme PR som en ny ekstern modtager (tier 1, LIFECYCLE §4). -->
+# Underdatabehandlere og eksterne modtagere — <projekt>
+
+| Modtager | Formål | Hvilke data | Land / overførselsgrundlag | DPA indgået | Fra dato | Til dato | ID |
+|---|---|---|---|---|---|---|---|
+| <fx hosting-udbyder> | Drift | Alle | DK/EU | ja (dato) | ÅÅÅÅ-MM-DD | — | — |

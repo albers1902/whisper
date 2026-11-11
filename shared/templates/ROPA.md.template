@@ -1,0 +1,6 @@
+<!-- FILE_VERSION: 5.42 — SKABELON. Team Lead skriver den til launched/compliance/ROPA.md, hvis den mangler. Fortegnelse over behandlingsaktiviteter (GDPR art. 30). Udfyldes af mennesket med Team Lead; juridisk ansvar er den dataansvarliges. -->
+# Fortegnelse over behandlinger — <projekt>
+Rolle: dataansvarlig / databehandler for <kunde>
+
+| Behandling | Formål | Kategorier af registrerede | Kategorier af data | Modtagere | Overførsel til tredjeland | Slettefrist | Sikkerhed (henvisning) |
+|---|---|---|---|---|---|---|---|

@@ -1,0 +1,3 @@
+# FILE_VERSION: 5.42 — UDGÅET. GitHub Actions bruges ikke længere (koster penge). CI kører på DEV-serveren
+# (shared/install/ci.sh → homedir/cron/ci.sh), overvågning via shared/install/monitor.sh. `report.sh install` fjerner
+# .github/workflows/monitor.yml fra projektet.
