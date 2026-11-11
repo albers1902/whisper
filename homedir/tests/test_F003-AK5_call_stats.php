@@ -39,7 +39,7 @@ F003Check::that('AK5', ($w['total'] ?? 0) === 1, 'vintertid: 23:30 UTC tæller p
 
 // Lofter og validering
 [$e1, $t1] = f003_result($m->tool('call_stats', ['from' => '2025-01-01', 'to' => '2026-01-02']));
-F003Check::that('AK5', $e1 && str_contains($t1, 'højst 366 dage'), 'over 366 dage: isError');
+F003Check::that('AK5', $e1 && str_contains($t1, 'Perioden må højst være 366 dage'), 'over 366 dage: isError');
 [$e2] = f003_result($m->tool('call_stats', ['from' => '2025-01-02', 'to' => '2026-01-02']));
 F003Check::that('AK5', !$e2, 'præcis 366 dage er tilladt');
 F003Check::that('AK5', f003_result($m->tool('call_stats', ['from' => '2026-10-06', 'to' => '2026-10-05']))[0], 'from efter to: isError');
