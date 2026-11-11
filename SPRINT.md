@@ -12,8 +12,13 @@ Status: `bash shared/report.sh status` og `bash shared/report.sh check`. Ingen t
 - H001: installation af Coworker Framework 5.42 (`hotfix/H001-framework-5.42`). Engineer arbejder på install,
   coworker.ini og precheck.
 - LIFECYCLE §12-gaten: serveropsætning af DEV efter merge af H001. STABLE venter (ejeren 2026-11-11).
-  - Ved serveropsætningen (QA H001 v1 fund 4): bekræft, at `curl -i https://dev.whisper.xanouso.com/health` uden `-L` giver
-    200 JSON (`.htaccess` kræver AllowOverride og mod_rewrite). Udfyld DRIFT.md og ACCESS.md med rigtige konti og datoer.
+  - DEV er sat op 2026-11-11 (§3a trin 0–8, S-20261111-1 til -4). Kontrol-pre-release `ctrl-2026.11.11-1` er udgivet,
+    og `/health` på DEV svarer `ok` uden redirect, så QA H001 v1 fund 4 er afklaret.
+  - Mangler: DRIFT.md og ACCESS.md skal udfyldes med rigtige konti og datoer (DECISIONS #6), og backup-beviset kommer
+    efter første nat.
+- Ejerskab af logfilerne i `logs/`: ejeren kørte `chown -R whisperdev:whisperdev logs` som root (DECISIONS #7). Til
+  sysadmin-siden: `sitectl new` lægger root-ejede Apache- og FPM-logfiler i `logs/`, og det er ikke besluttet i
+  kontrakten. Hold øje med, om logrotate laver dem root-ejede igen (`server.sh check dev`).
 - Senere H (ikke blokerende): `/health` rate limit/cache (DECISIONS #5); `migrate.php --status` uden lås (QA H001 v2 A).
 
 ## Besluttet (ejeren 2026-11-11, skrives i DECISIONS.md i første docs-PR)
