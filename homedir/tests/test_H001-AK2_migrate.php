@@ -59,6 +59,28 @@ $check($rows === count($files), "_migrations har én række pr. migration ($rows
 $check((int) DB::scalar("SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = 'health_probe'") === 1,
     'health_probe findes');
 
+// 3b) En allerede kørt migration, der er ændret (sha256-mismatch): exit ≠ 0, og intet køres. Ændringen sker i en
+//     kopi i en midlertidig mappe — repoets migrationer røres aldrig.
+$tmpMig = sys_get_temp_dir() . '/whisper_mig_changed_' . bin2hex(random_bytes(4));
+mkdir($tmpMig, 0700, true);
+foreach ($files as $f) {
+    copy($f, $tmpMig . '/' . basename($f));
+}
+$first = $files !== [] ? basename($files[0]) : '';
+$check($first !== '' && file_put_contents($tmpMig . '/' . $first, "\n-- ændret efter kørsel\n", FILE_APPEND) !== false,
+    "kopien af $first er ændret");
+$before = (int) DB::scalar('SELECT COUNT(*) FROM _migrations');
+[$code, $out] = $run(['--home=' . $home, '--dir=' . $tmpMig]);
+$check($code !== 0, "ændret kørt migration: exit ≠ 0 (fik $code)");
+$check(str_contains($out, $first), 'fejlbeskeden nævner den ændrede fil');
+$check((int) DB::scalar('SELECT COUNT(*) FROM _migrations') === $before, '_migrations er uændret efter afvisningen');
+$check(hash_file('sha256', $migDir . '/' . $first) === (string) DB::scalar('SELECT checksum FROM _migrations WHERE filename = ?', [$first]),
+    "repoets $first er uændret (checksum som kørt)");
+foreach (glob($tmpMig . '/*') ?: [] as $f) {
+    @unlink($f);
+}
+@rmdir($tmpMig);
+
 // 4) Headers og down-filer
 $check($files !== [], 'der findes migrationer');
 foreach ($files as $f) {
