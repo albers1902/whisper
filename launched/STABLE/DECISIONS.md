@@ -72,6 +72,20 @@ F002-S6 · Accepteret risiko: `faster-whisper==1.1.1` er pinnet, men de transiti
 revision er ikke hash-låst (LOW, security-critic F002_v1). Transcription kører med `HF_HUB_OFFLINE=1`. Hash-låsning
 laves før STABLE.
 Udløber: 2027-02-09
+Opdateret 2026-11-11: H003 har låst alle Python-pakker med hashes (`cron/whisper-requirements.txt`, `--require-hashes`)
+og modelrevisionen på commit-sha. Det, der er tilbage, står i #18 og #19.
+
+## #18 — 2026-11-11 — H003-S1: ulåst modelsnapshot ryddes ikke ved afvist revision
+H003-S1 · Accepteret risiko: `whisper-setup.sh` henter `main` og afviser bagefter, hvis den ikke er den låste commit.
+Den ulåste snapshot og `refs/main` bliver liggende, men markøren skrives ikke, så transcription bruger dem ikke (LOW,
+security-critic H003_v1). Oprydning ved afvisning laves i et senere H.
+Udløber: 2027-02-09
+
+## #19 — 2026-11-11 — H003-S2: eksisterende venv verificeres kun på versioner
+H003-S2 · Accepteret risiko: et eksisterende venv sammenlignes med låsen på versioner, ikke filhashes (LOW,
+security-critic H003_v1). Det kræver allerede skriveadgang som sitets bruger. Skal det genopbygges, slettes
+`~/var/whisper/venv`, og setup køres igen.
+Udløber: 2027-02-09
 
 ## #16 — 2026-11-11 — F002: retention og sletning af opkald mangler
 F002-S4 · Accepteret risiko: der er endnu ingen slettepolitik for optagelser og transcripts, og DEV har ingen
