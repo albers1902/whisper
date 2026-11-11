@@ -54,6 +54,7 @@ F002Check::that('AK5', $rows($r) === 24, 'periode én dag i dansk tid (24, fik '
 F002Check::that('AK5', $rows(f002_get($c, '/', ['fra' => '2026-10-03'])) === 9, 'kun fra-dato (9)');
 F002Check::that('AK5', $rows(f002_get($c, '/', ['til' => '2026-10-01'])) === 22, 'kun til-dato (22)');
 F002Check::that('AK5', $rows(f002_get($c, '/', ['fra' => '2026-13-45'])) === 50, 'ugyldig dato ignoreres');
+F002Check::that('AK5', Calls::filter(['til' => '2026-02-30'])['til'] === '', 'dato, der ikke findes, ignoreres');
 
 // Fritekst i transcripts (FULLTEXT ved ord på mindst 3 tegn, ellers LIKE)
 $ids = array_map(static fn(array $r): int => (int) $r['id'], \Whisper\DB::all('SELECT id FROM calls ORDER BY started_at LIMIT 3'));

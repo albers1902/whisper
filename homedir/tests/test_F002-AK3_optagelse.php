@@ -49,7 +49,7 @@ F002Check::that('AK3', $auth('https://media.rec-storage.test/') === [false], 'Au
 F002Check::that('AK3', $http->to('https://169.254.169.254') === [], 'redirect til en ikke-godkendt vært følges ikke');
 F002Check::that('AK3', $http->to('https://evil.test') === [], 'en optagelse på en fremmed vært hentes ikke');
 $e = DB::all('SELECT audio_status, audio_attempts, audio_error FROM calls WHERE id = ?', [$evil])[0];
-F002Check::that('AK3', $e['audio_status'] === 'fejlet' && str_contains((string) $e['audio_error'], 'ikke godkendt'), 'fremmed vært: fejlet med kort tekst');
+F002Check::that('AK3', $e['audio_status'] === 'fejlet' && str_contains((string) $e['audio_error'], 'ikke er godkendt'), 'fremmed vært: fejlet med kort tekst');
 
 // Fejlet download prøves igen ved næste kørsel, højst 5 gange i alt
 for ($i = 0; $i < 6; $i++) {

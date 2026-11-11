@@ -26,8 +26,11 @@ final class Calls
     public static function filter(array $q): array
     {
         $s = static fn(string $k): string => is_string($q[$k] ?? null) ? trim($q[$k]) : '';
-        $date = static fn(string $v): string => preg_match('/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/', $v) === 1
-            && DateTimeImmutable::createFromFormat('!Y-m-d', $v) !== false ? $v : '';
+        // createFromFormat accepterer 2026-13-45 (løber over), så datoen skal give sig selv tilbage
+        $date = static function (string $v): string {
+            $d = preg_match('/^[0-9]{4}-[0-9]{2}-[0-9]{2}$/', $v) === 1 ? DateTimeImmutable::createFromFormat('!Y-m-d', $v) : false;
+            return $d !== false && $d->format('Y-m-d') === $v ? $v : '';
+        };
         $side = ctype_digit($s('side')) ? (int) $s('side') : 1;
         return [
             'fra'     => $date($s('fra')),
