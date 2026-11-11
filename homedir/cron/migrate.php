@@ -60,23 +60,47 @@ if ($migrationsDir === false || !is_dir($migrationsDir)) {
 }
 
 $pdo = DB::pdo();
-$pdo->exec(
-    'CREATE TABLE IF NOT EXISTS _migrations (
-        id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
-        filename     VARCHAR(255) NOT NULL UNIQUE,
-        checksum     CHAR(64) NOT NULL,
-        executed_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-        execution_ms INT UNSIGNED
-    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
-);
+
+// To samtidige kørsler (fx deploy + manuel) må aldrig køre samme migration to gange. Låsen hører til forbindelsen
+// og slippes, når processen slutter.
+if ((int) DB::scalar("SELECT GET_LOCK('whisper_migrate', 0)") !== 1) {
+    fwrite(STDERR, "migrate.php: en anden kørsel er i gang (GET_LOCK whisper_migrate) — stopper.\n");
+    exit(1);
+}
+
+$hasTable = (int) DB::scalar(
+    "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema = DATABASE() AND table_name = '_migrations'"
+) === 1;
+if (!$hasTable && !$status && !$dryRun) {   // --status/--dry-run skriver intet, heller ikke tabellen
+    $pdo->exec(
+        'CREATE TABLE IF NOT EXISTS _migrations (
+            id           INT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+            filename     VARCHAR(255) NOT NULL UNIQUE,
+            checksum     CHAR(64) NOT NULL,
+            executed_at  DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            execution_ms INT UNSIGNED
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci'
+    );
+    $hasTable = true;
+}
 
 $applied = [];
-foreach (DB::all('SELECT filename, checksum FROM _migrations') as $row) {
-    $applied[(string) $row['filename']] = (string) $row['checksum'];
+if ($hasTable) {
+    foreach (DB::all('SELECT filename, checksum FROM _migrations') as $row) {
+        $applied[(string) $row['filename']] = (string) $row['checksum'];
+    }
 }
 
 $files = glob($migrationsDir . '/[0-9]*.sql') ?: [];
 sort($files, SORT_STRING);
+
+// En kørt migration uden fil er en advarsel, ikke en fejl: skemaet findes, men historikken er ufuldstændig
+$present = array_flip(array_map('basename', $files));
+foreach (array_keys($applied) as $name) {
+    if (!isset($present[$name])) {
+        fwrite(STDERR, "ADVARSEL: {$name} er kørt (står i _migrations), men filen findes ikke i {$migrationsDir}.\n");
+    }
+}
 
 $pending = [];
 $changed = [];
@@ -109,13 +133,23 @@ if ($status || $dryRun) {
     exit(0);
 }
 
+// Flersætningsfiler: exec() melder kun fejl fra første sætning. query() + nextRowset() under ERRMODE_EXCEPTION
+// kaster for hver sætning. Emulerede prepares, så hele filen sendes som tekst (server-side prepare tager kun én sætning).
+$pdo->setAttribute(PDO::ATTR_EMULATE_PREPARES, true);
+
 $ran = 0;
 foreach ($pending as $m) {
     echo "-> {$m['name']} ... ";
     $start = microtime(true);
     try {
         // DDL auto-committer i MariaDB, så en transaktion ville ikke rulle noget tilbage: stop ved første fejl
-        $pdo->exec((string) file_get_contents($m['path']));
+        $st = $pdo->query((string) file_get_contents($m['path']));
+        if ($st !== false) {
+            do {
+                // hver sætnings resultat hentes; en fejl i en senere sætning kaster her
+            } while ($st->nextRowset());
+            $st->closeCursor();
+        }
     } catch (\Throwable $e) {
         echo "FEJL\n";
         fwrite(STDERR, "Migration {$m['name']} fejlede: " . $e->getMessage() . "\n");

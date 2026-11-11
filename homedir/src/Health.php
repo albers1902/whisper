@@ -55,6 +55,8 @@ final class Health
      */
     private static function probeWrite(PDO $conn): bool
     {
+        // /health er offentlig og tager rækkelåsen på id 1: samtidige kald skal fejle hurtigt, ikke køe i 50 s
+        $conn->exec('SET SESSION innodb_lock_wait_timeout = 3');
         $conn->beginTransaction();
         try {
             $conn->exec('INSERT INTO health_probe (id, beat_at) VALUES (1, NOW(6))

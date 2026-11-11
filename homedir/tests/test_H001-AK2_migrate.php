@@ -81,6 +81,48 @@ foreach (glob($tmpMig . '/*') ?: [] as $f) {
 }
 @rmdir($tmpMig);
 
+// 3c) Fejl i en SENERE sætning i en flersætningsfil: exit ≠ 0 og ingen række i _migrations for filen (QA fund 1).
+//     Kopi i en midlertidig mappe — repoets migrationer røres aldrig.
+$tmpMulti = sys_get_temp_dir() . '/whisper_mig_multi_' . bin2hex(random_bytes(4));
+mkdir($tmpMulti, 0700, true);
+foreach ($files as $f) {
+    copy($f, $tmpMulti . '/' . basename($f));
+}
+$multi = '9990_v0.0.0_h001_multi_fejl.sql';
+file_put_contents($tmpMulti . '/' . $multi,
+    "CREATE TABLE IF NOT EXISTS h001_multi_ok (id INT UNSIGNED NOT NULL PRIMARY KEY) ENGINE=InnoDB;\n"
+    . "INSERT INTO h001_tabel_findes_ikke (id) VALUES (1);\n");
+[$code, $out] = $run(['--home=' . $home, '--dir=' . $tmpMulti]);
+$check($code !== 0, "fejl i anden sætning: exit ≠ 0 (fik $code)");
+$check(str_contains($out, $multi), 'fejlbeskeden nævner flersætningsfilen');
+$check((int) DB::scalar('SELECT COUNT(*) FROM _migrations WHERE filename = ?', [$multi]) === 0,
+    'flersætningsfilen er IKKE registreret i _migrations');
+DB::exec('DROP TABLE IF EXISTS h001_multi_ok');
+
+// 3d) --status skriver intet og advarer om en kørt migration, hvis fil mangler (QA fund 3)
+$tmpEmpty = sys_get_temp_dir() . '/whisper_mig_empty_' . bin2hex(random_bytes(4));
+mkdir($tmpEmpty, 0700, true);
+$before = (int) DB::scalar('SELECT COUNT(*) FROM _migrations');
+[$code, $out] = $run(['--home=' . $home, '--dir=' . $tmpEmpty, '--status']);
+$check($code === 0, "--status: exit 0 (fik $code)");
+$check($first !== '' && str_contains($out, 'ADVARSEL') && str_contains($out, $first),
+    "--status advarer om kørt $first uden fil");
+$check((int) DB::scalar('SELECT COUNT(*) FROM _migrations') === $before, '--status skriver intet i _migrations');
+@rmdir($tmpEmpty);
+
+// 3e) To samtidige kørsler: holder en anden forbindelse låsen, afvises kørslen med exit ≠ 0 (QA fund 3)
+$check((int) DB::scalar("SELECT GET_LOCK('whisper_migrate', 0)") === 1, 'testen tager låsen whisper_migrate');
+[$code, $out] = $run(['--home=' . $home, '--dir=' . $migDir]);
+$check($code !== 0 && str_contains($out, 'whisper_migrate'), "migrate.php afvises, mens låsen holdes (exit $code)");
+DB::scalar("SELECT RELEASE_LOCK('whisper_migrate')");
+[$code] = $run(['--home=' . $home, '--dir=' . $migDir]);
+$check($code === 0, "efter låsen er sluppet: exit 0 (fik $code)");
+
+foreach (glob($tmpMulti . '/*') ?: [] as $f) {
+    @unlink($f);
+}
+@rmdir($tmpMulti);
+
 // 4) Headers og down-filer
 $check($files !== [], 'der findes migrationer');
 foreach ($files as $f) {
