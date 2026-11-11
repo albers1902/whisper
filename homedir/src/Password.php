@@ -10,12 +10,6 @@ final class Password
     /** Uden 0/O, 1/l/I, så engangskoden kan læses højt eller skrives af. */
     private const ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789';
 
-    /**
-     * Bruges i stedet for brugerens hash, når e-mailen ikke findes, så svartiden ikke afslører, om den findes.
-     * Cost 12 = PHP 8.4's standard for PASSWORD_DEFAULT. Hashen er af en tilfældig streng, ingen kender.
-     */
-    public const DUMMY_HASH = '$2y$12$zE7DlNHG4CX2Ok9v3SUDmuHhBTryH.tZF1rIzQOFlhCqB1Z2CgkGi';
-
     /** Fejlbesked på dansk, eller null hvis adgangskoden er gyldig. Kravet er kun længden (spec F001). */
     public static function problem(string $password): ?string
     {

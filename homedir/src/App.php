@@ -171,11 +171,18 @@ final class App
         }
 
         $user = $email !== '' ? Users::findByEmail($email) : null;
-        // password_verify køres altid (dummy-hash for ukendt e-mail), så svartiden ikke afslører, om e-mailen findes
-        $hash = $user !== null ? (string) $user['password_hash'] : Password::DUMMY_HASH;
-        $ok = password_verify($password, $hash) && $user !== null && (int) $user['active'] === 1;
+        if ($user === null) {
+            // Ukendt e-mail: én bcrypt-beregning med standard-cost som for en rigtig bruger, så svartiden ikke
+            // afslører, om e-mailen findes (en hash koster det samme som en verify)
+            Password::hash(str_replace("\0", '', $password));   // bcrypt afviser NUL-tegn
+
+            LoginThrottle::record($email, $req->ip, false, $now);
+            return Response::html(View::login(Csrf::token($s), self::BAD_LOGIN, $email));
+        }
+        $hash = (string) $user['password_hash'];
+        $ok = password_verify($password, $hash) && (int) $user['active'] === 1;
         LoginThrottle::record($email, $req->ip, $ok, $now);
-        if (!$ok || $user === null) {
+        if (!$ok) {
             return Response::html(View::login(Csrf::token($s), self::BAD_LOGIN, $email));
         }
 
