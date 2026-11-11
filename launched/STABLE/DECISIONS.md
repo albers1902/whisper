@@ -19,6 +19,12 @@ transcription må køre på driftsmaskinen. Jobbet kører som ét job ad gangen 
 Ejeren: projektet kører kun på DEV (`dev.whisper.xanouso.com`), indtil ejeren beslutter andet. STABLE sættes ikke op
 nu. `coworker.ini` har health-URL'en for stable, så den er klar, når det sker.
 
+## #7 — 2026-11-11 — Logfilerne i logs/ ejes af whisperdev på DEV
+Ejeren kørte `chown -R whisperdev:whisperdev logs` som root i `/home/whisperdev` på prøvebanen. Det skete, fordi
+`sitectl new` havde lagt `error.log`, `access.log` og `fpm-slow.log` som root-ejede filerne, og serverkontrakten ikke
+har besluttet, hvem der skal eje dem (sysadmin-subagenten: "ikke besluttet"). Hvis logrotate opretter filerne som
+root igen, melder `server.sh check dev` det. Sagen er sendt videre til sysadmin-siden (SPRINT.md).
+
 ## #5 — 2026-11-11 — H001: /health uden rate limit eller cache
 H001 · Accepteret risiko: `/health` er offentlig og laver en DB-skriveprøve ved hvert kald uden rate limit eller cache.
 Samtidige kald kan give falsk `degraded` (LOW, security-critic H001_v1 og v2). Kun driftsforstyrrelse, og der er ingen
