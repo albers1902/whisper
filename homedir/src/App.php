@@ -112,8 +112,8 @@ final class App
             'home'      => Flags::enabled(CallPages::FLAG) ? CallPages::list($req, $user, $csrf, $this->flash($s))
                 : Response::html(View::home($user, $csrf, $this->flash($s))),
             'call_show'  => CallPages::show($id, $user, $csrf),
-            'call_audio' => CallPages::audio($id, $req),
-            'call_txt'   => CallPages::transcript($id),
+            'call_audio' => CallPages::audio($id, $req, $user),
+            'call_txt'   => CallPages::transcript($id, $user),
             'call_zip'   => CallPages::zip($req, $user, $csrf),
             'konto'     => $method === 'POST' ? $this->accountPost($req, $s, $user, $now)
                 : Response::html(View::account($user, $csrf, null, $this->flash($s))),

@@ -115,4 +115,26 @@ foreach ($logs as $l) {
 F002Check::that('AK10', str_contains(f002_get($c, '/opkald/' . $id)->body, 'optagelsen ligger på en vært, der ikke er godkendt'),
     'fejlen ses på opkaldet uden værtsnavn');
 
+// Adgangsloggen (security S4): én linje pr. hentning af lyd og transcript med bruger-id og opkalds-id, ingen PII
+$uid = (int) \Whisper\Users::findByEmail('bruger@f002.test')['id'];
+@unlink($var . '/adgang.log');
+f002_get($c, '/opkald/' . $ok . '/lyd');
+f002_get($c, '/opkald/' . $ok . '/lyd', [], ['range' => 'bytes=0-99']);
+f002_get($c, '/opkald/' . $ok . '/lyd', [], ['range' => 'bytes=100-199']);   // afspilleren spoler: ingen ny linje
+f002_get($c, '/opkald/' . $ok . '/transcript');
+$lines = file($var . '/adgang.log', FILE_IGNORE_NEW_LINES) ?: [];
+$want = ["bruger=$uid lyd opkald=$ok", "bruger=$uid lyd opkald=$ok", "bruger=$uid transcript opkald=$ok"];
+F002Check::that('AK10', array_map(static fn(string $l): string => substr($l, 21), $lines) === $want,
+    'adgang.log: lyd (hel og første interval) og transcript med bruger- og opkalds-id: ' . implode(' | ', $lines));
+F002Check::that('AK10', preg_match('/^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9:]{8}Z /', $lines[0] ?? '') === 1, 'linjerne har tidsstempel');
+$al = implode("\n", $lines);
+F002Check::that('AK10', !str_contains($al, '+45') && !str_contains($al, 'Agent') && !str_contains($al, 'recordings') && !str_contains($al, 'bruger@'),
+    'ingen telefonnumre, navne, e-mails eller stier i adgangsloggen');
+
+// En rate limit vises som information, ikke som rød fejl (QA F-8)
+DB::exec("UPDATE sync_state SET last_error = 'rate limit (429) — Zendesk bad os vente; hentningen fortsætter ved næste kørsel'");
+$home = f002_get($c, '/')->body;
+F002Check::that('AK10', str_contains($home, '<p class="msg info">Zendesk bad os vente (rate limit).') && !str_contains($home, 'msg error'),
+    '429 vises som info');
+
 F002Check::done();

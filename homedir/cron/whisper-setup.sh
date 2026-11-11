@@ -28,6 +28,7 @@ esac
 
 command -v python3 >/dev/null || { echo "✘ python3 mangler — maskinens sag: spørg sysadmin (SERVERKONTRAKT)"; exit 1; }
 mkdir -p var/whisper/models var/whisper/hf
+rm -f "var/whisper/ready-$model"   # en afbrudt kørsel må ikke efterlade en gammel markør
 if [ ! -x var/whisper/venv/bin/python ]; then
   python3 -m venv var/whisper/venv || { echo "✘ python3 -m venv fejlede (python3-venv mangler?) — spørg sysadmin"; exit 1; }
 fi
@@ -40,4 +41,6 @@ from faster_whisper import WhisperModel
 WhisperModel(sys.argv[1], device="cpu", compute_type="int8", download_root=sys.argv[2])
 print("✔ modellen " + sys.argv[1] + " er hentet")
 PY
+# Markøren til sidst: transcribe.php tager først opkald, når setup er kørt helt færdig for netop denne model (QA F-3)
+date -u +%Y-%m-%dT%H:%M:%SZ > "var/whisper/ready-$model"
 echo "WHISPER: KLAR ($model)"

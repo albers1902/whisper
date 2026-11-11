@@ -200,6 +200,10 @@ final class Client
     /** Værten for en https-URL på port 443 uden brugerinfo, ellers ''. */
     public static function hostOf(string $url): string
     {
+        // Kontroltegn, mellemrum og backslash afvises før parse_url: curl og parse_url kunne ellers læse værten forskelligt
+        if (preg_match('/[\x00-\x20\x7F\\\\]/', $url) === 1) {
+            return '';
+        }
         $p = parse_url($url);
         if (!is_array($p) || strtolower($p['scheme'] ?? '') !== 'https' || !isset($p['host'])
             || isset($p['user']) || isset($p['pass']) || (isset($p['port']) && $p['port'] !== 443)) {

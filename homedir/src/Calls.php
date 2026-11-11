@@ -14,6 +14,7 @@ final class Calls
 {
     public const PAGE_SIZE = 50;
     public const ZIP_MAX = 2000;
+    public const ZIP_BATCH = 50;
     public const TZ = 'Europe/Copenhagen';
     private const AUDIO_PATH = '#^recordings/[0-9]{4}/[0-9]{2}/[1-9][0-9]{0,9}\.(mp3|wav)$#';
 
@@ -84,32 +85,60 @@ final class Calls
     }
 
     /**
+     * Én side af listen. Siden klemmes til sidste side, så ?side=99999 hverken giver en tom side eller et dyrt OFFSET
+     * (QA F-9, security S3).
+     *
      * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int} $f
-     * @return array{rows: list<array<string, mixed>>, total: int}
+     * @return array{rows: list<array<string, mixed>>, total: int, side: int}
      */
     public static function search(array $f): array
     {
         [$w, $p] = self::where($f);
         $total = (int) DB::scalar('SELECT COUNT(*) FROM calls c WHERE ' . $w, $p);
-        $offset = ($f['side'] - 1) * self::PAGE_SIZE;
-        $rows = DB::all('SELECT c.* FROM calls c WHERE ' . $w . ' ORDER BY c.started_at DESC, c.id DESC LIMIT '
+        $side = max(1, min($f['side'], (int) ceil($total / self::PAGE_SIZE)));
+        $offset = ($side - 1) * self::PAGE_SIZE;
+        $rows = $total === 0 ? [] : DB::all('SELECT c.* FROM calls c WHERE ' . $w . ' ORDER BY c.started_at DESC, c.id DESC LIMIT '
             . self::PAGE_SIZE . ' OFFSET ' . (int) $offset, $p);
-        return ['rows' => $rows, 'total' => $total];
+        return ['rows' => $rows, 'total' => $total, 'side' => $side];
     }
 
     /**
-     * Færdige transcripts i filtret til zip (nyeste først, højst ZIP_MAX).
+     * Id'erne på de færdige transcripts i filtret til zip (nyeste først, højst ZIP_MAX). Teksterne læses bagefter i
+     * batches med zipRows(), så hukommelsen ikke vokser med antallet (QA F-4).
      *
      * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int} $f
-     * @return array{rows: list<array<string, mixed>>, total: int}
+     * @return list<int>
      */
-    public static function forZip(array $f): array
+    public static function zipIds(array $f): array
     {
         [$w, $p] = self::where($f, true);
-        $total = (int) DB::scalar('SELECT COUNT(*) FROM calls c WHERE ' . $w, $p);
+        $rows = DB::all('SELECT c.id FROM calls c JOIN transcripts t ON t.call_id = c.id WHERE ' . $w
+            . ' ORDER BY c.started_at DESC, c.id DESC LIMIT ' . self::ZIP_MAX, $p);
+        return array_map(static fn(array $r): int => (int) $r['id'], $rows);
+    }
+
+    /**
+     * @param list<int> $ids  højst ZIP_BATCH
+     * @return list<array<string, mixed>> i samme rækkefølge som $ids
+     */
+    public static function zipRows(array $ids): array
+    {
+        if ($ids === []) {
+            return [];
+        }
         $rows = DB::all('SELECT c.*, t.`text` AS t_text, t.segments_json AS t_segments FROM calls c JOIN transcripts t ON t.call_id = c.id '
-            . 'WHERE ' . $w . ' ORDER BY c.started_at DESC, c.id DESC LIMIT ' . self::ZIP_MAX, $p);
-        return ['rows' => $rows, 'total' => $total];
+            . 'WHERE c.id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')', $ids);
+        $byId = [];
+        foreach ($rows as $r) {
+            $byId[(int) $r['id']] = $r;
+        }
+        $out = [];
+        foreach ($ids as $id) {
+            if (isset($byId[$id])) {
+                $out[] = $byId[$id];
+            }
+        }
+        return $out;
     }
 
     /** @return array<string, mixed>|null */
@@ -153,7 +182,9 @@ final class Calls
     public static function status(): array
     {
         $s = DB::all('SELECT last_ok_at, last_error FROM sync_state WHERE `source` = ?', ['zendesk']);
-        $waiting = (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE transcript_status IN ('ventende', 'transcriberer')");
+        // Kun opkald, hvis lyd er hentet, venter reelt på transcription (QA F-6)
+        $waiting = (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE audio_status = 'hentet' "
+            . "AND transcript_status IN ('ventende', 'transcriberer')");
         $audio = (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE audio_status = 'venter'");
         $ok = $s[0]['last_ok_at'] ?? null;
         $err = $s[0]['last_error'] ?? null;

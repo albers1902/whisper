@@ -24,7 +24,10 @@ final class CallView
         foreach ($notices as $n) {
             $info[] = '<p class="msg info">' . $e($n) . '</p>';
         }
-        if ($status['last_error'] !== null) {
+        if ($status['last_error'] !== null && str_starts_with($status['last_error'], \Whisper\Zendesk\Sync::RATE_LIMIT_PREFIX)) {
+            // En rate limit er normal drift, ikke en fejl (QA F-8)
+            $info[] = '<p class="msg info">Zendesk bad os vente (rate limit). Hentningen fortsætter ved næste kørsel.</p>';
+        } elseif ($status['last_error'] !== null) {
             $info[] = '<p class="msg error">Seneste hentning fra Zendesk stoppede: ' . $e($status['last_error']) . '</p>';
         }
         $last = $status['last_ok_at'] !== null ? Calls::local($status['last_ok_at']) : 'aldrig';
@@ -45,7 +48,9 @@ final class CallView
             . '<label>Retning<select name="retning">' . $opt('', 'Begge', $f['retning']) . $opt('inbound', 'Indgående', $f['retning'])
             . $opt('outbound', 'Udgående', $f['retning']) . '</select></label>'
             . '<label>Agent<select name="agent">' . $agentOpts . '</select></label>'
-            . '<label class="wide">Søg i transcripts<input type="search" name="q" value="' . $e($f['q']) . '" maxlength="200"></label>'
+            . '<label class="wide">Søg i transcripts<input type="search" name="q" value="' . $e($f['q']) . '" maxlength="200" '
+            . 'aria-describedby="q-hjaelp"><small id="q-hjaelp" class="hint">Finder ord, der begynder med det, du skriver, og alle '
+            . 'ordene skal være med. Ord på under 3 tegn tæller kun, hvis du kun søger på korte ord.</small></label>'
             . '<div class="actions"><button type="submit">Filtrér</button> <a href="/">Nulstil</a></div></form>';
 
         $filtered = $f['fra'] !== '' || $f['til'] !== '' || $f['retning'] !== '' || $f['agent'] !== '' || $f['q'] !== '';
@@ -67,8 +72,7 @@ final class CallView
                     . '<td>' . $e((string) $r['agent_name']) . '</td>'
                     . '<td>' . $e(Calls::duration((int) $r['duration_sec'])) . '</td>'
                     . '<td>' . $ticketCell . '</td>'
-                    . '<td><span class="badge s-' . $e((string) $r['transcript_status']) . '">'
-                    . $e(Calls::statusName((string) $r['transcript_status'])) . '</span></td></tr>';
+                    . '<td>' . self::badge($r) . '</td></tr>';
             }
             $table = '<table class="calls"><thead><tr><th>Dato og tid</th><th>Retning</th><th>Telefonnummer</th><th>Agent</th>'
                 . '<th>Varighed</th><th>Ticket</th><th>Transcription</th></tr></thead><tbody>' . $trs . '</tbody></table>';
@@ -144,6 +148,24 @@ final class CallView
         return View::layout('Opkald ' . Calls::local($call['started_at']), '<p><a href="/">← Alle opkald</a></p>'
             . '<section class="card"><h1>Opkald ' . $e(Calls::local($call['started_at'])) . '</h1>' . $meta . $audio . $tr . '</section>',
             $user, $csrf);
+    }
+
+    /**
+     * Status i listen. Uden hentet lyd kan intet transcriberes, så dér vises lydens status (QA F-6).
+     *
+     * @param array<string, mixed> $r
+     */
+    private static function badge(array $r): string
+    {
+        $audio = (string) $r['audio_status'];
+        if ($audio === 'fejlet') {
+            return '<span class="badge s-fejlet">Lyd fejlet</span>';
+        }
+        if ($audio !== 'hentet') {
+            return '<span class="badge s-lyd">Lyd mangler</span>';
+        }
+        $t = (string) $r['transcript_status'];
+        return '<span class="badge s-' . View::e($t) . '">' . View::e(Calls::statusName($t)) . '</span>';
     }
 
     /** @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int} $f */

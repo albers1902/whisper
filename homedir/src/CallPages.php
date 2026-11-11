@@ -24,6 +24,7 @@ final class CallPages
     {
         $f = Calls::filter($req->query);
         $res = Calls::search($f);
+        $f['side'] = $res['side'];   // klemt til sidste side (QA F-9)
         [$cfg, $cfgError] = self::zendesk();
         $notices = [];
         if ($cfgError !== null) {
@@ -49,7 +50,8 @@ final class CallPages
     }
 
     /** GET /opkald/{id}/lyd med Range (RFC 9110 §14): ét interval, ellers hele filen; 416 ved et umuligt interval. */
-    public static function audio(int $id, Request $req): Response
+    /** @param array<string, mixed> $user */
+    public static function audio(int $id, Request $req, array $user): Response
     {
         $call = Calls::find($id);
         $file = $call !== null && $call['audio_status'] === 'hentet'
@@ -63,6 +65,10 @@ final class CallPages
         $range = self::range($req->header('range'), $size);
         if ($range === false) {
             return new Response(416, '', $headers + ['Content-Range' => 'bytes */' . $size]);
+        }
+        // Én linje pr. afspilning/hentning: hele filen eller det første interval (afspilleren spørger mange gange)
+        if ($range === null || $range[0] === 0) {
+            AccessLog::write((int) $user['id'], 'lyd', ['opkald' => $id]);
         }
         if ($range === null) {
             return Response::file(200, $file, 0, $size, $headers);
@@ -99,8 +105,12 @@ final class CallPages
         return [$start, $end];
     }
 
-    /** GET /opkald/{id}/transcript: UTF-8-tekst med hoved-blok, som fil. */
-    public static function transcript(int $id): Response
+    /**
+     * GET /opkald/{id}/transcript: UTF-8-tekst med hoved-blok, som fil.
+     *
+     * @param array<string, mixed> $user
+     */
+    public static function transcript(int $id, array $user): Response
     {
         $call = Calls::find($id);
         $t = $call !== null && $call['transcript_status'] === 'faerdig' ? Calls::transcript($id) : null;
@@ -108,6 +118,7 @@ final class CallPages
             return new Response(404, "Transcriptet findes ikke\n", ['Content-Type' => 'text/plain; charset=utf-8']);
         }
         [$cfg] = self::zendesk();
+        AccessLog::write((int) $user['id'], 'transcript', ['opkald' => $id]);
         $ticket = (int) ($call['ticket_id'] ?? 0);
         $text = Calls::transcriptText($call, $t['segments'], $t['text'], $cfg !== null && $ticket > 0 ? $cfg->ticketUrl($ticket) : null);
         return new Response(200, $text, [
@@ -124,11 +135,20 @@ final class CallPages
     public static function zip(Request $req, array $user, string $csrf): Response
     {
         $f = Calls::filter($req->query);
-        $res = Calls::forZip($f);
-        if ($res['rows'] === []) {
+        $ids = Calls::zipIds($f);
+        if ($ids === []) {
             return Response::html(View::layout('Download', '<section class="card narrow"><h1>Download</h1>'
                 . '<p>Der er ingen færdige transcripts i filtret.</p><p><a href="/?' . View::e(CallView::query($f)) . '">Tilbage</a></p></section>',
                 $user, $csrf));
+        }
+        // Højst én zip ad gangen på hele sitet (security S3): den næste får 429 og en dansk besked
+        $lock = Lock::tryAcquire('zip');
+        if ($lock === null) {
+            $r = Response::html(View::layout('Download', '<section class="card narrow"><h1>Download</h1>'
+                . '<p class="msg info">Der laves allerede en zip-fil. Prøv igen om et øjeblik.</p>'
+                . '<p><a href="/?' . View::e(CallView::query($f)) . '">Tilbage</a></p></section>', $user, $csrf), 429);
+            $r->headers['Retry-After'] = '30';
+            return $r;
         }
         [$cfg] = self::zendesk();
         $dir = Paths::dir('tmp');
@@ -138,15 +158,18 @@ final class CallPages
         try {
             $zip = new ZipWriter($file);
             $used = [];
-            foreach ($res['rows'] as $r) {
-                $name = Calls::fileName($r);
-                if (isset($used[$name])) {
-                    $name = substr($name, 0, -4) . '_' . (int) $r['id'] . '.txt';
+            // Transcripts læses ZIP_BATCH ad gangen, så hukommelsen er flad uanset antallet (QA F-4)
+            foreach (array_chunk($ids, Calls::ZIP_BATCH) as $chunk) {
+                foreach (Calls::zipRows($chunk) as $r) {
+                    $name = Calls::fileName($r);
+                    if (isset($used[$name])) {
+                        $name = substr($name, 0, -4) . '_' . (int) $r['id'] . '.txt';
+                    }
+                    $used[$name] = true;
+                    $ticket = (int) ($r['ticket_id'] ?? 0);
+                    $zip->add($name, Calls::transcriptText($r, Calls::segments((string) $r['t_segments']), (string) $r['t_text'],
+                        $cfg !== null && $ticket > 0 ? $cfg->ticketUrl($ticket) : null), (int) strtotime((string) $r['started_at'] . ' UTC'));
                 }
-                $used[$name] = true;
-                $ticket = (int) ($r['ticket_id'] ?? 0);
-                $zip->add($name, Calls::transcriptText($r, Calls::segments((string) $r['t_segments']), (string) $r['t_text'],
-                    $cfg !== null && $ticket > 0 ? $cfg->ticketUrl($ticket) : null), (int) strtotime((string) $r['started_at'] . ' UTC'));
             }
             $zip->close();
         } catch (Throwable $e) {
@@ -154,7 +177,9 @@ final class CallPages
             throw $e;
         } finally {
             umask($old);
+            $lock->release();
         }
+        AccessLog::write((int) $user['id'], 'zip', ['antal' => count($ids), 'filter' => substr(hash('sha256', CallView::query($f)), 0, 16)]);
         return Response::file(200, $file, 0, (int) filesize($file), [
             'Content-Type'        => 'application/zip',
             'Content-Disposition' => 'attachment; filename="transcripts_' . gmdate('Y-m-d') . '.zip"',

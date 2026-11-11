@@ -18,6 +18,11 @@ final class Flags
         if (array_key_exists($flag, self::$overrides)) {
             return self::$overrides[$flag];
         }
+        // Kun under testløberen (run.php sætter WHISPER_TEST): et cron-script, som en test starter i en ny proces,
+        // kan få flag tændt via WHISPER_TEST_FLAGS (F002-AK2). På serverne er WHISPER_TEST aldrig sat.
+        if (getenv('WHISPER_TEST') === '1' && in_array($flag, explode(',', (string) getenv('WHISPER_TEST_FLAGS')), true)) {
+            return true;
+        }
         return self::enabledIn($flag, self::env());
     }
 

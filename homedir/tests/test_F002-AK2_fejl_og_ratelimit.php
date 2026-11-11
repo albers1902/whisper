@@ -70,10 +70,35 @@ $http->on('GET', f002_export_url($T1), f002_json(['calls' => [], 'count' => 0, '
 $r = (new Sync(f002_client($cfg, $http), $cfg, static fn(): int => F002_NOW, static fn(string $l) => null))->run();
 F002Check::that('AK2', $r['error'] === null && (int) DB::scalar('SELECT COUNT(*) FROM calls') === 2, 'næste kørsel gør siden færdig uden dubletter');
 
+F002Check::that('AK2', (int) DB::scalar("SELECT audio_attempts FROM calls WHERE external_id = '301'") >= 1,
+    'optagelser hentes også i en kørsel, hvor opkaldshentningen stoppede');
+
+// 3b. HTTP-fejl på ét ticket (403/500) springer kun det opkald over; siden fortsætter (QA F-1)
+f002_setup();
+$http = new FakeTransport();
+$http->on('POST', F002_BASE . '/oauth/tokens', f002_token_response());
+$http->on('GET', f002_export_url(F002_SINCE), f002_json(['calls' => [f002_call(401, 41), f002_call(402, 42), f002_call(403, 43)],
+    'count' => 3, 'end_time' => $T1, 'next_page' => 'x']));
+$http->on('GET', f002_export_url($T1), f002_json(['calls' => [], 'count' => 0, 'end_time' => $T1, 'next_page' => 'x']));
+$http->on('GET', f002_comments_url(41), f002_json(['error' => 'Forbidden'], 403));
+$http->on('GET', f002_comments_url(42), $comments(402, 5));
+$http->on('GET', f002_comments_url(43), f002_json(['error' => 'x'], 500));
+$http->on('GET', F002_BASE . '/api/v2/users/7.json', f002_json(['user' => ['name' => 'A']]));
+$logs = [];
+$r = (new Sync(f002_client($cfg, $http), $cfg, static fn(): int => F002_NOW, static function (string $l) use (&$logs): void {
+    $logs[] = $l;
+}))->run();
+F002Check::that('AK2', $r['error'] === null, 'et ticket med 403 stopper ikke kørslen');
+F002Check::that('AK2', DB::all('SELECT external_id FROM calls') === [['external_id' => '402']], 'de øvrige opkald på siden er gemt');
+F002Check::that('AK2', DB::scalar('SELECT cursor_value FROM sync_state') === (string) $T1, 'cursoren flyttes forbi siden');
+F002Check::that('AK2', in_array('zendesk-sync: opkald 401: springes over (HTTP 403 fra Zendesk)', $logs, true)
+    && in_array('zendesk-sync: opkald 403: springes over (HTTP 500 fra Zendesk)', $logs, true), 'de oversprungne logges med opkalds-id');
+
 // 4. [zendesk] mangler: cron-scriptet gør intet og logger én linje
 F002Check::that('AK2', ZendeskConfig::fromSection([]) === null, 'tom sektion = ikke sat op');
 f002_setup();
 putenv('WHISPER_VAR_DIR=' . $var);
+putenv('WHISPER_TEST_FLAGS=F001_brugere,F002_zendesk');   // flaget tændt i scriptets proces (testmiljøet har env = test)
 $cmd = [PHP_BINARY, __DIR__ . '/../cron/zendesk-sync.php'];
 $p = proc_open($cmd, [1 => ['pipe', 'w'], 2 => ['pipe', 'w']], $pipes);
 $out = is_resource($p) ? (string) stream_get_contents($pipes[1]) . (string) stream_get_contents($pipes[2]) : '';

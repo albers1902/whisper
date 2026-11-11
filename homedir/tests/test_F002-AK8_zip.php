@@ -69,6 +69,18 @@ if (class_exists('ZipArchive')) {
     $za->close();
 }
 
+// Højst én zip ad gangen: mens en anden laves, svares 429 med en dansk besked (security S3)
+$busy = \Whisper\Lock::tryAcquire('zip');
+$r3 = f002_get($c, '/opkald/download');
+F002Check::that('AK8', $r3->status === 429 && $r3->file === null && str_contains($r3->body, 'Der laves allerede en zip-fil')
+    && $r3->header('Retry-After') === '30', 'anden zip samtidig: 429 med dansk besked');
+$busy?->release();
+$r4 = f002_get($c, '/opkald/download');
+F002Check::that('AK8', $r4->status === 200 && $r4->file !== null, 'når den første er færdig, kan en ny laves');
+@unlink((string) $r4->file);
+$log = (string) @file_get_contents($var . '/adgang.log');
+F002Check::that('AK8', preg_match('/ bruger=[0-9]+ zip antal=3 filter=[0-9a-f]{16}\n/', $log) === 1, 'zip-hentningen logges med antal og filter-hash');
+
 // Højst ZIP_MAX filer pr. download
 F002Check::that('AK8', \Whisper\Calls::ZIP_MAX === 2000, 'loftet er 2000');
 F002Check::done();

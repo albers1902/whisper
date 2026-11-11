@@ -34,12 +34,23 @@ F002Check::that('AK5', $p54 !== false && $p53 !== false && $p54 < $p53, 'nyeste 
 F002Check::that('AK5', str_contains($r->body, '03.10.2026 08:00'), 'dato og tid i dansk tid');
 F002Check::that('AK5', str_contains($r->body, 'Udgående') && str_contains($r->body, 'Indgående'), 'retning vises');
 F002Check::that('AK5', str_contains($r->body, '1:01'), 'varighed vises');
-F002Check::that('AK5', str_contains($r->body, '>Venter<'), 'status for transcription vises');
+F002Check::that('AK5', str_contains($r->body, '>Lyd mangler<') && !str_contains($r->body, '>Venter<'),
+    'uden hentet lyd vises "Lyd mangler", ikke "Venter" (QA F-6)');
+F002Check::that('AK5', str_contains($r->body, '0 venter på transcription · 55 venter på lyd'), 'statuslinjen tæller kun hentet lyd som ventende');
+$withAudio = (int) \Whisper\DB::scalar('SELECT id FROM calls ORDER BY started_at DESC LIMIT 1');
+f002_audio($withAudio);
+$failedAudio = (int) \Whisper\DB::scalar('SELECT id FROM calls ORDER BY started_at DESC LIMIT 1 OFFSET 1');
+\Whisper\DB::exec("UPDATE calls SET audio_status = 'fejlet' WHERE id = ?", [$failedAudio]);
+$r = f002_get($c, '/');
+F002Check::that('AK5', str_contains($r->body, '>Venter<') && str_contains($r->body, '>Lyd fejlet<'), 'status: Venter (lyd hentet) og Lyd fejlet');
+F002Check::that('AK5', str_contains($r->body, '1 venter på transcription'), 'statuslinjen: 1 venter på transcription');
+F002Check::that('AK5', str_contains($r->body, 'Ord på under 3 tegn'), 'hjælpetekst under søgefeltet (QA F-7)');
 F002Check::that('AK5', str_contains($r->body, 'Bo &lt;b&gt;') && !str_contains($r->body, 'Bo <b>'), 'agentnavn escapes');
 F002Check::that('AK5', str_contains($r->body, '>7054<'), 'ticket-nummer vises');
 $r2 = f002_get($c, '/', ['side' => '2']);
 F002Check::that('AK5', $rows($r2) === 5 && str_contains($r2->body, '+45 1000 0000'), 'side 2 har de sidste 5 (de ældste)');
-F002Check::that('AK5', $rows(f002_get($c, '/', ['side' => '99'])) === 0, 'side ud over sidste: tom');
+$r99 = f002_get($c, '/', ['side' => '99999']);
+F002Check::that('AK5', $rows($r99) === 5 && str_contains($r99->body, 'Side 2 af 2'), 'side ud over sidste: klemt til sidste side (QA F-9)');
 F002Check::that('AK5', $rows(f002_get($c, '/', ['side' => ['x']])) === 50, 'ugyldig side-parameter: side 1');
 
 // Retning og agent

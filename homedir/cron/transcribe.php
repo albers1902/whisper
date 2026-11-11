@@ -24,6 +24,11 @@ if (file_exists($deploying)) {
 
 require_once __DIR__ . '/../src/Bootstrap.php';
 
+// Flaget slukket i miljøet (eller F001 slukket): intet transcriberes — før lås, database og motor (security S1)
+if (!\Whisper\Flags::enabled(\Whisper\App::FLAG) || !\Whisper\Flags::enabled(\Whisper\CallPages::FLAG)) {
+    exit(0);
+}
+
 $log = static function (string $line): void {
     echo gmdate('Y-m-d\TH:i:s\Z'), ' ', $line, "\n";
 };
@@ -46,9 +51,10 @@ if ($reset > 0) {
     $log('transcribe: ' . $reset . ' hængende opkald sat tilbage');
 }
 if (!$engine->available()) {
+    // Motor ikke klar (setup ikke kørt færdig for den konfigurerede model): intet opkald tages, intet forsøg bruges
     $waiting = (int) \Whisper\DB::scalar("SELECT COUNT(*) FROM calls WHERE transcript_status = 'ventende' AND audio_status = 'hentet'");
     if ($waiting > 0 && (int) gmdate('i') === 0) {   // én linje i timen, ikke hvert minut
-        $log('transcribe: motoren er ikke sat op (kør cron/whisper-setup.sh) — ' . $waiting . ' opkald venter');
+        $log('transcribe: motoren er ikke klar (kør cron/whisper-setup.sh) — ' . $waiting . ' opkald venter');
     }
     exit(0);
 }

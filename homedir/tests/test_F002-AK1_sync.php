@@ -14,7 +14,7 @@ $cfg = f002_cfg();
 $http = new FakeTransport();
 $http->on('POST', F002_BASE . '/oauth/tokens', f002_token_response());
 
-$T1 = F002_SINCE + 86400;
+$T1 = F002_SINCE + 5 * 86400;
 $urlA = F002_BASE . '/api/v2/channels/voice/calls/CA1/twilio/recording';
 $urlB = F002_BASE . '/api/v2/channels/voice/calls/CA2/twilio/recording';
 $calls = [
@@ -67,15 +67,24 @@ $cursor = DB::scalar('SELECT cursor_value FROM sync_state WHERE `source` = ?', [
 F002Check::that('AK1', $cursor === (string) $T1, "cursoren er end_time ($cursor)");
 F002Check::that('AK1', count($http->to(f002_export_url($T1))) === 1, 'næste side hentes med start_time = end_time');
 
-// Ny kørsel: starter fra cursoren, giver ingen dubletter og opdaterer ændrede felter
+// Ny kørsel: starter LOOKBACK (24 t) før cursoren, giver ingen dubletter og opdaterer ændrede felter. Opkald 104, hvis
+// VoiceComment ikke fandtes sidst, kommer nu med (QA F-2)
 $calls[0]['duration'] = 130;
-$http->on('GET', f002_export_url($T1), f002_json(['calls' => [$calls[0], $calls[1]], 'count' => 2, 'end_time' => $T1 + 60, 'next_page' => 'x']));
+$http->on('GET', f002_comments_url(14), f002_json(['comments' => [
+    f002_voice(104, F002_BASE . '/api/v2/rec/104', '+4511', '+4570', '2026-10-05T13:00:00Z', 60)], 'meta' => ['has_more' => false]]));
+$back = $T1 - Sync::LOOKBACK;
+$http->on('GET', f002_export_url($back), f002_json(['calls' => [$calls[0], $calls[1], $calls[3]], 'count' => 3, 'end_time' => $T1 + 60, 'next_page' => 'x']));
 $http->on('GET', f002_export_url($T1 + 60), f002_json(['calls' => [], 'count' => 0, 'end_time' => $T1 + 60, 'next_page' => 'x']));
 $before = count($http->to(f002_export_url(F002_SINCE)));
+$comments11 = count($http->to(f002_comments_url(11)));
 $sync2 = new Sync(f002_client($cfg, $http), $cfg, static fn(): int => F002_NOW, static fn(string $l) => null);
 $sync2->fetchCalls();
-F002Check::that('AK1', count($http->to(f002_export_url(F002_SINCE))) === $before, 'anden kørsel bruger den gemte cursor, ikke since');
-F002Check::that('AK1', (int) DB::scalar('SELECT COUNT(*) FROM calls') === 2, 'ingen dubletter efter anden kørsel');
+F002Check::that('AK1', count($http->to(f002_export_url(F002_SINCE))) === $before && count($http->to(f002_export_url($back))) === 1,
+    'anden kørsel starter 24 t før den gemte cursor, ikke ved since');
+F002Check::that('AK1', (int) DB::scalar('SELECT COUNT(*) FROM calls') === 3, 'ingen dubletter; opkaldet, hvis optagelse kom senere, er gemt');
+F002Check::that('AK1', DB::scalar("SELECT recording_url FROM calls WHERE external_id = '104'") === F002_BASE . '/api/v2/rec/104',
+    'sent VoiceComment: opkaldet prøves igen i lookback-vinduet');
+F002Check::that('AK1', count($http->to(f002_comments_url(11))) === $comments11, 'et allerede gemt opkald henter ikke kommentarer igen');
 F002Check::that('AK1', (int) DB::scalar("SELECT duration_sec FROM calls WHERE external_id = '101'") === 130, 'et ændret opkald opdateres');
 F002Check::that('AK1', DB::scalar('SELECT cursor_value FROM sync_state') === (string) ($T1 + 60), 'cursoren flyttet videre');
 
@@ -83,10 +92,32 @@ F002Check::that('AK1', DB::scalar('SELECT cursor_value FROM sync_state') === (st
 DB::exec("UPDATE calls SET audio_status = 'hentet' WHERE external_id = '101'");
 $http->on('GET', f002_comments_url(11), f002_json(['comments' => [
     f002_voice(101, F002_BASE . '/api/v2/ny-url', '+45 20 30 40 50', '+4570000000', '2026-10-05T10:00:02Z', 130)], 'meta' => ['has_more' => false]]));
-$http->on('GET', f002_export_url($T1 + 60), f002_json(['calls' => [$calls[0]], 'count' => 1, 'end_time' => $T1 + 120, 'next_page' => 'x']));
+$http->on('GET', f002_export_url($T1 + 60 - Sync::LOOKBACK), f002_json(['calls' => [$calls[0]], 'count' => 1, 'end_time' => $T1 + 120, 'next_page' => 'x']));
 $http->on('GET', f002_export_url($T1 + 120), f002_json(['calls' => [], 'count' => 0, 'end_time' => $T1 + 120, 'next_page' => 'x']));
 (new Sync(f002_client($cfg, $http), $cfg, static fn(): int => F002_NOW, static fn(string $l) => null))->fetchCalls();
 F002Check::that('AK1', DB::scalar("SELECT recording_url FROM calls WHERE external_id = '101'") === $urlA, 'hentet lyd: URL bevares');
+
+// Cursoren flyttes pr. batch (25 opkald) inden for en side, kun fremad (QA F-8): en netværksfejl ved opkald nr. 27
+// bevarer fremdriften for de første 25
+DB::exec('DELETE FROM sync_state');
+$many = [];
+for ($i = 0; $i < 30; $i++) {
+    $many[] = f002_call(5000 + $i, 9000 + $i, 'inbound', 30, 7, gmdate('Y-m-d\TH:i:s\Z', F002_SINCE + 100 + $i));
+}
+$http3 = new FakeTransport();
+$http3->on('POST', F002_BASE . '/oauth/tokens', f002_token_response());
+$http3->on('GET', F002_BASE . '/api/v2/users/7.json', f002_json(['user' => ['name' => 'A']]));
+$http3->on('GET', f002_export_url(F002_SINCE), f002_json(['calls' => $many, 'count' => 30, 'end_time' => F002_SINCE + 500, 'next_page' => 'x']));
+$http3->on('GET', F002_BASE . '/api/v2/tickets/*', f002_json(['comments' => [], 'meta' => ['has_more' => false]]));
+$http3->on('GET', f002_comments_url(9026), new \Whisper\Zendesk\ZendeskError('netværksfejl (curl 7)'));
+$stopped = false;
+try {
+    (new Sync(f002_client($cfg, $http3), $cfg, static fn(): int => F002_NOW, static fn(string $l) => null))->fetchCalls();
+} catch (\Whisper\Zendesk\ZendeskError) {
+    $stopped = true;
+}
+F002Check::that('AK1', $stopped && DB::scalar('SELECT cursor_value FROM sync_state') === (string) (F002_SINCE + 124),
+    'cursoren står efter de 25 første opkald, da nr. 27 fejlede');
 
 // Kørslen holder op, når end_time ikke flytter sig (next_page er aldrig null hos Zendesk)
 $http2 = new FakeTransport();

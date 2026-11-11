@@ -114,14 +114,18 @@ final class FakeEngine implements Engine
                 ['start' => 65.5, 'end' => 70.0, 'text' => 'Det handler om strøm og måler.']]];
     }
 
+    public bool $ready = true;
+    public int $lastDuration = -1;
+
     public function available(): bool
     {
-        return true;
+        return $this->ready;
     }
 
-    public function transcribe(string $audioFile): array
+    public function transcribe(string $audioFile, int $durationSec): array
     {
         $this->calls++;
+        $this->lastDuration = $durationSec;
         if ($this->result instanceof EngineError) {
             throw $this->result;
         }
@@ -139,6 +143,7 @@ function f002_setup(): string
     $dir = sys_get_temp_dir() . '/whisper-f002-' . bin2hex(random_bytes(6));
     mkdir($dir, 0700, true);
     Paths::setVarDir($dir);
+    \Whisper\AccessLog::setFile($dir . '/adgang.log');
     return $dir;
 }
 

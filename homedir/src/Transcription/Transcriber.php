@@ -15,11 +15,14 @@ use Whisper\DB;
  * Claim er én atomisk UPDATE … WHERE status = ventende, så to samtidige kørsler aldrig tager samme opkald — også hvis
  * låsen af en eller anden grund ikke holdt. Et opkald, der har stået i "transcriberer" i over 2 timer, sættes kun
  * tilbage, når kalderen holder låsen: så kører der beviseligt ingen motor, og et legitimt langt job røres ikke.
+ * Er motoren ikke klar (setup ikke kørt færdig for modellen), tages intet opkald, så intet forsøg bruges (QA F-3).
+ * Efter et fejlet forsøg venter opkaldet RETRY_DELAY (15 min), før det prøves igen.
  */
 final class Transcriber
 {
     public const STALE_SECONDS = 7200;
     public const MAX_ATTEMPTS = 3;
+    public const RETRY_DELAY = 900;
 
     /** @var Closure(): int */
     private Closure $clock;
@@ -49,21 +52,24 @@ final class Transcriber
         return $n;
     }
 
-    /** @return array{id: int, audio_path: string}|null */
+    /** @return array{id: int, audio_path: string, duration: int}|null */
     public function claimNext(): ?array
     {
         $cond = "audio_status = 'hentet' AND transcript_attempts < ? "
-            . "AND transcript_status IN ('ventende', 'fejlet')";
+            . "AND (transcript_status = 'ventende' OR (transcript_status = 'fejlet' "
+            . 'AND (transcript_retry_at IS NULL OR transcript_retry_at <= ?)))';
+        $now = $this->now();
         $ids = DB::all('SELECT id FROM calls WHERE ' . $cond . ' ORDER BY (transcript_status = \'fejlet\'), started_at ASC, id ASC LIMIT 5',
-            [self::MAX_ATTEMPTS]);
+            [self::MAX_ATTEMPTS, $now]);
         foreach ($ids as $row) {
             $id = (int) $row['id'];
             $n = DB::exec("UPDATE calls SET transcript_status = 'transcriberer', claimed_at = ?, "
                 . 'transcript_attempts = transcript_attempts + 1, updated_at = ? WHERE id = ? AND ' . $cond,
-                [$this->now(), $this->now(), $id, self::MAX_ATTEMPTS]);
+                [$now, $now, $id, self::MAX_ATTEMPTS, $now]);
             if ($n === 1) {
-                $path = DB::scalar('SELECT audio_path FROM calls WHERE id = ?', [$id]);
-                return ['id' => $id, 'audio_path' => is_string($path) ? $path : ''];
+                $r = DB::all('SELECT audio_path, duration_sec FROM calls WHERE id = ?', [$id])[0] ?? [];
+                return ['id' => $id, 'audio_path' => is_string($r['audio_path'] ?? null) ? $r['audio_path'] : '',
+                    'duration' => (int) ($r['duration_sec'] ?? 0)];
             }
         }
         return null;
@@ -72,6 +78,9 @@ final class Transcriber
     /** Ét opkald. Returnerer id'et, eller null hvis køen er tom. */
     public function runOnce(): ?int
     {
+        if (!$this->engine->available()) {
+            return null;   // motor ikke klar: intet opkald tages, intet forsøg bruges
+        }
         $job = $this->claimNext();
         if ($job === null) {
             return null;
@@ -82,7 +91,7 @@ final class Transcriber
             if ($file === null) {
                 throw new EngineError('Lydfilen mangler på serveren');
             }
-            $result = self::validate($this->engine->transcribe($file));
+            $result = self::validate($this->engine->transcribe($file, $job['duration']));
             DB::ensureAlive();   // motoren kan have kørt i timer
             $pdo = DB::pdo();
             $pdo->beginTransaction();
@@ -92,8 +101,8 @@ final class Transcriber
                     . '`language` = VALUES(`language`), created_at = VALUES(created_at)',
                     [$id, $result['text'], (string) json_encode($result['segments'], JSON_UNESCAPED_UNICODE),
                         $result['model'], $result['language'], $this->now()]);
-                DB::exec("UPDATE calls SET transcript_status = 'faerdig', transcript_error = NULL, claimed_at = NULL, updated_at = ? "
-                    . 'WHERE id = ?', [$this->now(), $id]);
+                DB::exec("UPDATE calls SET transcript_status = 'faerdig', transcript_error = NULL, transcript_retry_at = NULL, "
+                    . 'claimed_at = NULL, updated_at = ? WHERE id = ?', [$this->now(), $id]);
                 $pdo->commit();
             } catch (Throwable $e) {
                 $pdo->rollBack();
@@ -103,8 +112,9 @@ final class Transcriber
         } catch (Throwable $e) {
             $msg = $e instanceof EngineError ? $e->getMessage() : 'Intern fejl ved transcription';
             DB::ensureAlive();
-            DB::exec("UPDATE calls SET transcript_status = 'fejlet', transcript_error = ?, claimed_at = NULL, updated_at = ? WHERE id = ?",
-                [mb_substr($msg, 0, 250), $this->now(), $id]);
+            DB::exec("UPDATE calls SET transcript_status = 'fejlet', transcript_error = ?, transcript_retry_at = ?, claimed_at = NULL, "
+                . 'updated_at = ? WHERE id = ?',
+                [mb_substr($msg, 0, 250), gmdate('Y-m-d H:i:s', ($this->clock)() + self::RETRY_DELAY), $this->now(), $id]);
             ($this->log)('transcribe: opkald ' . $id . ': fejlet: ' . $msg);
         }
         return $id;

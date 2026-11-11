@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS calls (
     transcript_status   ENUM('ventende','transcriberer','faerdig','fejlet') NOT NULL DEFAULT 'ventende',
     transcript_attempts TINYINT UNSIGNED NOT NULL DEFAULT 0,
     transcript_error    VARCHAR(255)     NULL,
+    transcript_retry_at DATETIME         NULL,
     claimed_at          DATETIME         NULL,
     created_at          DATETIME         NOT NULL,
     updated_at          DATETIME         NOT NULL,

@@ -9,11 +9,13 @@ namespace Whisper\Transcription;
  */
 interface Engine
 {
+    /** Klar = venv, script og den konfigurerede model er hentet (markøren fra whisper-setup.sh). */
     public function available(): bool;
 
     /**
+     * @param int $durationSec opkaldets varighed (giver motorens tidsgrænse)
      * @return array<mixed> motorens rå JSON-svar (valideres af Transcriber::validate)
      * @throws EngineError
      */
-    public function transcribe(string $audioFile): array;
+    public function transcribe(string $audioFile, int $durationSec): array;
 }

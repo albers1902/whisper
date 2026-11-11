@@ -22,6 +22,12 @@ if (file_exists(dirname(__DIR__) . '/logs/deploying')) {
 
 require_once __DIR__ . '/../src/Bootstrap.php';
 
+// Flaget slukket i miljøet (eller F001 slukket): intet hentes — før lås, database og netværk (security S1). Så er
+// "stable = off" (og dev/test = off) også en rollback for hentningen, ikke kun for siderne.
+if (!\Whisper\Flags::enabled(\Whisper\App::FLAG) || !\Whisper\Flags::enabled(\Whisper\CallPages::FLAG)) {
+    exit(0);
+}
+
 $log = static function (string $line): void {
     echo gmdate('Y-m-d\TH:i:s\Z'), ' ', $line, "\n";
 };

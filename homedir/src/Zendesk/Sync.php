@@ -15,13 +15,16 @@ use Whisper\Paths;
  *
  * 1. Opkaldene: Talk Incremental Export GET /api/v2/channels/voice/stats/incremental/calls?start_time=<epoch>
  *    (opkald ændret siden; 10 kald/min; next_page er aldrig null, så vi stopper, når end_time ikke flytter sig).
- *    Cursoren (end_time) gemmes først, når hele siden er gemt — en fejl midt i giver samme side igen, og UPSERT på
- *    (source, external_id) gør det idempotent.
+ *    Cursoren flyttes for hver 25 behandlede opkald og ved sidens slutning, kun fremad. Hver kørsel starter
+ *    LOOKBACK (24 t) før cursoren: opkald, hvis VoiceComment endnu ikke fandtes ved sidste kørsel, prøves dermed igen
+ *    i et døgn (QA F-2). Det er ufarligt, fordi UPSERT på (source, external_id) er idempotent, og et opkald, der
+ *    allerede er gemt, kun får sine metadata opdateret uden et nyt kald efter kommentarer.
  * 2. Optagelsens URL står ikke i exporten, kun i ticketens VoiceComment (data.recording_url). Opkald og kommentar
  *    matches på data.call_id; findes den ikke, på started_at ±2 min og varighed ±5 s (Team Lead, F002 v0).
- * 3. Opkald uden optagelse gemmes ikke (F002 v0, punkt 1b.4). Kommer optagelsen senere, er opkaldet "ændret" og
- *    kommer med i exporten igen.
- * 4. Lydfilen hentes til var/recordings/ÅÅÅÅ/MM/<id>.<ext> (0600) via en .part-fil, højst 5 forsøg pr. opkald.
+ * 3. Opkald uden optagelse gemmes ikke (F002 v0, punkt 1b.4).
+ * 4. En HTTP-fejl på ét ticket (fx 403 eller 500) springer kun det opkald over (logges med id) — 429 og netværksfejl
+ *    stopper kørslen pænt (QA F-1). Optagelserne hentes også, når opkaldshentningen er stoppet.
+ * 5. Lydfilen hentes til var/recordings/ÅÅÅÅ/MM/<id>.<ext> (0600) via en .part-fil, højst 5 forsøg pr. opkald.
  *
  * Log-linjer nævner kun opkalds-id'er — aldrig URL'er, telefonnumre, navne, tokens eller stier.
  */
@@ -29,8 +32,11 @@ final class Sync
 {
     public const SOURCE = 'zendesk';
     public const MAX_AUDIO_ATTEMPTS = 5;
+    public const LOOKBACK = 86400;
+    public const RATE_LIMIT_PREFIX = 'rate limit';
     private const MAX_PAGES = 8;
     private const MAX_DOWNLOADS = 50;
+    private const CURSOR_BATCH = 25;
     private const MATCH_SECONDS = 120;
     private const MATCH_DURATION = 5;
 
@@ -42,6 +48,7 @@ final class Sync
     private array $commentCache = [];
     /** @var array<int, string> */
     private array $agentCache = [];
+    private int $storedCursor = 0;
 
     /**
      * @param (Closure(): int)|null $clock
@@ -60,25 +67,27 @@ final class Sync
     }
 
     /**
-     * Hele kørslen: opkald, derefter optagelser. Fejl stopper pænt og står i sync_state.last_error.
+     * Hele kørslen: opkald, derefter optagelser (også når opkaldene stoppede). Fejl står i sync_state.last_error;
+     * en rate limit står der med præfikset "rate limit", så siden viser den som information, ikke som fejl.
      *
      * @return array{calls: int, downloaded: int, failed: int, error: ?string}
      */
     public function run(): array
     {
-        $now = $this->now();
         DB::exec('INSERT INTO sync_state (`source`, last_run_at) VALUES (?, ?) ON DUPLICATE KEY UPDATE last_run_at = VALUES(last_run_at)',
-            [self::SOURCE, $now]);
+            [self::SOURCE, $this->now()]);
         $calls = 0;
         $dl = ['ok' => 0, 'failed' => 0];
         $error = null;
         try {
             $calls = $this->fetchCalls();
-            $dl = $this->downloadPending();
-        } catch (ZendeskError $e) {
-            $error = $e->getMessage();
         } catch (Throwable $e) {
-            $error = 'intern fejl (' . (new \ReflectionClass($e))->getShortName() . ')';
+            $error = self::describe($e);
+        }
+        try {
+            $dl = $this->downloadPending();
+        } catch (Throwable $e) {
+            $error ??= self::describe($e);
         }
         if ($error === null) {
             DB::exec('UPDATE sync_state SET last_ok_at = ?, last_error = NULL WHERE `source` = ?', [$this->now(), self::SOURCE]);
@@ -89,26 +98,51 @@ final class Sync
         return ['calls' => $calls, 'downloaded' => $dl['ok'], 'failed' => $dl['failed'], 'error' => $error];
     }
 
+    private static function describe(Throwable $e): string
+    {
+        if ($e instanceof RateLimited) {
+            return self::RATE_LIMIT_PREFIX . ' (429) — Zendesk bad os vente; hentningen fortsætter ved næste kørsel';
+        }
+        return $e instanceof ZendeskError ? $e->getMessage() : 'intern fejl (' . (new \ReflectionClass($e))->getShortName() . ')';
+    }
+
     /** @return int antal opkald gemt eller opdateret */
     public function fetchCalls(): int
     {
         $cursor = DB::scalar('SELECT cursor_value FROM sync_state WHERE `source` = ?', [self::SOURCE]);
-        $start = is_string($cursor) && ctype_digit($cursor) ? (int) $cursor : $this->cfg->since;
+        $this->storedCursor = is_string($cursor) && ctype_digit($cursor) ? (int) $cursor : 0;
+        $start = max($this->cfg->since, $this->storedCursor - self::LOOKBACK);
         $saved = 0;
         for ($page = 0; $page < self::MAX_PAGES; $page++) {
             $data = $this->client->getJson('/api/v2/channels/voice/stats/incremental/calls.json?start_time=' . $start);
             $calls = is_array($data['calls'] ?? null) ? $data['calls'] : [];
+            $end = is_int($data['end_time'] ?? null) ? $data['end_time'] : $start;
+            $done = 0;
+            $progress = 0;
             foreach ($calls as $call) {
-                if (is_array($call) && $this->saveCall($call)) {
-                    $saved++;
+                if (!is_array($call)) {
+                    continue;
+                }
+                try {
+                    if ($this->saveCall($call)) {
+                        $saved++;
+                    }
+                } catch (RateLimited $e) {
+                    throw $e;
+                } catch (ZendeskError $e) {
+                    if ($e->getCode() < 400) {
+                        throw $e;   // netværksfejl eller afvist token: hele kørslen stopper
+                    }
+                    ($this->log)('zendesk-sync: opkald ' . (is_scalar($call['id'] ?? null) ? (string) $call['id'] : '?')
+                        . ': springes over (' . $e->getMessage() . ')');
+                }
+                $u = strtotime(is_string($call['updated_at'] ?? null) ? $call['updated_at'] : '');
+                $progress = max($progress, $u === false ? 0 : min($u, $end));
+                if (++$done % self::CURSOR_BATCH === 0) {
+                    $this->moveCursor($progress);
                 }
             }
-            $end = is_int($data['end_time'] ?? null) ? $data['end_time'] : $start;
-            if ($end > $start) {
-                // Først nu er hele siden gemt; derfor flyttes cursoren først her
-                DB::exec('INSERT INTO sync_state (`source`, cursor_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE cursor_value = VALUES(cursor_value)',
-                    [self::SOURCE, (string) $end]);
-            }
+            $this->moveCursor($end);
             $count = is_int($data['count'] ?? null) ? $data['count'] : count($calls);
             if ($count === 0 || $end <= $start) {
                 break;
@@ -116,6 +150,17 @@ final class Sync
             $start = $end;
         }
         return $saved;
+    }
+
+    /** Cursoren flyttes kun fremad. */
+    private function moveCursor(int $t): void
+    {
+        if ($t <= $this->storedCursor) {
+            return;
+        }
+        DB::exec('INSERT INTO sync_state (`source`, cursor_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE cursor_value = VALUES(cursor_value)',
+            [self::SOURCE, (string) $t]);
+        $this->storedCursor = $t;
     }
 
     /** @param array<mixed> $call */
@@ -131,9 +176,20 @@ final class Sync
         }
         $callStart = self::utc($call['created_at'] ?? null);
         $duration = is_numeric($call['duration'] ?? null) ? max(0, (int) $call['duration']) : null;
+        $agent = is_int($call['agent_id'] ?? null) && $call['agent_id'] > 0 ? mb_substr($this->agentName($call['agent_id']), 0, 120) : '';
+
+        $existing = DB::scalar('SELECT id FROM calls WHERE `source` = ? AND external_id = ?', [self::SOURCE, $extId]);
+        if ($existing !== false && $existing !== null) {
+            // Allerede gemt (fx i lookback-vinduet): kun exportens metadata opdateres, ingen nye kommentarkald
+            DB::exec('UPDATE calls SET ticket_id = ?, direction = ?, duration_sec = COALESCE(?, duration_sec), '
+                . "agent_name = IF(? = '', agent_name, ?) WHERE id = ?",
+                [$ticketId, $direction, $duration, $agent, $agent, (int) $existing]);
+            return true;
+        }
+
         $voice = $this->voiceComment($ticketId, $extId, $callStart, $duration);
         if ($voice === null) {
-            return false;
+            return false;   // endnu ingen optagelse: prøves igen i lookback-vinduet
         }
         $url = (string) $voice['recording_url'];
         $host = Client::hostOf($url);
@@ -148,7 +204,6 @@ final class Sync
         $duration ??= is_numeric($voice['call_duration'] ?? null) ? max(0, (int) $voice['call_duration']) : 0;
         $phoneRaw = $direction === 'inbound' ? ($voice['from'] ?? '') : ($voice['to'] ?? '');
         $phone = mb_substr((string) preg_replace('/[^0-9+ ]/', '', is_string($phoneRaw) ? $phoneRaw : ''), 0, 40);
-        $agent = is_int($call['agent_id'] ?? null) && $call['agent_id'] > 0 ? $this->agentName($call['agent_id']) : '';
         $now = $this->now();
         DB::exec(
             'INSERT INTO calls (`source`, external_id, ticket_id, direction, customer_phone, agent_name, started_at, duration_sec, '
@@ -157,7 +212,7 @@ final class Sync
             . 'customer_phone = VALUES(customer_phone), agent_name = VALUES(agent_name), started_at = VALUES(started_at), '
             . 'duration_sec = VALUES(duration_sec), '
             . "recording_url = IF(audio_status = 'hentet', recording_url, VALUES(recording_url)), updated_at = VALUES(updated_at)",
-            [self::SOURCE, $extId, $ticketId, $direction, $phone, mb_substr($agent, 0, 120), $started, $duration, $url, $now, $now],
+            [self::SOURCE, $extId, $ticketId, $direction, $phone, $agent, $started, $duration, $url, $now, $now],
         );
         return true;
     }

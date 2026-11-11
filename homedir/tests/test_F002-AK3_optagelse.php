@@ -79,5 +79,20 @@ F002Check::that('AK3', glob($var . '/recordings/*/*/' . $part . '.*') === [], 'i
 F002Check::that('AK3', DB::scalar('SELECT audio_status FROM calls WHERE id = ?', [$part]) === 'fejlet', 'markeret fejlet');
 
 F002Check::that('AK3', Sync::extension('application/octet-stream', 'https://x/y', $file) === 'mp3', 'lydformat fra filens start (ID3)');
+// URL'er med kontroltegn, mellemrum eller backslash afvises, før parse_url ser dem (security S8)
+foreach (["https://testsub.zendesk.com\\@evil.test/x", "https://testsub.zendesk.com /x", "https://testsub.zendesk.com\n.evil.test/",
+    "https://testsub.zendesk.com\t/x", "https://testsub.zendesk.com\x00.evil.test/"] as $u) {
+    F002Check::that('AK3', \Whisper\Zendesk\Client::hostOf($u) === '', 'URL med kontroltegn/backslash/mellemrum afvises: ' . json_encode($u));
+}
+F002Check::that('AK3', \Whisper\Zendesk\Client::hostOf('https://testsub.zendesk.com/x?a=b') === 'testsub.zendesk.com', 'en almindelig URL godtages');
+$ctl = f002_insert(['recording_url' => "https://testsub.zendesk.com\\@evil.test/x", 'started_at' => '2026-10-09 10:00:00']);
+$sync->downloadPending();
+F002Check::that('AK3', array_filter($http->requests, static fn(array $q): bool => str_contains($q['url'], 'evil.test')) === [],
+    'ingen request til en URL med backslash');
+F002Check::that('AK3', DB::scalar('SELECT audio_status FROM calls WHERE id = ?', [$ctl]) === 'fejlet', 'markeret fejlet');
+// Loftet over en optagelses størrelse (security S7) står i transporten
+$src = (string) file_get_contents(__DIR__ . '/../src/Zendesk/CurlTransport.php');
+F002Check::that('AK3', str_contains($src, 'CURLOPT_MAXFILESIZE_LARGE') && \Whisper\Zendesk\CurlTransport::MAX_DOWNLOAD === 500 * 1024 * 1024,
+    'download-loft på 500 MB');
 Paths::setVarDir(null);
 F002Check::done();

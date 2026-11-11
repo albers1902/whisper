@@ -9,6 +9,8 @@ namespace Whisper\Zendesk;
  */
 final class CurlTransport implements HttpTransport
 {
+    public const MAX_DOWNLOAD = 500 * 1024 * 1024;
+
     public static function available(): bool
     {
         return extension_loaded('curl');
@@ -60,6 +62,11 @@ final class CurlTransport implements HttpTransport
                 throw new ZendeskError('kunne ikke åbne midlertidig fil');
             }
             curl_setopt($ch, CURLOPT_FILE, $file);
+            // Loft over en optagelse: Content-Length over loftet afvises straks, og uden Content-Length stopper
+            // fremdriftstjekket hentningen, når loftet passeres (curl 42), så en fejl hos Zendesk ikke fylder disken
+            curl_setopt($ch, CURLOPT_MAXFILESIZE_LARGE, self::MAX_DOWNLOAD);
+            curl_setopt($ch, CURLOPT_NOPROGRESS, false);
+            curl_setopt($ch, CURLOPT_XFERINFOFUNCTION, static fn($ch, int $dlTotal, int $dlNow): int => $dlNow > self::MAX_DOWNLOAD ? 1 : 0);
         } else {
             curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
         }
@@ -69,6 +76,9 @@ final class CurlTransport implements HttpTransport
         curl_close($ch);
         if ($file !== null) {
             fclose($file);
+        }
+        if (in_array($errno, [42, 63], true)) {   // afbrudt af fremdriftstjekket / CURLE_FILESIZE_EXCEEDED
+            throw new ZendeskError('optagelsen er over loftet på 500 MB', 413);
         }
         if ($errno !== 0 || $out === false) {
             throw new ZendeskError('netværksfejl (curl ' . $errno . ')');
