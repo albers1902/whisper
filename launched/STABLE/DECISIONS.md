@@ -24,6 +24,12 @@ Ejeren kørte `chown -R whisperdev:whisperdev logs` som root i `/home/whisperdev
 `sitectl new` havde lagt `error.log`, `access.log` og `fpm-slow.log` som root-ejede filerne, og serverkontrakten ikke
 har besluttet, hvem der skal eje dem (sysadmin-subagenten: "ikke besluttet"). Hvis logrotate opretter filerne som
 root igen, melder `server.sh check dev` det. Sagen er sendt videre til sysadmin-siden (SPRINT.md).
+Sysadmin-siden (2026-11-11): ejerens `chown` står ved magt og overlever logrotate, fordi den globale `create`
+kopierer den gamle ejer. Det må ikke gentages på STABLE, hvor det går gennem sysadmin-siden.
+
+## #12 — 2026-11-11 — F002: ingen separat ffmpeg (tilføjelse til #3)
+Team Lead: faster-whisper afkoder lyd via PyAV, som har FFmpeg-bibliotekerne indbygget (faster-whisper README, F002
+v0). Der installeres derfor ingen statisk ffmpeg-binær. Resten af #3 er uændret.
 
 ## #8 — 2026-11-11 — F001: sessioner i var/sessions og miljø fra [app] env
 Team Lead: F001 gemmer PHP-sessioner i `~/var/sessions` i stedet for `~/sessions`, som spec'en v1 nævnte.
@@ -48,6 +54,35 @@ Udløber: 2027-02-09
 F001-S5 · Accepteret risiko: en vilkårlig `whisper_session`-cookie opretter en sessionsfil, der ryddes af GC, og en
 HEAD-request kan forbruge en flash-besked (LOW, security-critic F001_v2). Ingen data eksponeres. Det kan rettes i et
 senere ID.
+Udløber: 2027-02-09
+
+## #13 — 2026-11-11 — F002: ruter uden filendelse
+Team Lead (svar på F002 v0 spørgsmål 6, QA F002 v1 F-10): `/opkald/{id}/transcript` og `/opkald/download` med
+`Content-Disposition` erstatter spec'ens `transcript.txt` og `download.zip`. Grunden er, at Apaches regel om at nægte
+`.zip` slår til, så snart der findes en mappe med samme navn. AK6 og AK8 gælder for de nye ruter.
+
+## #14 — 2026-11-11 — F002-S5: OAuth-scope `read` indtil proben har målt
+F002-S5 · Accepteret risiko: Zendesk-klienten bruger som standard det brede `read`, fordi Zendesk ikke har et
+voice-scope (LOW, security-critic F002_v1). Write-scopes og tomt scope afvises i koden. OAuth-klienten skal have
+"allowed scopes" = `read` i Admin Center. Hvis proben viser, at `tickets:read users:read` er nok, indsnævres scopet.
+Udløber: 2027-02-09
+
+## #15 — 2026-11-11 — F002-S6: Python-afhængigheder og model-revision ikke hash-låst
+F002-S6 · Accepteret risiko: `faster-whisper==1.1.1` er pinnet, men de transitive afhængigheder og modellens
+revision er ikke hash-låst (LOW, security-critic F002_v1). Transcription kører med `HF_HUB_OFFLINE=1`. Hash-låsning
+laves før STABLE.
+Udløber: 2027-02-09
+
+## #16 — 2026-11-11 — F002: retention og sletning af opkald mangler
+F002-S4 · Accepteret risiko: der er endnu ingen slettepolitik for optagelser og transcripts, og DEV har ingen
+off-site backup (LOW, impact F002, security-critic F002_v1 og v2 S4). Adgangsloggen `logs/adgang.log` findes. Det skal
+løses i et eget ID, før `stable = on` for F002.
+Udløber: 2027-02-09
+
+## #17 — 2026-11-11 — F002-V2-FLAGHOOK: testhook i Flags::enabled
+F002-V2-FLAGHOOK · Accepteret risiko: `WHISPER_TEST=1` plus `WHISPER_TEST_FLAGS` kan tænde et flag via miljøvariabler
+(LOW, security-critic F002_v2). Det kræver allerede kodeeksekvering som sitets bruger, og variablen er ikke sat på
+serverne. Hooken begrænses til CLI (`PHP_SAPI === 'cli'`) i et senere ID.
 Udløber: 2027-02-09
 
 ## #5 — 2026-11-11 — H001: /health uden rate limit eller cache
