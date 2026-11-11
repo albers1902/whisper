@@ -1,0 +1,36 @@
+# H003: låste Python-pakker til transcriptionsmotoren — Python 3.12, Linux x86_64 (manylinux), kun wheels.
+# Installeres af cron/whisper-setup.sh med: pip install --require-hashes --only-binary :all: --no-deps -r <denne fil>
+#
+# Hvorfor netop denne kombination (kilder: pypi.org/pypi/<pakke>/<version>/json og wheel-filerne selv):
+# - faster-whisper 1.2.1 (nyeste, 2025-10-31) importerer ikke længere requests (release-note "Offload retry logic to
+#   hf hub", PR #1382); 1.1.1's faster_whisper/utils.py linje 8 gjorde, uden at kræve pakken.
+# - huggingface-hub 0.36.2 er sidste 0.x. 1.0+ fjernede snapshot_download(local_dir_use_symlinks=...), som
+#   faster-whisper 1.2.1's download_model stadig sender; 0.36.2 kræver selv requests.
+# - av 18.1.0: faster-whisper 1.2.1's audio.py kalder av.open(..., metadata_errors="ignore"), og av 19 afviser
+#   argumentet (TypeError, målt lokalt). 18.1.0 virker og har FFmpeg-bibliotekerne med i wheel'en (av.libs/).
+# - _MODELS["turbo"] = mobiuslabsgmbh/faster-whisper-large-v3-turbo i faster-whisper 1.2.1; WhisperModel har revision=.
+# Resten er de transitive afhængigheder af de tre (uv pip compile --python-version 3.12 --only-binary :all:
+# --python-platform x86_64-manylinux_2_28 --exclude-newer 2026-10-28) med sha256 for de wheels på PyPI, der passer
+# til cp312 manylinux x86_64.
+# Opdatering = nyt H-ID: ret versionerne, generér hashes igen, og kør whisper-setup.sh på DEV.
+av==18.1.0 --hash=sha256:8a032e8d8ebc73dec079364b9b4a6837638a2d106e8472314e685ffbf163e700
+certifi==2026.10.23 --hash=sha256:e9b54de76e530bb6cf0ccd036787103acb58fd42ba930ea8bf948ddbaa2f61d1
+charset-normalizer==3.5.2 --hash=sha256:1c50fe28bbc2ced33386f298650d91218076c05420e6cbd790b913adc41659e7 --hash=sha256:3d31298449090ab8d47b7b1b2a555ff73cac7ed438a08b7ac160980c7ebed649 --hash=sha256:b6b751274acb69d77b3323d6b7dbaa3c7fdfc1eb829b7eb61d262f32e1af9685
+ctranslate2==4.8.4 --hash=sha256:0d1830d12c84b2240bf51893ee6bfe24a671dccfd232b05a74ef197d27fb164a
+faster-whisper==1.2.1 --hash=sha256:79a66ad50688c0b794dd501dc340a736992a6342f7f95e5811be60b5224a26a7
+filelock==4.2.4 --hash=sha256:301241438c57936ef93f4243a94f2559022268bfcf9b375a9a72eb0f8db8358e
+flatbuffers==25.12.19 --hash=sha256:7634f50c427838bb021c2d66a3d1168e9d199b0607e6329399f04846d42e20b4
+fsspec==2026.9.0 --hash=sha256:8dd6e646e99ea382bd85f97a45e6b526a442d79423a7dc673f1e2756d05fcb5f
+hf-xet==1.7.1 --hash=sha256:f26bfd4a6e31b4e37e749a07e8642589406e8537be05eccfd633a92b95e2fb51
+huggingface-hub==0.36.2 --hash=sha256:48f0c8eac16145dfce371e9d2d7772854a4f591bcb56c9cf548accf531d54270
+idna==3.20 --hash=sha256:ab7ae7122974553370f0bdb919e1a960b2cd1bc1ef0276416d896db81c14582c
+numpy==2.5.4 --hash=sha256:fbde6962867ee75b48b0ee29b2b9372ec5d617799dbaf38e82dc0596f2f7738a
+onnxruntime==1.31.1 --hash=sha256:1f3dea47f2f0e5117c2404cea7d21fd253ae7836a3bf167a501cdfbb2600d536
+packaging==26.3 --hash=sha256:d7193f7c8e4e93f444fde0262bf90af30e16fa0ad0ad44cb553c87339b23cd1c
+protobuf==7.36.2 --hash=sha256:89f23aa53c24553a2416fd4fd1ec06f74fa42b14b546d8883128813f775bbfd2 --hash=sha256:bdb3a345d48db958e6ce1f18e508beb0cc981d64f24088427549c866cd039f1e
+pyyaml==6.0.3 --hash=sha256:ba1cc08a7ccde2d2ec775841541641e4548226580ab850948cbfda66a1befcdc
+requests==2.34.2 --hash=sha256:2a0d60c172f83ac6ab31e4554906c0f3b3588d37b5cb939b1c061f4907e278e0
+tokenizers==0.23.3 --hash=sha256:376851d22bcf9d650a5c3090bb83e6cf9e895fbf0595369fa4cd43c1f69b5f87
+tqdm==4.70.1 --hash=sha256:c293e525e6fef9c20e8728fd4612df02a0aa31bb5fe91ecd93e123b1b7bffa73
+typing-extensions==4.16.0 --hash=sha256:481caa481374e813c1b176ada14e97f1f67a4539ce9cfeb3f350d78d6370c2e8
+urllib3==2.8.0 --hash=sha256:0cf3cae568d36aa9576b28dfb35f11328f1cb974ca7647d9475ebb86c75ac6e3
