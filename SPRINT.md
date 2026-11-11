@@ -9,8 +9,13 @@ Claude Desktop kan analysere transcripts.
 Status: `bash shared/report.sh status` og `bash shared/report.sh check`. Ingen tal i hånden.
 
 ## Denne sprint
-- H001: installation af Coworker Framework 5.42 (`hotfix/H001-framework-5.42`). Engineer arbejder på install,
-  coworker.ini og precheck.
+- H001 er merget (#1, 2452e31).
+- F001 (brugere og login, PR #4): begge critics har godkendt v2 (d72ba88). Efter merge skal ejeren gøre tre ting på
+  DEV som `whisperdev`:
+  1. Skriv `[app] env = dev` i `~/config/config.ini` (PROJEKTVIDEN.md). Ellers svarer F001 404.
+  2. Opret den første admin med `cron/opret-admin.php`.
+  3. Kør proxy-målingen for F001-S2 (PROJEKTVIDEN.md, DECISIONS #10).
+  Bagefter: tester mod DEV.
 - LIFECYCLE §12-gaten: serveropsætning af DEV efter merge af H001. STABLE venter (ejeren 2026-11-11).
   - DEV er sat op 2026-11-11 (§3a trin 0–8, S-20261111-1 til -4). Kontrol-pre-release `ctrl-2026.11.11-1` er udgivet,
     og `/health` på DEV svarer `ok` uden redirect, så QA H001 v1 fund 4 er afklaret.
@@ -33,8 +38,7 @@ Status: `bash shared/report.sh status` og `bash shared/report.sh check`. Ingen t
 - **Kun DEV indtil videre.** STABLE sættes ikke op nu. Der arbejdes og testes på `dev.whisper.xanouso.com`, indtil
   ejeren beslutter andet.
 
-## Næste op (ID'er tildeles med `report.sh nextid F`, når §12 er grøn)
-1. Brugere og login (roller: administrator, bruger).
-2. Zendesk Talk: liste over tickets med opkald, afspilning, transcription og download.
-3. MCP-server til Claude Desktop (søg i og læs transcripts).
-4. Adversus: samme flow.
+## Næste op (ROADMAP.md)
+1. F002 Zendesk Talk: liste over tickets med opkald, afspilning, transcription og download.
+2. F003 MCP-server til Claude Desktop (søg i og læs transcripts).
+3. F004 Adversus: samme flow.
