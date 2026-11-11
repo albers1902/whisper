@@ -99,6 +99,40 @@ F002-V2-FLAGHOOK · Accepteret risiko: `WHISPER_TEST=1` plus `WHISPER_TEST_FLAGS
 serverne. Hooken begrænses til CLI (`PHP_SAPI === 'cli'`) i et senere ID.
 Udløber: 2027-02-09
 
+## #20 — 2026-11-11 — F003: transcripts sendes til Anthropic via Claude Desktop
+Ejeren (DECISIONS #1): transcripts må analyseres i Claude Desktop. Med F003 forlader tekst (transcripts,
+telefonnumre, agentnavne og metadata) serveren til Anthropic, når en bruger med egen nøgle beder Claude om det. Lyd
+forlader stadig aldrig serveren (#2). Anthropic står i `launched/compliance/SUBPROCESSORS.md`. Ejeren udfylder "DPA
+indgået" og "overførselsgrundlag", før F003 tændes på TEST eller STABLE.
+
+## #21 — 2026-11-11 — F003: MCP legacy-protokol 2025-11-25 og flagafhængighed
+Team Lead (svar på F003 v0, QA F003 v1 TL-1 og TL-2): `/mcp` taler MCP 2025-11-25 (accepterer også 2025-06-18 og
+2025-03-26) og svarer 400 på 2026-07-28, så klienter falder tilbage til `initialize`. Klienten er `mcp-remote@0.15.2`
+med `--transport http-only` (udgivet 2026-10-20, nyere end rettelsen af CVE-2025-6514 i 0.1.16). `/mcp` kræver F001,
+F002 og F003 tændt. Om tilbagefaldet virker, bekræftes med den rigtige Claude Desktop på DEV.
+
+## #22 — 2026-11-11 — F003-S1: indirekte prompt-injection via transcripts
+F003-S1 · Accepteret risiko: transcripts er kundetale og returneres uden ramme til Claude (MEDIUM, security-critic
+F003_v1, QA F-10). Værktøjerne er read-only. En fast ramme om kundetale og en advarsel på `/konto` laves i det
+opfølgende H-nummer.
+Udløber: 2027-02-09
+
+## #23 — 2026-11-11 — F003-S2: mcp-remote via npx og nøgle i klartekst hos klienten
+F003-S2 · Accepteret risiko: Claude Desktop kører `npx -y mcp-remote@0.15.2`, og nøglen står i klartekst i
+`claude_desktop_config.json` på brugerens maskine (LOW, security-critic F003_v1). Versionen er låst og nyere end den
+kendte sårbarhed. Nøglen kan tilbagekaldes med ét klik.
+Udløber: 2027-02-09
+
+## #24 — 2026-11-11 — F003-S3: nøgler tilbagekaldes ikke ved nulstilling eller skift af adgangskode
+F003-S3 · Accepteret risiko: MCP-nøgler overlever en adgangskodenulstilling eller et skift (LOW, security-critic
+F003_v1). Deaktivering spærrer dem. Tilbagekald ved nulstilling og skift laves i det opfølgende H-nummer.
+Udløber: 2027-02-09
+
+## #25 — 2026-11-11 — F003-S4: ingen begrænsning af uautentificerede forsøg på /mcp, tillid til Host
+F003-S4 · Accepteret risiko: 401-svar tælles ikke, og links bygges af `Host` (LOW, security-critic F003_v1). Nøglerne
+kan ikke gættes (256 bit). Sysadmin bekræfter, at vhosten ikke har catch-all-alias, før STABLE.
+Udløber: 2027-02-09
+
 ## #5 — 2026-11-11 — H001: /health uden rate limit eller cache
 H001 · Accepteret risiko: `/health` er offentlig og laver en DB-skriveprøve ved hvert kald uden rate limit eller cache.
 Samtidige kald kan give falsk `degraded` (LOW, security-critic H001_v1 og v2). Kun driftsforstyrrelse, og der er ingen
