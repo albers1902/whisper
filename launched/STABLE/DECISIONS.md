@@ -224,3 +224,62 @@ poison-pill-opkald forrest i køen gentages hvert minut uden at nå `MAX_ATTEMPT
 Detaljen står i `sidste-fejl[-n].log` (0600). #34 er lukket af H007 for logning og løkkestop. Denne post er resten.
 Rettes ved at lade det første opkald i batchen bruge forsøget ved en undtagelse uden for motoren, senest før STABLE.
 Udløber: 2027-02-10
+
+## #37 — 2026-11-12 — F004: down 0005 er destruktiv og efterlader lydfiler
+F004 · Accepteret risiko: down-migrationen 0005 sletter alle Adversus-opkald og transcripts, men efterlader lydfilerne
+uden række (LOW, security-critic F004_v1–v3, S3). Rollback er flaget `F004_adversus`, ikke down. Efter en bevidst down
+slettes lydfilerne manuelt (changes/F004.md).
+Udløber: 2027-02-10
+
+## #38 — 2026-11-12 — F004: kundenumre fra Adversus gemmes uden retention
+F004 · Accepteret risiko: telefonnummeret gemmes renset for alle hentede Adversus-opkald med optagelse, som for Zendesk
+(spec F004: "gemmes, hvis Zendesk gemmer det"). Der er ingen sletning eller retention endnu (LOW, security-critic
+F004_v1–v3, S4). Team Leads afgørelse. Ejeren er informeret 2026-11-12 og kan bede om, at det kun gemmes for succes og
+valgte opkald (én linje i `Sync::saveCall`). Retention afklares senest før STABLE (jf. #16).
+Udløber: 2027-02-10
+
+## #39 — 2026-11-12 — F004: lydværten valideres på navn, ikke IP
+F004 · Accepteret risiko: redirects følges kun til værter i `[adversus] recording_hosts`, og værten tjekkes på navn,
+ikke opløst IP (LOW, security-critic F004, S6). `recording_hosts` må kun indeholde den konkrete bucket-vært
+(`s3.gra.io.cloud.ovh.net`).
+Udløber: 2027-02-10
+
+## #40 — 2026-11-12 — F004: transcribe tager Adversus-opkald i kø, når flaget er slukket
+F004 · Accepteret risiko: slås `F004_adversus` fra, transcriberer `cron/transcribe.php` stadig Adversus-opkald, der
+allerede er i kø med lyd. Intet vises, og intet lækker (LOW, security-critic F004, S7).
+Udløber: 2027-02-10
+
+## #41 — 2026-11-12 — F004: loftet på 50 manuelt valgte er ikke atomisk
+F004 · Accepteret risiko: loftet tælles og opdateres i to forespørgsler, så samtidige klik kan gå få opkald over 50
+(LOW, security-critic F004_v2, N3).
+Udløber: 2027-02-10
+
+## #42 — 2026-11-12 — F004: Adversus-agentnavne i strukturerede MCP-felter
+F004 · Accepteret risiko: agentnavne fra Adversus er markeret som ikke-betroet tekst i `get_transcript`, men ikke i de
+strukturerede felter i `search_calls`, `list_recent_calls` og `call_stats`. Det er samme tillidsniveau som
+Zendesk-agenter (LOW, security-critic F004_v2, N4).
+Udløber: 2027-02-10
+
+## #43 — 2026-11-12 — F004: et enkelt download kan holde sync-låsen ca. 38 min
+F004 · Accepteret risiko: deadline på 8 min tjekkes mellem downloads, og curl-timeout er 1800 s. En langsom lydvært kan
+derfor holde låsen i op til ca. 38 min, og sync-kørsler springes over imens (LOW, security-critic F004_v2, N5).
+Udløber: 2027-02-10
+
+## #44 — 2026-11-12 — F004: genforsøg på fejlet lyd tæller ikke i loftet på 50
+F004 · Accepteret risiko: genforsøg på et opkald med fejlet lyd tjekker ikke loftet på 50, men er begrænset af 1 times
+afkøling pr. opkald og 25 downloads pr. kørsel (LOW, security-critic F004_v3, N6).
+Udløber: 2027-02-10
+
+## #45 — 2026-11-12 — F004: advarslen om forkastede optagelser afkortes fra enden
+F004 · Accepteret risiko: når admin-advarslen om forkastede Adversus-optagelser overstiger 250 tegn, mangler de nyeste
+id'er i advarslen. De står i `logs/adversus-sync.log` (LOW, security-critic F004_v3, N7; samme som qa-critic
+F004_v3, N-6).
+Udløber: 2027-02-10
+
+## #46 — 2026-11-12 — F004: ventelistens gamle grupper kan sulte, og afkølingen forklares ikke
+F004 · Accepteret risiko (LOW, qa-critic F004_v3, N-5 og N-7):
+- Ved vedvarende mange umatchede optagelser tages nye rækker (færrest forsøg) først. Ældre rækker når så ikke 6 forsøg,
+  og ventelisten fyldes til 2000, hvorefter nye forkastes. Det er altid synligt i admin-advarslen og loggen.
+- Under afkølingen på 1 time får brugeren først efter klik at vide, at lyden blev prøvet for nylig.
+Begge rettes i et senere H-nummer, hvis de ses på DEV.
+Udløber: 2027-02-10
