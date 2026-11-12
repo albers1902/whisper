@@ -402,7 +402,8 @@ final class Transcriber
             try {
                 DB::exec('INSERT INTO transcripts (call_id, `text`, segments_json, model, `language`, created_at) VALUES (?, ?, ?, ?, ?, ?) '
                     . 'ON DUPLICATE KEY UPDATE `text` = VALUES(`text`), segments_json = VALUES(segments_json), model = VALUES(model), '
-                    . '`language` = VALUES(`language`), created_at = VALUES(created_at)',
+                    // Et nyt transcript har ingen talere endnu: diarization (H011) tager det igen i ledig tid
+                    . '`language` = VALUES(`language`), created_at = VALUES(created_at), diar_status = NULL, diar_attempts = 0, diarized_at = NULL',
                     [$id, $result['text'], (string) json_encode($result['segments'], JSON_UNESCAPED_UNICODE),
                         $result['model'], $result['language'], $this->now()]);
                 DB::exec("UPDATE calls SET transcript_status = 'faerdig', transcript_error = NULL, transcript_retry_at = NULL, "
