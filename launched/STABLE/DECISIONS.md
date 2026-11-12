@@ -335,3 +335,16 @@ Udløber: 2027-02-10
 H009-S4 · Accepteret risiko (LOW, security-critic H009_v1): diagnosen har ingen lås eller meddelelse ved
 `logs/deploying` og ingen kvote på tværs af kørsler. Rettes i H009 PR 2 (meddelelse ved deploying).
 Udløber: 2027-02-10
+
+## #55 — 2026-11-12 — H010-F1: batched_size kan give OOM ved høj config
+H010-F1 · Accepteret risiko (LOW, security-critic H010_v1): `[whisper] batched_size` kan sættes op til 32. Med 2 workers
+kan det estimerede forbrug nå ca. 21 GB, mod ca. 4,7 GB ledig på DEV. Værdien styres af admin, standarden 4 er sikker,
+og rollback er `engine_mode = sequential`. Smoke-testen tjekker `free -m`. Grænsen sænkes, eller der kommer en advarsel,
+hvis målingen viser behov.
+Udløber: 2027-02-10
+
+## #56 — 2026-11-12 — H010-F2: batched-indhold kan afvige fra sequential
+H010-F2 · Accepteret risiko (LOW, security-critic H010_v1): batched giver samme JSON-form, men tekst og segmentgrænser
+kan afvige, fordi der ikke er kontekst mellem VAD-stykkerne. Det accepteres under målingen. Ejeren sammenligner
+kvaliteten (smoke trin 7) og vælger derefter tilstand.
+Udløber: 2027-02-10
