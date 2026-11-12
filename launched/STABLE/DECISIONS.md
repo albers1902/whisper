@@ -283,3 +283,39 @@ F004 · Accepteret risiko (LOW, qa-critic F004_v3, N-5 og N-7):
 - Under afkølingen på 1 time får brugeren først efter klik at vide, at lyden blev prøvet for nylig.
 Begge rettes i et senere H-nummer, hvis de ses på DEV.
 Udløber: 2027-02-10
+
+## #47 — 2026-11-12 — F006: Whisper tilføjes i Claude som custom connector via OAuth
+Ejeren (2026-11-12): MCP skal kunne tilføjes i Claude som custom connector med kun URL'en. Verifikationen sker ved
+login i browseren, uden nøgle at kopiere, uden Node.js og uden genstart. Det bygges som OAuth 2.1 med PKCE og dynamisk
+klientregistrering på `/mcp` efter MCP-specifikationen (F006), bag flaget `F006_oauth`. F003-nøglerne med `mcp-remote`
+bliver som en avanceret mulighed. Ingen ny modtager: transcripts går til Anthropic som efter #20.
+
+## #48 — 2026-11-12 — F006: kun den rigtige connector, ingen mcp-remote-nøgler (ændrer #47)
+Ejeren (2026-11-12): "jeg vil kun bruge den rigtige mcp". Med `F006_oauth` tændt viser Konto kun "Forbind Claude"
+(connector-URL og Forbundne apps). `/mcp` accepterer kun OAuth-tokens, og F003's `wsp_`-nøgler og mcp-remote-
+vejledningen er slået fra. F003-koden bliver liggende, så rollback med flaget fra stadig virker.
+
+## #49 — 2026-11-12 — H008: hængende opkald bag andre refunderes uden forsøg
+H008 · Accepteret risiko: et opkald, der hænger som nr. 2 eller senere i en batch, ligner "kørslens tid opbrugt". Det
+sættes derfor tilbage uden forsøg og kan spilde en kørsel (op til 50 min) pr. ældre opkald foran det i køen. Det er
+afgrænset: som første fil i en batch bruger det altid et forsøg, og efter 3 forsøg opgives det (MEDIUM, security-critic
+H008_v1). Kan senere begrænses med en tæller for refunderinger pr. opkald.
+Udløber: 2027-02-10
+
+## #50 — 2026-11-12 — H008: små unøjagtigheder i resttids-klassificeringen
+H008 · Accepteret risiko (LOW, security-critic H008_v1):
+- Køretiden for det igangværende opkald måles efter `finish()` og undervurderes derfor en smule.
+- `release()` sætter et tidligere fejlet opkald til ventende, så det mister sin backoff-plads.
+- Standard-`rtf_estimate` 1,5 ligger under den målte spidsværdi 2,7. Batches kan stadig løbe tør for tid, men uden at
+  opkald mister forsøg. Værdien justeres i config efter DEV-loggen.
+Udløber: 2027-02-10
+
+## #51 — 2026-11-12 — H009: diagnosens output kan i sjældne tilfælde indeholde fri tekst
+H009 · Accepteret risiko (LOW, security-critic H009_v1, S1–S4):
+- S1: `Diagnose::raw()` slipper strenge med kun cifre, +, - og mellemrum igennem, fx et nummer i et felt, der burde være
+  et tal.
+- S2: `cron/adversus-diagnose.php` fanger ikke Throwable, så en DB- eller programfejl giver PHP's egen fejludskrift.
+- S3: den rensede fejltekst fra Adversus (op til 200 tegn) kan indeholde navne eller korte numre.
+- S4: der er ingen meddelelse ved `logs/deploying` og ingen kvote på tværs af kørsler.
+S1, S2 og S4 rettes i H009 PR 2. Ejeren ser linjerne med "afvist (" og "✘" igennem, før outputtet sendes.
+Udløber: 2027-02-10

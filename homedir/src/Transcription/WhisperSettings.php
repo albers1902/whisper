@@ -12,6 +12,8 @@ use Closure;
  *   vad       = on|off (standard on)
  *   batch     = 1–50   (standard 10: opkald pr. motorkald, så modellen indlæses én gang pr. batch; 1 = ét pr. kald)
  *   workers   = 1–4    (standard 2: samtidige transcribe-kørsler, hver med sin egen motor; 1 = én ad gangen)
+ *   rtf_estimate = 0,3–5 (standard 1,5: forventet behandlingstid pr. sekund lyd; en batch claimer kun opkald, hvis
+ *                  Σ varighed × rtf_estimate når at blive færdig inden for kørslens resttid). Både 1.5 og 1,5 læses.
  * Uden threads deles kernerne mellem workers: max(1, kerner / workers) ved workers > 1, ellers kerner − 1.
  * Ugyldige værdier giver standarden og én advarsel pr. nøgle, så en tastefejl i config ikke stopper køen.
  * Værdierne ender som argv-elementer til transcribe.py, så konstruktøren afviser alt uden for intervallerne.
@@ -26,13 +28,18 @@ final class WhisperSettings
     public const DEFAULT_BATCH = 10;
     public const MAX_WORKERS = Slots::MAX;
     public const DEFAULT_WORKERS = 2;
+    public const MIN_RTF = 0.3;
+    public const MAX_RTF = 5.0;
+    public const DEFAULT_RTF = 1.5;
 
     public function __construct(public readonly int $threads, public readonly int $beam, public readonly bool $vad,
-        public readonly int $batch = self::DEFAULT_BATCH, public readonly int $workers = 1)
+        public readonly int $batch = self::DEFAULT_BATCH, public readonly int $workers = 1,
+        public readonly float $rtf = self::DEFAULT_RTF)
     {
         if ($threads < 1 || $threads > self::MAX_THREADS || $beam < 1 || $beam > self::MAX_BEAM
-            || $batch < 1 || $batch > self::MAX_BATCH || $workers < 1 || $workers > self::MAX_WORKERS) {
-            throw new EngineError('[whisper] threads skal være 1–32, beam_size 1–10, batch 1–50 og workers 1–4');
+            || $batch < 1 || $batch > self::MAX_BATCH || $workers < 1 || $workers > self::MAX_WORKERS
+            || !($rtf >= self::MIN_RTF && $rtf <= self::MAX_RTF)) {
+            throw new EngineError('[whisper] threads skal være 1–32, beam_size 1–10, batch 1–50, workers 1–4 og rtf_estimate 0,3–5');
         }
     }
 
@@ -69,7 +76,17 @@ final class WhisperSettings
             }
         }
         $batch = self::intOr($section, 'batch', 1, self::MAX_BATCH, self::DEFAULT_BATCH, $warn);
-        return new self($threads, $beam, $vad, $batch, $workers);
+        $rtf = self::DEFAULT_RTF;
+        $raw = self::raw($section, 'rtf_estimate');
+        if ($raw !== null) {
+            $v = preg_match('/^[0-9](?:[.,][0-9]{1,2})?$/', $raw) === 1 ? (float) str_replace(',', '.', $raw) : -1.0;
+            if ($v >= self::MIN_RTF && $v <= self::MAX_RTF) {
+                $rtf = $v;
+            } else {
+                $warn('transcribe: advarsel: [whisper] rtf_estimate skal være 0,3–5 — bruger 1,5');
+            }
+        }
+        return new self($threads, $beam, $vad, $batch, $workers, $rtf);
     }
 
     /** Antal kerner uden shell: /proc/cpuinfo, ellers /sys/devices/system/cpu/online. null = ukendt. */
