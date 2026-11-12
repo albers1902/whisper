@@ -19,8 +19,9 @@ H006Check::that('AK6', str_contains($src, 'len(a.audio) > a.batch_max'), 'højst
 H006Check::that('AK6', str_contains($src, 'v.startswith("/") and ".." not in v.split("/")'), 'kun absolutte stier uden ".."');
 H006Check::that('AK6', strpos($src, 'p.error("lydstier skal være absolutte') < strpos($src, 'from faster_whisper import'),
     'stierne valideres før faster_whisper importeres');
-H006Check::that('AK6', str_contains($src, 'WhisperModel(') && substr_count($src, 'WhisperModel(') === 1
-    && strpos($src, 'WhisperModel(') < strpos($src, 'for f in a.audio:'), 'modellen indlæses én gang, før løkken over filerne');
+// Selve kaldet (docstringen nævner også WhisperModel(…))
+H006Check::that('AK6', substr_count($src, 'model = WhisperModel(') === 1
+    && strpos($src, 'model = WhisperModel(') < strpos($src, 'for f in a.audio:'),'modellen indlæses én gang, før løkken over filerne');
 H006Check::that('AK6', str_contains($src, 'flush=True') && str_contains($src, '"load_seconds"') && str_contains($src, '"elapsed"'),
     'JSON Lines flushes pr. fil, elapsed pr. fil og load_seconds til sidst');
 H006Check::that('AK6', str_contains($src, 'except Exception') && str_contains($src, '"error": type(e).__name__'),
