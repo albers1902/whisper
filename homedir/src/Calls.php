@@ -8,6 +8,8 @@ use DateTimeZone;
 use Whisper\Adversus\Feature;
 use Whisper\Transcription\Diarization;
 use Whisper\Transcription\DiarizationSettings;
+use PDOException;
+use Whisper\Transcription\ProcessEngine;
 use Whisper\Transcription\QueueRules;
 
 /**
@@ -238,8 +240,8 @@ final class Calls
      */
     public static function count(array $f): int
     {
-        [$w, $p] = self::where($f);
-        return (int) DB::scalar('SELECT COUNT(*) FROM (SELECT 1 FROM calls c WHERE ' . $w . ' LIMIT ' . (self::COUNT_CAP + 1) . ') n', $p);
+        [$sql, $p] = self::countSql($f);
+        return (int) DB::scalar($sql, $p);
     }
 
     /**
@@ -250,26 +252,53 @@ final class Calls
      */
     public static function searchCapped(array $f): array
     {
-        [$w, $p] = self::where($f);
         $total = self::count($f);
         $side = max(1, min($f['side'], (int) ceil(min($total, self::COUNT_CAP) / self::PAGE_SIZE)));
-        $page = ' LIMIT ' . self::PAGE_SIZE . ' OFFSET ' . (($side - 1) * self::PAGE_SIZE);
         if ($total === 0) {
-            $rows = [];
-        } elseif ($total <= self::COUNT_CAP) {
-            // Få eller middel mange træf (QA F-1): id'erne hentes uden ORDER BY — med det mest selektive indeks, som
-            // tællingen — og sorteres bagefter (højst COUNT_CAP små rækker). Med ORDER BY ville optimizeren gå baglæns i
-            // tidsindekset og læse hele tabellen, når kun få rækker matcher (fx "I kø" med 5).
-            $rows = DB::all('SELECT c.* FROM calls c JOIN (SELECT c.id, c.started_at FROM calls c WHERE ' . $w . ' LIMIT ' . (self::COUNT_CAP + 1)
-                . ') x ON x.id = c.id ORDER BY x.started_at DESC, x.id DESC' . $page, $p);
-        } else {
-            // Mange træf: tidsindekset (source, started_at, id, …) leverer rækkefølgen og stopper efter siden. FORCE, fordi
-            // optimizeren ellers kan vælge index_merge + filesort over alle træf (målt 166 ms ved 61.000, AK12). Indekset
-            // findes altid her: deploy kører migration 0010, før filerne skiftes.
-            $force = in_array($f['kilde'] ?? '', ['zendesk', 'adversus'], true) ? ' FORCE INDEX (calls_source_started)' : '';
-            $rows = DB::all('SELECT c.* FROM calls c' . $force . ' WHERE ' . $w . ' ORDER BY c.started_at DESC, c.id DESC' . $page, $p);
+            return ['rows' => [], 'total' => 0, 'side' => $side];
+        }
+        [$sql, $p] = self::listSql($f, $total, $side);
+        try {
+            $rows = DB::all($sql, $p);
+        } catch (PDOException $e) {
+            // 1176 = indekset findes ikke (fx down/0010 kørt med flaget tændt, QA R-2): samme liste uden FORCE, aldrig en fejlside
+            if ((int) ($e->errorInfo[1] ?? 0) !== 1176) {
+                throw $e;
+            }
+            [$sql, $p] = self::listSql($f, $total, $side, false);
+            $rows = DB::all($sql, $p);
         }
         return ['rows' => $rows, 'total' => $total, 'side' => $side];
+    }
+
+    /** F007: listens tælling med loft — den SQL, count() kører (AK12 måler præcis den). @return array{0: string, 1: list<mixed>} */
+    public static function countSql(array $f): array
+    {
+        [$w, $p] = self::where($f);
+        return ['SELECT COUNT(*) FROM (SELECT 1 FROM calls c WHERE ' . $w . ' LIMIT ' . (self::COUNT_CAP + 1) . ') n', $p];
+    }
+
+    /**
+     * F007: listens side, som searchCapped() kører den (AK12 måler præcis den).
+     * - Højst COUNT_CAP træf (QA F-1): id'erne hentes uden ORDER BY — med det mest selektive indeks, som tællingen — og
+     *   sorteres bagefter (højst COUNT_CAP små rækker). Med ORDER BY går optimizeren baglæns i tidsindekset og læser hele
+     *   tabellen, når kun få rækker matcher (fx "I kø" med 5).
+     * - Flere træf: tidsindekset (source, started_at, id, …) leverer rækkefølgen og stopper efter siden. FORCE, fordi
+     *   optimizeren ellers kan vælge index_merge + filesort over alle træf (målt 166 ms ved 61.000, AK12).
+     *
+     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string, kilde?: string, status?: string} $f
+     * @return array{0: string, 1: list<mixed>}
+     */
+    public static function listSql(array $f, int $total, int $side, bool $force = true): array
+    {
+        [$w, $p] = self::where($f);
+        $page = ' LIMIT ' . self::PAGE_SIZE . ' OFFSET ' . (($side - 1) * self::PAGE_SIZE);
+        if ($total <= self::COUNT_CAP) {
+            return ['SELECT c.* FROM calls c JOIN (SELECT c.id, c.started_at FROM calls c WHERE ' . $w . ' LIMIT ' . (self::COUNT_CAP + 1)
+                . ') x ON x.id = c.id ORDER BY x.started_at DESC, x.id DESC' . $page, $p];
+        }
+        $hint = $force && in_array($f['kilde'] ?? '', ['zendesk', 'adversus'], true) ? ' FORCE INDEX (calls_source_started)' : '';
+        return ['SELECT c.* FROM calls c' . $hint . ' WHERE ' . $w . ' ORDER BY c.started_at DESC, c.id DESC' . $page, $p];
     }
 
     /**
@@ -420,10 +449,16 @@ final class Calls
             . $rule . '))', $params];
     }
 
-    /** F007: står et opkald i "transcriberer" lige nu? (indekset calls_transcript_status, LIMIT 1) */
-    public static function transcribingNow(): bool
+    /**
+     * F007: transcriberes et opkald lige nu — dvs. står det i "transcriberer" og er stadig inden for motorens tidsgrænse
+     * (ProcessEngine::timeoutFor: max(2 t, 4 × varighed) fra claimed_at)? Et lovligt langt opkald skriver ingen loglinjer
+     * undervejs (QA R-5), mens en dræbt proces efterlader et, der er ældre end grænsen (QA F-8).
+     */
+    public static function transcribingNow(?int $now = null): bool
     {
-        return DB::scalar("SELECT 1 FROM calls WHERE transcript_status = 'transcriberer' LIMIT 1") !== false;
+        return DB::scalar("SELECT 1 FROM calls WHERE transcript_status = 'transcriberer' "
+            . 'AND claimed_at >= DATE_SUB(?, INTERVAL GREATEST(?, 4 * duration_sec) SECOND) LIMIT 1',
+            [gmdate('Y-m-d H:i:s', $now ?? time()), ProcessEngine::MIN_TIMEOUT]) !== false;
     }
 
     public const EXCERPT_JSON = 3000;

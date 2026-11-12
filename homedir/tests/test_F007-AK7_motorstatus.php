@@ -8,6 +8,8 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/f007_lib.php';
 
+use Whisper\Calls;
+use Whisper\DB;
 use Whisper\Paths;
 use Whisper\Transcription\EngineStatus as S;
 use Whisper\UiV2;
@@ -34,8 +36,21 @@ F007Check::that('AK7', !is_file(Paths::varDir() . '/whisper/venv/bin/python') &&
 touch($log, $now - 60);
 F007Check::that('AK7', S::read(5, true, $now, $log)['state'] === S::BUSY, 'et opkald transcriberes og loggen er frisk: transcriberer nu');
 touch($log, $now - 3 * 3600);
-F007Check::that('AK7', S::read(5, true, $now, $log)['state'] === S::STALLED,
-    'et opkald står i "transcriberer", men loggen er 3 t gammel (dræbt proces): ingen fremdrift (QA F-8)');
+F007Check::that('AK7', S::read(5, true, $now, $log)['state'] === S::BUSY,
+    'et langt opkald inden for motorens tidsgrænse: transcriberer nu, selv om loggen er 3 t gammel (QA R-5)');
+F007Check::that('AK7', S::read(5, false, $now, $log)['state'] === S::STALLED, 'kø og log 3 t gammel, intet opkald i gang: ingen fremdrift (QA F-8)');
+
+// transcribingNow: kun "transcriberer" inden for max(2 t, 4 × varighed) fra claimed_at
+$long = f002_insert(['duration_sec' => 3600]);
+DB::exec("UPDATE calls SET transcript_status = 'transcriberer', claimed_at = ? WHERE id = ?", [gmdate('Y-m-d H:i:s', $now - 3 * 3600), $long]);
+F007Check::that('AK7', Calls::transcribingNow($now), '1 t opkald claimet for 3 t siden (grænse 4 t): i gang (QA R-5)');
+DB::exec('UPDATE calls SET claimed_at = ? WHERE id = ?', [gmdate('Y-m-d H:i:s', $now - 5 * 3600), $long]);
+F007Check::that('AK7', !Calls::transcribingNow($now), 'claimet for 5 t siden (over grænsen, dræbt proces): ikke i gang (QA F-8)');
+$short = f002_insert(['duration_sec' => 60]);
+DB::exec("UPDATE calls SET transcript_status = 'transcriberer', claimed_at = ? WHERE id = ?", [gmdate('Y-m-d H:i:s', $now - 3600), $short]);
+F007Check::that('AK7', Calls::transcribingNow($now), 'kort opkald claimet for 1 t siden (grænse 2 t): i gang');
+DB::exec('DELETE FROM calls');
+Paths::setVarDir($dir);
 touch($log, $now - 600);
 F007Check::that('AK7', S::read(5, false, $now, $log)['state'] === S::BUSY, 'kø og aktivitet for 10 min. siden: transcriberer nu');
 touch($log, $now - 45 * 60);

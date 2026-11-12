@@ -58,22 +58,13 @@ $explain = static function (string $sql, array $p): array {
     }
     return [implode(' | ', $txt), $max];
 };
-$where = static fn(array $f): array => (new ReflectionMethod(Calls::class, 'where'))->invoke(null, $f);
-/** Listens SQL som Calls::searchCapped bygger den for et givent antal */
-$listSql = static function (array $f, int $n) use ($where): array {
-    [$w, $p] = $where($f);
-    $sql = $n <= Calls::COUNT_CAP
-        ? 'SELECT c.* FROM calls c JOIN (SELECT c.id, c.started_at FROM calls c WHERE ' . $w . ' LIMIT ' . (Calls::COUNT_CAP + 1)
-            . ') x ON x.id = c.id ORDER BY x.started_at DESC, x.id DESC LIMIT 50'
-        : 'SELECT c.* FROM calls c FORCE INDEX (calls_source_started) WHERE ' . $w . ' ORDER BY c.started_at DESC, c.id DESC LIMIT 50';
-    return [$sql, $p];
-};
-$run = static function (string $name, array $f, ?int $maxRows, float $maxSec) use ($time, $explain, $listSql, $where): void {
+// QA R-6: præcis den SQL, siden kører (Calls::listSql/countSql), ikke en kopi
+$run = static function (string $name, array $f, ?int $maxRows, float $maxSec) use ($time, $explain): void {
     [$sec, $res] = $time(static fn(): array => Calls::searchCapped($f));
-    [$sql, $p] = $listSql($f, $res['total']);
+    [$sql, $p] = Calls::listSql($f, $res['total'], $res['side']);
     [$plan, $rows] = $explain($sql, $p);
-    [$w, $pc] = $where($f);
-    [$cplan, $crows] = $explain('SELECT COUNT(*) FROM (SELECT 1 FROM calls c WHERE ' . $w . ' LIMIT ' . (Calls::COUNT_CAP + 1) . ') n', $pc);
+    [$csql, $pc] = Calls::countSql($f);
+    [$cplan, $crows] = $explain($csql, $pc);
     printf("%-34s %6.1f ms antal=%-7s liste: %s || antal: %s\n", $name, $sec * 1000, $res['total'] > Calls::COUNT_CAP ? '10.000+' : $res['total'], $plan, $cplan);
     $short = static fn(string $pl): string => trim((string) preg_replace(['/<derived2>:[^|]*\| ?/', '/ \(Using [^)]*\)/', '/c:eq_ref key=PRIMARY rows=1 \| ?/'],
         ['', '', ''], $pl));
@@ -125,6 +116,7 @@ DB::exec("UPDATE calls SET transcript_status = 'ventende', audio_status = 'hente
 DB::exec("UPDATE calls SET transcript_status = 'faerdig', audio_status = 'hentet', is_success = 1 WHERE `source` = 'adversus' "
     . "AND transcript_status = 'ikke_valgt' ORDER BY id DESC LIMIT 5");
 DB::exec("UPDATE calls SET agent_name = 'Sjælden Agent' WHERE `source` = 'zendesk' ORDER BY id LIMIT 3");
+DB::exec("UPDATE calls SET agent_name = 'Travl Agent' WHERE `source` = 'zendesk' AND agent_name <> 'Sjælden Agent' ORDER BY id DESC LIMIT 5000");
 DB::exec('ANALYZE TABLE calls');
 printf("B: omfordelt på %.1f s\n", microtime(true) - $t1);
 $run('B Zendesk, I kø (5)', Calls::uiFilter(['status' => 'koe']), 1000, 0.2);
@@ -132,6 +124,8 @@ $run('B Adversus, I kø (5)', Calls::uiFilter(['kilde' => 'adversus', 'vis' => '
 $run('B Adversus, alle, Færdige (5)', Calls::uiFilter(['kilde' => 'adversus', 'vis' => 'alle', 'status' => 'faerdig']), 1000, 0.2);
 $run('B Adversus, succes og valgte (10)', Calls::uiFilter(['kilde' => 'adversus']), null, 0.2);
 $run('B Zendesk, agent med 3', Calls::uiFilter(['agent' => 'Sjælden Agent']), 1000, 0.2);
+$run('B Zendesk, agent med 5.000 (QA R-3)', Calls::uiFilter(['agent' => 'Travl Agent']), 20000, 0.2);
+$run('B Zendesk, agent med 5.000, side 100', Calls::uiFilter(['agent' => 'Travl Agent', 'side' => '100']), 20000, 0.2);
 $run('B Zendesk, I kø + agent (0)', Calls::uiFilter(['status' => 'koe', 'agent' => 'Agent 7']), null, 0.2);
 F007Check::that('AK12', count(Calls::searchCapped(Calls::uiFilter(['status' => 'koe']))['rows']) === 5
     && count(Calls::searchCapped(Calls::uiFilter(['kilde' => 'adversus']))['rows']) === 10, 'B: de rigtige rækker kommer frem');
@@ -151,8 +145,19 @@ foreach ($ids as $id) {
 printf("uddrag for %d opkald: %.1f ms\n", count($x), $sec * 1000);
 F007Check::that('AK12', count($x) === 50 && $sec < 0.5, sprintf('uddrag for en side: %.0f ms', $sec * 1000));
 
+// QA R-2: mangler indekset (down/0010 med flaget tændt), falder listen tilbage uden FORCE (fejl 1176) i stedet for en fejlside
+DB::exec('ALTER TABLE calls DROP INDEX calls_source_started');
+$fb = Calls::uiFilter(['kilde' => 'adversus', 'vis' => 'alle']);
+try {
+    $res = Calls::searchCapped($fb);
+    $okFb = $res['total'] > Calls::COUNT_CAP && count($res['rows']) === 50;
+} catch (Throwable $e) {
+    $okFb = false;
+}
+F007Check::that('AK12', $okFb, 'uden calls_source_started: listen virker stadig (fallback uden FORCE)');
 DB::exec('DELETE FROM transcripts');
 DB::exec('DELETE FROM calls');
+DB::exec('ALTER TABLE calls ADD INDEX IF NOT EXISTS calls_source_started (`source`, started_at, id, is_success, transcript_status)');
 $GLOBALS['f007_sum'][] = sprintf('agenter (Adversus): %s', $planAgents);
 echo "== RESUME\n" . implode("\n", $GLOBALS['f007_sum']) . "\n";
 F007Check::done();
