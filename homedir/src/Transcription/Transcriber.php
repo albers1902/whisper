@@ -21,6 +21,8 @@ use Whisper\DB;
  * Batch (H006): runBatch() claimer op til [whisper] batch opkald og kalder motoren én gang, så modellen kun indlæses
  * én gang. Hvert opkald gemmes, så snart motoren har svaret for det. Stopper motoren undervejs (tidsgrænse eller
  * fejl), tæller kun det opkald, den var i gang med, et forsøg; resten sættes tilbage til ventende.
+ * Kun korte opkald batches: et langt (over 10 min lyd, eller ukendt længde) kører alene med den gamle grænse
+ * max(2 t, 4 × varighed), for med en målt RTF over 1 kan det ikke nå at blive færdigt inden for batchens loft.
  */
 final class Transcriber
 {
@@ -29,6 +31,15 @@ final class Transcriber
     public const RETRY_DELAY = 900;
     /** Tidsgrænsen for en hel batch kan aldrig overstige kørslens 50-minutters-ramme */
     public const BATCH_LIMIT = 3000;
+    /** Opkald over så mange sekunders lyd batches ikke */
+    public const LONG_AUDIO = 600;
+    /** Et langt opkald startes kun, hvis der er mere end så meget tilbage af kørslens ramme */
+    public const LONG_MIN_REMAINING = 600;
+    /** Batchens grænse er mindst nok til ét kort opkald: max(5 min, 4 × dets varighed) */
+    public const SHORT_MIN_LIMIT = 300;
+
+    /** @var array<int, true> opkald i den igangværende batch, der har fået resultat, fejl eller er sat tilbage */
+    private array $settled = [];
 
     /** @var Closure(): int */
     private Closure $clock;
@@ -66,25 +77,31 @@ final class Transcriber
 
     /**
      * Op til $max opkald, hvert med sin egen atomiske UPDATE (status → transcriberer, ét forsøg brugt).
+     * Med $maxAudio kun opkald med kendt lydlængde på højst så mange sekunder (de korte, der må batches).
      *
      * @return list<array{id: int, audio_path: string, duration: int}>
      */
-    public function claim(int $max): array
+    public function claim(int $max, ?int $maxAudio = null): array
     {
         $max = max(1, min(WhisperSettings::MAX_BATCH, $max));
         $cond = "audio_status = 'hentet' AND transcript_attempts < ? "
             . "AND (transcript_status = 'ventende' OR (transcript_status = 'fejlet' "
             . 'AND (transcript_retry_at IS NULL OR transcript_retry_at <= ?)))';
         $now = $this->now();
+        $params = [self::MAX_ATTEMPTS, $now];
+        if ($maxAudio !== null) {
+            $cond .= ' AND duration_sec > 0 AND duration_sec <= ?';
+            $params[] = $maxAudio;
+        }
         // Lidt flere kandidater end nødvendigt: en samtidig kørsel kan have taget nogle af dem
         $ids = DB::all('SELECT id FROM calls WHERE ' . $cond . ' ORDER BY (transcript_status = \'fejlet\'), started_at ASC, id ASC LIMIT '
-            . ($max + 4), [self::MAX_ATTEMPTS, $now]);
+            . ($max + 4), $params);
         $jobs = [];
         foreach ($ids as $row) {
             $id = (int) $row['id'];
             $n = DB::exec("UPDATE calls SET transcript_status = 'transcriberer', claimed_at = ?, "
                 . 'transcript_attempts = transcript_attempts + 1, updated_at = ? WHERE id = ? AND ' . $cond,
-                [$now, $now, $id, self::MAX_ATTEMPTS, $now]);
+                array_merge([$now, $now, $id], $params));
             if ($n === 1) {
                 $r = DB::all('SELECT audio_path, duration_sec FROM calls WHERE id = ?', [$id])[0] ?? [];
                 $jobs[] = ['id' => $id, 'audio_path' => is_string($r['audio_path'] ?? null) ? $r['audio_path'] : '',
@@ -97,6 +114,28 @@ final class Transcriber
         return $jobs;
     }
 
+    /** Langt = over LONG_AUDIO, 4 × varighed over batchens loft, eller ukendt længde: kører alene med den gamle grænse. */
+    public static function isLong(int $durationSec): bool
+    {
+        return $durationSec <= 0 || $durationSec > self::LONG_AUDIO || 4 * $durationSec > self::BATCH_LIMIT;
+    }
+
+    /**
+     * Batchens tidsgrænse: summen af max(2 t, 4 × varighed), højst BATCH_LIMIT og højst kørslens resttid, men mindst
+     * nok til det første opkald (max(SHORT_MIN_LIMIT, 4 × dets varighed)).
+     *
+     * @param list<int> $durations i køens rækkefølge
+     */
+    public static function batchLimit(array $durations, int $remaining): int
+    {
+        $sum = 0;
+        foreach ($durations as $d) {
+            $sum += ProcessEngine::timeoutFor($d);
+        }
+        $floor = min(self::BATCH_LIMIT, max(self::SHORT_MIN_LIMIT, 4 * ($durations[0] ?? 0)));
+        return max($floor, min(self::BATCH_LIMIT, $sum, $remaining));
+    }
+
     /** Ét opkald. Returnerer id'et, eller null hvis køen er tom. */
     public function runOnce(): ?int
     {
@@ -107,6 +146,17 @@ final class Transcriber
         if ($job === null) {
             return null;
         }
+        $this->runJob($job);
+        return $job['id'];
+    }
+
+    /**
+     * Ét claimet opkald alene, med motorens egen grænse max(2 t, 4 × varighed).
+     *
+     * @param array{id: int, audio_path: string, duration: int} $job
+     */
+    private function runJob(array $job): void
+    {
         $took = 0;
         try {
             $file = Calls::audioFile($job['audio_path']);
@@ -120,14 +170,16 @@ final class Transcriber
             $raw = $e instanceof EngineError ? $e : new EngineError('Intern fejl ved transcription');
         }
         $this->finish($job, $raw, $took);
-        return $job['id'];
     }
 
     /**
-     * Op til [whisper] batch opkald i ét motorkald. Med batch = 1, eller en motor uden batch, som runOnce().
-     * Returnerer antal opkald taget (0 = køen er tom, eller motoren er ikke klar).
+     * Op til [whisper] batch korte opkald i ét motorkald; et langt opkald forrest i køen kører alene. Med batch = 1,
+     * eller en motor uden batch, som runOnce(). Returnerer antal opkald taget (0 = køen er tom, motoren er ikke klar,
+     * eller et langt opkald venter på næste kørsel).
+     *
+     * @param int $remaining sekunder tilbage af kørslens ramme (cron/transcribe.php)
      */
-    public function runBatch(): int
+    public function runBatch(int $remaining = self::BATCH_LIMIT): int
     {
         $engine = $this->engine;
         if (!$engine instanceof BatchEngine || $engine->batchSize() <= 1) {
@@ -136,10 +188,47 @@ final class Transcriber
         if (!$engine->available()) {
             return 0;
         }
-        $jobs = $this->claim($engine->batchSize());
-        if ($jobs === []) {
-            return 0;
+        $this->settled = [];
+        $jobs = [];
+        try {
+            $jobs = $this->claim(1);
+            if ($jobs === []) {
+                return 0;
+            }
+            if (self::isLong($jobs[0]['duration'])) {
+                if ($remaining <= self::LONG_MIN_REMAINING) {
+                    // Ikke tid nok i denne kørsel: tilbage uden brugt forsøg, så det starter forrest i den næste
+                    $this->release($jobs[0]['id']);
+                    return 0;
+                }
+                $this->runJob($jobs[0]);
+                $this->settled[$jobs[0]['id']] = true;
+                return 1;
+            }
+            $jobs = array_merge($jobs, $this->claim($engine->batchSize() - 1, self::LONG_AUDIO));
+            $this->batch($engine, $jobs, $remaining);
+        } catch (Throwable $e) {
+            try {
+                ($this->log)('transcribe: batch afbrudt: Intern fejl ved transcription');
+            } catch (Throwable) {
+            }
+        } finally {
+            // Intet claimet opkald må blive stående i "transcriberer", til stale-reglen rydder det efter 2 timer
+            foreach ($jobs as $job) {
+                if (!isset($this->settled[$job['id']])) {
+                    try {
+                        $this->release($job['id']);
+                    } catch (Throwable) {
+                    }
+                }
+            }
         }
+        return count($jobs);
+    }
+
+    /** @param list<array{id: int, audio_path: string, duration: int}> $jobs korte opkald, allerede claimet */
+    private function batch(BatchEngine $engine, array $jobs, int $remaining): void
+    {
         $t0 = ($this->clock)();
         /** @var array<string, array{id: int, audio_path: string, duration: int}> $byFile i claim-rækkefølge */
         $byFile = [];
@@ -152,13 +241,9 @@ final class Transcriber
             $byFile[$file] = $job;
         }
         if ($byFile === []) {
-            return count($jobs);
+            return;
         }
-        $limit = 0;
-        foreach ($byFile as $job) {
-            $limit += ProcessEngine::timeoutFor($job['duration']);
-        }
-        $limit = min(self::BATCH_LIMIT, $limit);
+        $limit = self::batchLimit(array_values(array_column($byFile, 'duration')), $remaining);
 
         $done = [];
         $load = null;
@@ -186,7 +271,6 @@ final class Transcriber
         }
         ($this->log)('transcribe: batch: ' . count($byFile) . ' opkald, model indlæst på '
             . ($load === null ? '-' : self::clock((int) round($load))) . ', i alt ' . self::clock(max(0, ($this->clock)() - $t0)));
-        return count($jobs);
     }
 
     /**
@@ -219,17 +303,21 @@ final class Transcriber
                 $pdo->rollBack();
                 throw $e;
             }
-            $audio = $job['duration'] > 0 ? $job['duration']
-                : (is_numeric($raw['duration'] ?? null) ? (int) round((float) $raw['duration']) : 0);
-            ($this->log)('transcribe: opkald ' . $id . ': ' . self::doneLine($audio, $took, $this->engine->label()));
         } catch (Throwable $e) {
             $msg = $e instanceof EngineError ? $e->getMessage() : 'Intern fejl ved transcription';
             DB::ensureAlive();
             DB::exec("UPDATE calls SET transcript_status = 'fejlet', transcript_error = ?, transcript_retry_at = ?, claimed_at = NULL, "
                 . 'updated_at = ? WHERE id = ?',
                 [mb_substr($msg, 0, 250), gmdate('Y-m-d H:i:s', ($this->clock)() + self::RETRY_DELAY), $this->now(), $id]);
+            $this->settled[$id] = true;
             ($this->log)('transcribe: opkald ' . $id . ': fejlet: ' . $msg);
+            return;
         }
+        // Gemt: loglinjen står uden for try, så en fejl i loggen aldrig gør et gemt opkald til fejlet
+        $this->settled[$id] = true;
+        $audio = $job['duration'] > 0 ? $job['duration']
+            : (is_array($raw) && is_numeric($raw['duration'] ?? null) ? (int) round((float) $raw['duration']) : 0);
+        ($this->log)('transcribe: opkald ' . $id . ': ' . self::doneLine($audio, $took, $this->engine->label()));
     }
 
     /** Tilbage i køen uden at bruge et forsøg (motoren nåede aldrig til opkaldet). */
@@ -239,6 +327,7 @@ final class Transcriber
         DB::exec("UPDATE calls SET transcript_status = 'ventende', claimed_at = NULL, "
             . 'transcript_attempts = CASE WHEN transcript_attempts > 0 THEN transcript_attempts - 1 ELSE 0 END, updated_at = ? '
             . "WHERE id = ? AND transcript_status = 'transcriberer'", [$this->now(), $id]);
+        $this->settled[$id] = true;
     }
 
     /**

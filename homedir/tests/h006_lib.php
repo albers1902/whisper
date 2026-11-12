@@ -46,6 +46,7 @@ final class FakeBatchEngine implements BatchEngine
     public ?string $stopAt = null;
     public int $size = 10;
     public int $singleCalls = 0;
+    public int $lastDuration = -1;
 
     public function __construct(private readonly stdClass $clock, public float $load = 12.4, public int $perFile = 65)
     {
@@ -69,6 +70,7 @@ final class FakeBatchEngine implements BatchEngine
     public function transcribe(string $audioFile, int $durationSec): array
     {
         $this->singleCalls++;
+        $this->lastDuration = $durationSec;
         return (new FakeEngine())->result;
     }
 

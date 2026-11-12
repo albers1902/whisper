@@ -73,8 +73,9 @@ if (!$engine->available()) {
 
 $start = time();
 while (time() - $start < 3000 && !file_exists($deploying)) {
-    // Op til [whisper] batch opkald pr. motorkald, så modellen indlæses én gang pr. batch (H006; batch = 1: én ad gangen)
-    if ($t->runBatch() === 0) {
+    // Op til [whisper] batch opkald pr. motorkald, så modellen indlæses én gang pr. batch (H006; batch = 1: én ad gangen).
+    // Resttiden af rammen begrænser batchen, og et langt opkald venter til næste kørsel, hvis der er under 10 min tilbage.
+    if ($t->runBatch(3000 - (time() - $start)) === 0) {
         break;
     }
 }
