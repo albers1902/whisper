@@ -31,6 +31,41 @@ final class Lock
         return new self($h);
     }
 
+    /**
+     * Erstatter låsefilens indhold (på det låste håndtag). Bruges af transcribe-slots til at vise, hvilke opkald
+     * processen kører, så en anden proces' stale-regel kan skåne dem.
+     */
+    public function write(string $content): void
+    {
+        if (is_resource($this->handle)) {
+            ftruncate($this->handle, 0);
+            rewind($this->handle);
+            fwrite($this->handle, $content);
+            fflush($this->handle);
+        }
+    }
+
+    /**
+     * Indholdet af <navn>.lock, hvis en anden holder låsen; null, hvis ingen holder den (så er dens indhold forældet).
+     * Låsen tages kort for at afgøre det og slippes straks.
+     */
+    public static function heldContent(string $name): ?string
+    {
+        if (preg_match('/^[a-z0-9-]{1,40}$/', $name) !== 1) {
+            return null;
+        }
+        $file = Paths::dir('locks') . '/' . $name . '.lock';
+        if (!is_file($file)) {
+            return null;
+        }
+        $free = self::tryAcquire($name);
+        if ($free !== null) {
+            $free->release();
+            return null;
+        }
+        return (string) @file_get_contents($file);
+    }
+
     public function release(): void
     {
         if (is_resource($this->handle)) {

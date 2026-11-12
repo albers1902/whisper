@@ -3,7 +3,8 @@ declare(strict_types=1);
 
 // H005-AK1: uden nye nøgler i config kaldes motoren med --threads <kerner−1>, --beam 1 og --vad 1 som argv-elementer
 // (falsk python, som i F002-AK4). Fejlen: motoren blev kaldt uden dem, så faster-whisper brugte 4 tråde, beam 5 og
-// ingen VAD.
+// ingen VAD. Siden H007 er standarden workers = 2, så standard threads er kernerne delt mellem to (H007-AK3);
+// kerner − 1 gælder ved workers = 1.
 
 require_once __DIR__ . '/h005_lib.php';
 
@@ -15,9 +16,9 @@ $var = f002_setup();
 H005Check::that('AK1', Config::section('whisper') === [], 'testens config har ingen [whisper]-nøgler');
 
 $cores = WhisperSettings::cores();
-$want = WhisperSettings::defaultThreads($cores);
-H005Check::that('AK1', $cores === null ? $want === 4 : $want === max(1, min(32, $cores - 1)),
-    'standard threads = kerner − 1, mindst 1 (kerner: ' . var_export($cores, true) . ', threads: ' . $want . ')');
+$want = WhisperSettings::defaultThreads($cores, WhisperSettings::DEFAULT_WORKERS);
+H005Check::that('AK1', $cores === null ? $want === 4 : $want === max(1, min(32, intdiv($cores, 2))),
+    'standard threads = kerner / 2 (workers 2), mindst 1 (kerner: ' . var_export($cores, true) . ', threads: ' . $want . ')');
 H005Check::that('AK1', WhisperSettings::defaultThreads(6) === 5 && WhisperSettings::defaultThreads(1) === 1
     && WhisperSettings::defaultThreads(64) === 32 && WhisperSettings::defaultThreads(null) === 4,
     'threads: 6 kerner → 5, 1 kerne → 1, 64 kerner → 32, ukendt → 4');

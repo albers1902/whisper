@@ -7,10 +7,17 @@ declare(strict_types=1);
  *
  *   * * * * * /usr/bin/php /home/<bruger>/cron/transcribe.php >> /home/<bruger>/logs/transcribe.log 2>&1
  *
- * Låsen var/locks/transcribe.lock gør det til én kø: kører et job (det kan tage lang tid), afslutter de næste kørsler
- * straks. Kun den, der holder låsen, sætter hængende opkald (over 2 timer i "transcriberer") tilbage — så kører der
- * beviseligt ingen motor. Jobbet tager opkald, til køen er tom, en udrulning starter, eller der er gået 50 minutter.
+ * Op til [whisper] workers kørsler ad gangen (standard 2), hver i sit eget slot (Slots: var/locks/transcribe.lock,
+ * transcribe-2.lock …). Er alle slots optaget, afslutter kørslen straks; cron starter næste slot minuttet efter. Hængende
+ * opkald (over 2 timer i "transcriberer") sættes tilbage, undtagen dem en anden levende kørsel står med i sin låsefil.
+ * Hver kørsel tager opkald, til køen er tom, en udrulning starter, eller der er gået 50 minutter.
  */
+
+use Whisper\Transcription\EngineError;
+use Whisper\Transcription\ProcessEngine;
+use Whisper\Transcription\Slots;
+use Whisper\Transcription\Transcriber;
+use Whisper\Transcription\WhisperSettings;
 
 if (PHP_SAPI !== 'cli') {
     http_response_code(404);
@@ -29,24 +36,32 @@ if (!\Whisper\Flags::enabled(\Whisper\App::FLAG) || !\Whisper\Flags::enabled(\Wh
     exit(0);
 }
 
-$log = static function (string $line): void {
+// Advarsler om ugyldige [whisper]-værdier skrives først sammen med kørslens første opkald, så en tom kø ikke giver
+// en linje hvert minut. Indstillingerne læses før slotvalget, fordi workers bestemmer antallet af slots.
+$warnings = [];
+$settings = WhisperSettings::fromSection(\Whisper\Config::section('whisper'), WhisperSettings::cores(),
+    static function (string $w) use (&$warnings): void {
+        $warnings[] = $w;
+    });
+
+$acquired = Slots::acquire($settings->workers);
+if ($acquired === null) {
+    exit(0);   // alle slots er i gang
+}
+[$slot, $lock] = $acquired;
+\Whisper\Paths::heartbeat('transcribe');
+
+// Hver linje får slottet: "transcribe[2]: opkald 120: færdig (…)"
+$log = static function (string $line) use ($slot): void {
+    if (str_starts_with($line, 'transcribe: ')) {
+        $line = 'transcribe[' . $slot . ']: ' . substr($line, strlen('transcribe: '));
+    }
     echo gmdate('Y-m-d\TH:i:s\Z'), ' ', $line, "\n";
 };
 
-$lock = \Whisper\Lock::tryAcquire('transcribe');
-if ($lock === null) {
-    exit(0);   // et job kører allerede
-}
-\Whisper\Paths::heartbeat('transcribe');
-
-// Advarsler om ugyldige [whisper]-værdier skrives først sammen med kørslens første opkald, så en tom kø ikke giver
-// en linje hvert minut
-$warnings = [];
 try {
-    $engine = \Whisper\Transcription\ProcessEngine::fromConfig(static function (string $w) use (&$warnings): void {
-        $warnings[] = $w;
-    });
-} catch (\Whisper\Transcription\EngineError $e) {
+    $engine = ProcessEngine::fromSettings($settings, $slot);
+} catch (EngineError $e) {
     $log('transcribe: ' . $e->getMessage());
     exit(1);
 }
@@ -57,8 +72,10 @@ $jobLog = static function (string $line) use (&$warnings, $log): void {
     $warnings = [];
     $log($line);
 };
-$t = new \Whisper\Transcription\Transcriber($engine, null, $jobLog);
-$reset = $t->resetStale();
+$t = new Transcriber($engine, null, $jobLog, $engine->errorFile(), static function (array $ids) use ($lock): void {
+    $lock->write(Slots::format($ids));
+});
+$reset = $t->resetStale(Slots::heldByOthers($slot));
 if ($reset > 0) {
     $log('transcribe: ' . $reset . ' hængende opkald sat tilbage');
 }
@@ -75,6 +92,7 @@ $start = time();
 while (time() - $start < 3000 && !file_exists($deploying)) {
     // Op til [whisper] batch opkald pr. motorkald, så modellen indlæses én gang pr. batch (H006; batch = 1: én ad gangen).
     // Resttiden af rammen begrænser batchen, og et langt opkald venter til næste kørsel, hvis der er under 10 min tilbage.
+    // 0 = tom kø, eller en undtagelse afbrød batchen: stop til næste cron-minut.
     if ($t->runBatch(3000 - (time() - $start)) === 0) {
         break;
     }

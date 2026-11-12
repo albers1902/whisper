@@ -7,14 +7,16 @@ use Closure;
 use Throwable;
 use Whisper\Calls;
 use Whisper\DB;
+use Whisper\Paths;
 
 /**
- * Én kø, én motor ad gangen (cron/transcribe.php hvert minut, under låsen var/locks/transcribe.lock).
+ * Én kø, op til [whisper] workers motorer samtidig (cron/transcribe.php hvert minut, hver under sit eget slot, se Slots).
  *
  * Status: ventende → transcriberer → faerdig | fejlet (kort fejltekst, højst 3 forsøg).
- * Claim er én atomisk UPDATE … WHERE status = ventende pr. opkald, så to samtidige kørsler aldrig tager samme opkald —
- * også hvis låsen af en eller anden grund ikke holdt. Et opkald, der har stået i "transcriberer" i over 2 timer, sættes
- * kun tilbage, når kalderen holder låsen: så kører der beviseligt ingen motor, og et legitimt langt job røres ikke.
+ * Claim er én atomisk UPDATE … WHERE status = ventende pr. opkald, så to samtidige kørsler aldrig tager samme opkald.
+ * De claimede id'er meldes til $holding (transcribe.php skriver dem i slottets låsefil). Et opkald, der har stået i
+ * "transcriberer" i over 2 timer, sættes tilbage, medmindre en anden levende kørsel har det (resetStale($spare)): et
+ * legitimt langt job røres ikke.
  * Er motoren ikke klar (setup ikke kørt færdig for modellen), tages intet opkald, så intet forsøg bruges (QA F-3).
  * Efter et fejlet forsøg venter opkaldet RETRY_DELAY (15 min), før det prøves igen.
  *
@@ -45,12 +47,17 @@ final class Transcriber
     private Closure $clock;
     /** @var Closure(string): void */
     private Closure $log;
+    /** @var list<int> opkald, denne kørsel har claimet og endnu ikke afgjort */
+    private array $held = [];
 
     /**
      * @param (Closure(): int)|null $clock
      * @param (Closure(string): void)|null $log
+     * @param string|null $errorFile hvor detaljen om en afbrudt batch skrives (0600); null = ingen detalje
+     * @param (Closure(list<int>): void)|null $holding får de claimede id'er, hver gang de ændres
      */
-    public function __construct(private readonly Engine $engine, ?Closure $clock = null, ?Closure $log = null)
+    public function __construct(private readonly Engine $engine, ?Closure $clock = null, ?Closure $log = null,
+        private readonly ?string $errorFile = null, private readonly ?Closure $holding = null)
     {
         $this->clock = $clock ?? static fn(): int => time();
         $this->log = $log ?? static function (string $line): void {
@@ -58,14 +65,21 @@ final class Transcriber
         };
     }
 
-    /** Kun med låsen holdt (se klassens kommentar). Returnerer antal opkald sat tilbage eller opgivet. */
-    public function resetStale(): int
+    /**
+     * Hængende opkald (over 2 t i "transcriberer") tilbage, undtagen $spare: dem, en anden levende kørsel har claimet
+     * (Slots::heldByOthers). Kaldes før denne kørsel selv claimer noget. Returnerer antal sat tilbage eller opgivet.
+     *
+     * @param list<int> $spare
+     */
+    public function resetStale(array $spare = []): int
     {
         $limit = gmdate('Y-m-d H:i:s', ($this->clock)() - self::STALE_SECONDS);
+        $not = $spare === [] ? '' : ' AND id NOT IN (' . implode(',', array_fill(0, count($spare), '?')) . ')';
         $n = DB::exec("UPDATE calls SET transcript_status = 'fejlet', transcript_error = 'Afbrudt for mange gange', claimed_at = NULL "
-            . "WHERE transcript_status = 'transcriberer' AND claimed_at < ? AND transcript_attempts >= ?", [$limit, self::MAX_ATTEMPTS]);
+            . "WHERE transcript_status = 'transcriberer' AND claimed_at < ? AND transcript_attempts >= ?" . $not,
+            array_merge([$limit, self::MAX_ATTEMPTS], $spare));
         $n += DB::exec("UPDATE calls SET transcript_status = 'ventende', claimed_at = NULL "
-            . "WHERE transcript_status = 'transcriberer' AND claimed_at < ?", [$limit]);
+            . "WHERE transcript_status = 'transcriberer' AND claimed_at < ?" . $not, array_merge([$limit], $spare));
         return $n;
     }
 
@@ -111,7 +125,25 @@ final class Transcriber
                 }
             }
         }
+        if ($jobs !== []) {
+            // Meldt, før motoren startes: en anden kørsels stale-regel skal kunne se, at opkaldet er i gang
+            $this->hold(array_merge($this->held, array_column($jobs, 'id')));
+        }
         return $jobs;
+    }
+
+    /** @param list<int> $ids */
+    private function hold(array $ids): void
+    {
+        $this->held = $ids;
+        if ($this->holding === null) {
+            return;
+        }
+        try {
+            ($this->holding)($ids);
+        } catch (Throwable) {
+            // Må ikke afbryde claim(): de claimede opkald skal stadig køres eller frigives af runBatch
+        }
     }
 
     /**
@@ -149,7 +181,11 @@ final class Transcriber
         if ($job === null) {
             return null;
         }
-        $this->runJob($job);
+        try {
+            $this->runJob($job);
+        } finally {
+            $this->hold([]);
+        }
         return $job['id'];
     }
 
@@ -178,7 +214,7 @@ final class Transcriber
     /**
      * Op til [whisper] batch korte opkald i ét motorkald; et langt opkald forrest i køen kører alene. Med batch = 1,
      * eller en motor uden batch, som runOnce(). Returnerer antal opkald taget (0 = køen er tom, motoren er ikke klar,
-     * eller et langt opkald venter på næste kørsel).
+     * et langt opkald venter på næste kørsel, eller en undtagelse afbrød batchen: så stopper kørslen til næste minut).
      *
      * @param int $remaining sekunder tilbage af kørslens ramme (cron/transcribe.php)
      */
@@ -193,6 +229,7 @@ final class Transcriber
         }
         $this->settled = [];
         $jobs = [];
+        $aborted = false;
         try {
             $jobs = $this->claim(1);
             if ($jobs === []) {
@@ -211,6 +248,10 @@ final class Transcriber
             $jobs = array_merge($jobs, $this->claim($engine->batchSize() - 1, self::LONG_AUDIO));
             $this->batch($engine, $jobs, $remaining);
         } catch (Throwable $e) {
+            // En undtagelse uden for motoren kan være deterministisk: kørslen stopper (0), så den højst gentages én gang
+            // pr. cron-minut, og klasse og linje står i slottets fejlfil (beskeden kan indeholde data og vises ikke)
+            $aborted = true;
+            $this->recordError($e);
             try {
                 ($this->log)('transcribe: batch afbrudt: Intern fejl ved transcription');
             } catch (Throwable) {
@@ -225,8 +266,21 @@ final class Transcriber
                     }
                 }
             }
+            $this->hold([]);
         }
-        return count($jobs);
+        return $aborted ? 0 : count($jobs);
+    }
+
+    private function recordError(Throwable $e): void
+    {
+        if ($this->errorFile === null) {
+            return;
+        }
+        try {
+            Paths::writePrivate($this->errorFile, gmdate('Y-m-d\TH:i:s\Z', ($this->clock)()) . ' batch afbrudt: '
+                . get_class($e) . ' i ' . basename($e->getFile()) . ':' . $e->getLine() . "\n");
+        } catch (Throwable) {
+        }
     }
 
     /** @param list<array{id: int, audio_path: string, duration: int}> $jobs korte opkald, allerede claimet */
