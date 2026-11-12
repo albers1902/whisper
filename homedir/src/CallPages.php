@@ -23,6 +23,8 @@ final class CallPages
     public const CFG_MISSING = 'Zendesk er ikke sat op.';
     public const CFG_INVALID = 'Zendesk-opsætningen i config.ini er ugyldig.';
     private const ZIP_TMP_MAX_AGE = 3600;
+    /** Højst så mange manuelt valgte Adversus-opkald (ikke succes) i kø eller under transcription ad gangen (security S1) */
+    public const MANUAL_MAX = 50;
 
     /** @param array<string, mixed> $user */
     public static function list(Request $req, array $user, string $csrf, ?string $flash): Response
@@ -38,7 +40,7 @@ final class CallPages
             $config = $cfgError === null ? 'ok' : ($cfgError === self::CFG_INVALID ? 'invalid' : 'missing');
             return Response::html(UiCalls::list($user, $csrf, $flash, $f, $res['rows'], $res['total'], Calls::agents(), Calls::status(),
                 $config, self::engineReady(), $cfg?->subdomain, $snippets, time(),
-                Feature::on() ? ['config' => self::adversusConfig(), 'status' => Calls::adversusStatus()] : null));
+                Feature::on() ? ['config' => self::adversusConfig(), 'status' => Calls::adversusStatus(), 'warning' => Calls::adversusWarning(time())] : null));
         }
         $notices = [];
         if ($cfgError !== null) {
@@ -242,13 +244,38 @@ final class CallPages
         $f = Calls::filter($q);
         $back = CallView::query($f, $f['side']);
         $url = '/opkald/' . $id . ($back !== '' ? '?' . $back : '');
-        $n = DB::exec("UPDATE calls SET transcript_status = 'ventende', updated_at = ? WHERE id = ? AND `source` = 'adversus' "
-            . "AND transcript_status = 'ikke_valgt'", [gmdate('Y-m-d H:i:s'), $id]);
+        $retry = $call['audio_status'] === 'fejlet' && $call['transcript_status'] === 'ventende';
+        if (!self::selectable($call)) {
+            return [0, $url, $call['transcript_status'] === 'faerdig' ? 'faerdig' : 'koe'];
+        }
+        // Loft over manuelt valgte opkald i gang (security S1): kun ikke-succes tæller, og intet ændres ved loftet.
+        // To samtidige klik kan gå én over loftet; det er accepteret (loftet er værn mod masse-valg, ikke et kvotesystem).
+        if ((int) $call['is_success'] === 0 && (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus' AND is_success = 0 "
+            . "AND transcript_status IN ('ventende', 'transcriberer')") >= self::MANUAL_MAX) {
+            return [0, $url, 'fuld'];
+        }
+        // Én atomisk UPDATE (idempotent). Lyd-felterne sættes før audio_status, fordi MariaDB evaluerer SET fra venstre.
+        $n = DB::exec("UPDATE calls SET audio_attempts = IF(audio_status = 'fejlet', 0, audio_attempts), "
+            . "audio_error = IF(audio_status = 'fejlet', NULL, audio_error), "
+            . "audio_status = IF(audio_status = 'fejlet', 'venter', audio_status), transcript_status = 'ventende', updated_at = ? "
+            . "WHERE id = ? AND `source` = 'adversus' AND (transcript_status = 'ikke_valgt' "
+            . "OR (audio_status = 'fejlet' AND transcript_status = 'ventende'))", [gmdate('Y-m-d H:i:s'), $id]);
         if ($n === 1) {
             AccessLog::write((int) $user['id'], 'transcriber', ['opkald' => $id]);
-            return [0, $url, 'ok'];
+            return [0, $url, $retry ? 'igen' : 'ok'];
         }
-        return [0, $url, $call['transcript_status'] === 'faerdig' ? 'faerdig' : 'koe'];
+        return [0, $url, 'koe'];
+    }
+
+    /**
+     * Kan knappen bruges på opkaldet? "Ikke valgt", eller lyden er fejlet, før der blev lavet et transcript (QA F-2).
+     *
+     * @param array<string, mixed> $call
+     */
+    public static function selectable(array $call): bool
+    {
+        return Calls::isAdversus($call) && ($call['transcript_status'] === 'ikke_valgt'
+            || ($call['audio_status'] === 'fejlet' && $call['transcript_status'] === 'ventende'));
     }
 
     /** F004: 'ok' | 'missing' | 'invalid' for [adversus] i config.ini. */

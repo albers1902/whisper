@@ -70,10 +70,11 @@ final class Ui
      *
      * @param 'info'|'ok'|'warn'|'error' $type
      */
-    public static function msg(string $type, string $html, string $tag = 'div'): string
+    public static function msg(string $type, string $html, string $tag = 'div', ?string $role = null): string
     {
         $icon = ['info' => 'info', 'ok' => 'circle-check', 'warn' => 'triangle-alert', 'error' => 'circle-alert'][$type];
-        $role = $type === 'error' ? ' role="alert"' : ($type === 'ok' ? ' role="status"' : '');
+        // $role (kun 'status') lader en info-kvittering efter en handling blive læst op som ok-beskeder (F004 UX Finding 2)
+        $role = $role === 'status' ? ' role="status"' : ($type === 'error' ? ' role="alert"' : ($type === 'ok' ? ' role="status"' : ''));
         return '<' . $tag . ' class="msg ' . $type . '"' . $role . '>' . self::icon($icon, 18) . '<div class="msg-body">' . $html . '</div></' . $tag . '>';
     }
 

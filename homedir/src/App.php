@@ -455,11 +455,15 @@ final class App
         if ($status !== 0) {
             return Response::html(UiPages::error(404, 'Opkaldet findes ikke.', $csrf, $user), 404);
         }
-        if ($kind === 'ok') {
-            $s->set('flash', 'Opkaldet er sat i kø. Lyden hentes fra Adversus, og transcriptet laves derefter.');
-        } else {
-            $s->set('flash_info', $kind === 'faerdig' ? 'Opkaldet er allerede transcriberet.' : 'Opkaldet er allerede i kø.');
-        }
+        $texts = [
+            'ok'      => ['flash', 'Opkaldet er sat i kø. Lyden hentes fra Adversus, og transcriptet laves derefter.'],
+            'igen'    => ['flash', 'Lyden hentes igen fra Adversus. Transcriptet laves, når lyden er hentet.'],
+            'faerdig' => ['flash_info', 'Opkaldet er allerede transcriberet.'],
+            'fuld'    => ['flash_info', 'Der er allerede mange opkald i kø. Prøv igen senere.'],
+            'koe'     => ['flash_info', 'Opkaldet er allerede i kø.'],
+        ];
+        [$key, $text] = $texts[$kind] ?? $texts['koe'];
+        $s->set($key, $text);
         return Response::redirect($url);
     }
 

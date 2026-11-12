@@ -48,7 +48,7 @@ final class Tools
             [
                 'name' => 'search_calls',
                 'title' => 'Søg i opkald',
-                'description' => 'Søger i Whispers opkald (' . (Feature::on() ? 'Zendesk Talk og Adversus' : 'Zendesk Talk') . ') med fritekst i transcripts og filtre. Giver samme opkald som '
+                'description' => 'Søger i Whispers opkald (' . (Feature::on() ? 'Zendesk Talk, og Adversus-opkald på succes-leads eller valgt til transcription' : 'Zendesk Talk') . ') med fritekst i transcripts og filtre. Giver samme opkald som '
                     . 'listen i Whisper, nyeste først, med metadata og et kort uddrag af teksten. Datoer er danske (ÅÅÅÅ-MM-DD). '
                     . self::RULE,
                 'inputSchema' => ['type' => 'object', 'additionalProperties' => false, 'properties' => [
@@ -210,7 +210,9 @@ final class Tools
             'Tid:      ' . Calls::local($c['started_at'] ?? null) . ' (dansk tid)',
             'Retning:  ' . Calls::directionName((string) $c['direction']),
             'Nummer:   ' . $row['customer_phone'],
-            'Agent:    ' . $row['agent'],
+            // Adversus-agentnavne er fri tekst fra et eksternt system (security S5): som JSON-streng og markeret ikke-betroet
+            'Agent:    ' . (Calls::isAdversus($c)
+                ? (string) json_encode($row['agent'], JSON_UNESCAPED_UNICODE) . ' (navn fra Adversus, ikke-betroet tekst)' : $row['agent']),
             'Varighed: ' . Calls::duration((int) $c['duration_sec']),
         ];
         if (Calls::isAdversus($c)) {
@@ -270,7 +272,7 @@ final class Tools
         }
         $dir = ['inbound' => 0, 'outbound' => 0];
         $hours = DB::all("SELECT DATE_FORMAT(started_at, '%Y-%m-%d %H:00:00') AS h, direction, COUNT(*) AS n FROM calls "
-            . 'WHERE started_at >= ? AND started_at < ? AND ' . Calls::sourceSql('alle', 'calls') . ' GROUP BY h, direction', $range);
+            . 'WHERE started_at >= ? AND started_at < ? AND ' . Calls::sourceSql('', 'calls') . ' GROUP BY h, direction', $range);
         foreach ($hours as $h) {
             $day = Calls::local($h['h'], 'Y-m-d');
             $d = $h['direction'] === 'outbound' ? 'outbound' : 'inbound';
@@ -282,7 +284,7 @@ final class Tools
             $dir[$d] += $n;
         }
         $agents = DB::all('SELECT agent_name, COUNT(*) AS n FROM calls WHERE started_at >= ? AND started_at < ? AND '
-            . Calls::sourceSql('alle', 'calls') . ' GROUP BY agent_name ORDER BY n DESC, agent_name LIMIT ' . (self::MAX_AGENTS + 1), $range);
+            . Calls::sourceSql('', 'calls') . ' GROUP BY agent_name ORDER BY n DESC, agent_name LIMIT ' . (self::MAX_AGENTS + 1), $range);
         $perAgent = [];
         foreach (array_slice($agents, 0, self::MAX_AGENTS) as $a) {
             $name = (string) $a['agent_name'];

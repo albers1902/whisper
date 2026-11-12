@@ -124,4 +124,13 @@
       say('Sætter opkaldet i kø.');
     });
   });
+  /* Tilbage-knappen kan genskabe siden fra bfcache med en låst knap: gendan den (F004 UX Finding 3) */
+  window.addEventListener('pageshow', function (ev) {
+    if (!ev.persisted) { return; }
+    d.querySelectorAll('form.select-call button[data-busy]').forEach(function (btn) {
+      btn.disabled = false;
+      btn.removeAttribute('aria-disabled');
+      btn.textContent = 'Transcribér dette opkald';
+    });
+  });
 })();

@@ -27,6 +27,8 @@ $norm = static fn(string $b): string => (string) preg_replace('/datetime="[^"]*"
 F004Check::that('AK9', $norm($before->body) === $norm($after->body), 'listen er uændret, selv om der ligger Adversus-rækker');
 F004Check::that('AK9', !str_contains($after->body, 'Kilde') && !str_contains($after->body, 'view-switch'), 'ingen Kilde-kolonne og ingen segmentvælger');
 F004Check::that('AK9', f002_get($c, '/opkald/' . $ok)->status === 404 && f002_get($c, '/opkald/' . $ok . '/lyd')->status === 404, 'Adversus-detalje og lyd: 404');
+F004Check::that('AK9', str_contains(f002_get($c, '/opkald/' . $z)->body, 'Alle opkald</a>') && !str_contains(f002_get($c, '/opkald/' . $z)->body, 'Kilde'),
+    'Zendesk-detaljen er som før (tilbage-link "Alle opkald", ingen Kilde)');
 F004Check::that('AK9', $c->post('/opkald/' . $no . '/transcriber')->status === 404, 'knappens adresse findes ikke');
 F004Check::that('AK9', (string) DB::scalar('SELECT transcript_status FROM calls WHERE id = ?', [$no]) === 'ikke_valgt', 'intet ændret');
 F004Check::that('AK9', Calls::filter(['vis' => 'alle'])['vis'] === '', 'vis=alle ignoreres');

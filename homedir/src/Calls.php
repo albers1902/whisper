@@ -91,14 +91,16 @@ final class Calls
 
     /**
      * Kildeværnet (F004): med flaget slukket kun Zendesk (AK9: siderne og MCP er som før, selv om der ligger
-     * Adversus-rækker). Tændt: "Succes-leads" (standard) = Zendesk + Adversus på succes-leads; "alle" = alt.
+     * Adversus-rækker). Tændt: "Succes-leads" (standard) = Zendesk + Adversus på succes-leads + Adversus-opkald, som en
+     * bruger har valgt (alt, der ikke er "ikke valgt"; Team Lead, QA F-4); "alle" = alt.
      */
     public static function sourceSql(string $vis, string $alias = 'c'): string
     {
         if (!Feature::on()) {
             return $alias . ".`source` = 'zendesk'";
         }
-        return $vis === 'alle' ? '1 = 1' : '(' . $alias . ".`source` = 'zendesk' OR " . $alias . '.is_success = 1)';
+        return $vis === 'alle' ? '1 = 1' : '(' . $alias . ".`source` = 'zendesk' OR " . $alias . '.is_success = 1 OR '
+            . $alias . ".transcript_status <> 'ikke_valgt')";
     }
 
     /**
@@ -290,6 +292,18 @@ final class Calls
         $ok = $s[0]['last_ok_at'] ?? null;
         $err = $s[0]['last_error'] ?? null;
         return ['last_ok_at' => is_string($ok) ? $ok : null, 'last_error' => is_string($err) ? $err : null];
+    }
+
+    /** F004: seneste advarsel fra Adversus-hentningen (forkastede optagelser, ukendt retning), hvis den er under et døgn gammel. */
+    public static function adversusWarning(int $now): ?string
+    {
+        $s = DB::all('SELECT last_run_at, last_error FROM sync_state WHERE `source` = ?', ['adversus-warn']);
+        $at = $s[0]['last_run_at'] ?? null;
+        $text = $s[0]['last_error'] ?? null;
+        if (!is_string($at) || !is_string($text) || $now - (int) strtotime($at . ' UTC') > Adversus\Sync::WARN_TTL) {
+            return null;
+        }
+        return $text;
     }
 
     /** @param array<string, mixed> $call */

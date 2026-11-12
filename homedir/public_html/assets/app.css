@@ -273,6 +273,9 @@ table.calls tr:has(+ tr.snippet-row) td { border-bottom: 0; }
 .segmented a:hover { color: var(--text); background: var(--surface-2); }
 .segmented a[aria-current="true"], .segmented a[aria-current="true"]:hover { color: var(--nav-active); background: var(--accent-subtle); font-weight: 600; }
 .select-call { margin-top: var(--sp-3); }
+@media (max-width: 480px) {
+  .select-call button { width: 100%; min-height: 44px; }
+}
 
 /* 10. Beskeder og systemstatus */
 .msg {

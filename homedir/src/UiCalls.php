@@ -27,7 +27,7 @@ final class UiCalls
      * @param array{last_ok_at: ?string, last_error: ?string, waiting: int, audio_waiting: int} $status
      * @param 'ok'|'missing'|'invalid' $config  Zendesk-opsætningen
      * @param array<int, array{text: string, cut_start: bool, cut_end: bool}> $snippets  fra Calls::snippets
-     * @param array{config: string, status: array{last_ok_at: ?string, last_error: ?string}|null}|null $adversus
+     * @param array{config: string, status: array{last_ok_at: ?string, last_error: ?string}|null, warning?: ?string}|null $adversus
      *        F004: Adversus-opsætning ('ok'|'missing'|'invalid') og -status; null = flaget slukket (siden er som før)
      */
     public static function list(array $user, string $csrf, ?string $flash, array $f, array $rows, int $total, array $agents,
@@ -59,6 +59,12 @@ final class UiCalls
             if ($aErr !== null && !str_starts_with($aErr, AdversusSync::RATE_LIMIT_PREFIX)) {
                 $notes .= Ui::msg('error', '<p>Seneste hentning fra Adversus stoppede.</p><details><summary>Teknisk besked</summary><p>'
                     . $e($aErr) . '</p></details>');
+            }
+            // Forkastede optagelser og ukendt retning (QA F-1): synligt et døgn, ikke kun i loggen
+            $warning = $adversus['warning'] ?? null;
+            if ($warning !== null) {
+                $notes .= Ui::msg('warn', '<p>Nogle Adversus-opkald kunne ikke hentes.</p><details><summary>Teknisk besked</summary><p>'
+                    . $e($warning) . '</p></details>');
             }
         }
         if (!$engineReady) {
@@ -347,8 +353,9 @@ final class UiCalls
         $success = $adv && (int) ($call['is_success'] ?? 0) === 1;
         $phone = (string) $call['customer_phone'];
         $ctx = CallView::query($f, $f['side']);
+        // Med F004 er "Alle opkald" navnet på en visning, så linket til "/" hedder "Tilbage til opkald" (UX F004 Finding 1)
         $back = $ctx !== '' ? '<a href="/?' . $e($ctx) . '">' . Ui::icon('chevron-left') . 'Tilbage til opkald</a>'
-            : '<a href="/">' . Ui::icon('chevron-left') . 'Alle opkald</a>';
+            : '<a href="/">' . Ui::icon('chevron-left') . ($featureOn ? 'Tilbage til opkald' : 'Alle opkald') . '</a>';
 
         $title = ((string) $call['direction'] === 'outbound' ? 'Udgående' : 'Indgående') . ' opkald · '
             . Calls::local($call['started_at'], 'd.m.Y') . ' kl. ' . Calls::local($call['started_at'], 'H:i');
@@ -421,13 +428,19 @@ final class UiCalls
         // Højre: transcript efter tilstandstabellen (UX §3.4)
         $actions = '';
         $hits = '';
+        // F004 (UX §4): knappen står kun her; en almindelig POST-formular med CSRF, så den virker uden JS
+        $ctxField = $ctx !== '' ? '<input type="hidden" name="ctx" value="' . $e($ctx) . '">' : '';
+        $button = static fn(string $hint): string => '<form method="post" action="/opkald/' . $id . '/transcriber" class="actions select-call">'
+            . View::csrfField($csrf) . $ctxField
+            . '<button type="submit" class="button" aria-describedby="vaelg-hjaelp" data-busy="Sætter i kø …">Transcribér dette opkald</button></form>'
+            . '<p class="hint" id="vaelg-hjaelp">' . $hint . '</p>';
         if ($notChosen) {
-            // F004 (UX §4): knappen står kun her; en almindelig POST-formular med CSRF, så den virker uden JS
-            $ctxField = $ctx !== '' ? '<input type="hidden" name="ctx" value="' . $e($ctx) . '">' : '';
             $body = Ui::msg('info', '<p>Opkaldet er ikke på et succes-lead og bliver derfor ikke transcriberet automatisk.</p>'
-                . '<form method="post" action="/opkald/' . $id . '/transcriber" class="actions select-call">' . View::csrfField($csrf) . $ctxField
-                . '<button type="submit" class="button" aria-describedby="vaelg-hjaelp" data-busy="Sætter i kø …">Transcribér dette opkald</button></form>'
-                . '<p class="hint" id="vaelg-hjaelp">Lyden hentes fra Adversus, og opkaldet sættes i kø. Det tager normalt under 15 minutter.</p>');
+                . $button('Lyden hentes fra Adversus, og opkaldet sættes i kø. Det tager normalt under 15 minutter.'));
+        } elseif ($adv && CallPages::selectable($call)) {
+            // Lyden er fejlet: knappen henter den igen med nulstillede forsøg (QA F-2)
+            $body = Ui::msg('info', '<p>Der kan ikke laves et transcript uden lyd.</p>'
+                . $button('Lyden hentes igen fra Adversus, og opkaldet sættes i kø. Det tager normalt under 15 minutter.'));
         } elseif ($audioStatus !== 'hentet') {
             $body = '<p class="neutral">' . ($audioStatus === 'fejlet' ? 'Der kan ikke laves et transcript uden lyd.'
                 : 'Transcriptet laves, når lyden er hentet.') . '</p>';
@@ -461,7 +474,7 @@ final class UiCalls
 
         $html = '<div class="detail">'
             . '<p class="back">' . $back . '</p>'
-            . Ui::message(null, $flash) . ($info !== null && $info !== '' ? Ui::msg('info', '<p>' . $e($info) . '</p>') : '')
+            . Ui::message(null, $flash) . ($info !== null && $info !== '' ? Ui::msg('info', '<p>' . $e($info) . '</p>', 'div', 'status') : '')
             . '<div class="detail-head"><div><h1>' . $e($title) . '</h1><p class="sub">' . implode(' · ', $sub) . '</p></div>'
             . ($success ? '<div class="head-tags">' . Ui::successTag() . $badge . '</div>' : $badge) . '</div>'
             . '<div class="detail-grid">'
