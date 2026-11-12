@@ -28,6 +28,8 @@ use Whisper\Zendesk\ZendeskError;
  * f) Lyd for opkald i kø via /calls/{id}/recording (redirect kun til recording_hosts), succes og Zendesk før manuelle
  *    valg, og ingen nye downloads efter DOWNLOAD_DEADLINE (security S1, S2). Den signerede URL gemmes aldrig.
  *
+ * Tidsfiltre skrives med AdversusConfig::filterTime (væg-tid i filter_tz): Adversus læser filtrets cifre som lokal tid
+ * og ignorerer "Z", men svarer i UTC (H009). iso() bruges kun til log.
  * Adversus har ingen $gte: alle nedre grænser er "$gt t − 1 s". Overlappet på ét sekund fjernes af UNIQUE (source,
  * external_id) og lead_id-nøglen, så databasen hverken får huller eller dubletter.
  * Højst MAX_REQUESTS kald pr. kørsel (Client tæller hvert HTTP-kald); fase c–d stopper med RESERVE kald tilbage til lyd.
@@ -41,6 +43,8 @@ final class Sync
     public const CURSOR_LEADS = 'adversus-leads';
     public const CURSOR_USERS = 'adversus-users';
     public const WARN = 'adversus-warn';
+    /** Markør for H009's engangs-genopretning (findes den, er den sket) */
+    public const RECOVERY = 'adversus-h009';
     public const MAX_REQUESTS = 100;
     public const RESERVE = 30;
     /** Standard for [adversus] lag_minutes (se AdversusConfig) */
@@ -122,7 +126,7 @@ final class Sync
         DB::exec('INSERT INTO sync_state (`source`, last_run_at) VALUES (?, ?) ON DUPLICATE KEY UPDATE last_run_at = VALUES(last_run_at)',
             [self::SOURCE, $this->now()]);
         $error = null;
-        foreach ([fn() => $this->leads(), fn() => $this->users(), fn() => $this->retryPending(), fn() => $this->recordings()] as $phase) {
+        foreach ([fn() => $this->recover(), fn() => $this->leads(), fn() => $this->users(), fn() => $this->retryPending(), fn() => $this->recordings()] as $phase) {
             try {
                 $phase();
             } catch (Throwable $e) {
@@ -234,6 +238,38 @@ final class Sync
         return $msg;
     }
 
+    // ---------------------------------------------------------------- genopretning (H009)
+
+    /**
+     * Én gang efter H009: indtil da lå alle tidsfiltre 1 t forkert (Adversus læser filtercifre som lokal væg-tid), så
+     * næsten ingen optagelser blev matchet, og de blev forkastet eller ligger på ventelisten. Optagelses-cursoren sættes
+     * tilbage til sync_since, og ventelisten tømmes (den er afledt: de samme optagelser findes igen i vinduerne). Gemte
+     * opkald springes over i window(), så der kommer ingen dubletter. Markøren gør, at det kun sker én gang.
+     *
+     * @return bool om genopretningen kørte nu
+     */
+    public function recover(): bool
+    {
+        if (DB::scalar('SELECT 1 FROM sync_state WHERE `source` = ?', [self::RECOVERY]) !== false) {
+            return false;
+        }
+        $pdo = DB::pdo();
+        $pdo->beginTransaction();
+        try {
+            $pending = DB::exec('DELETE FROM adversus_pending');
+            $this->saveRecCursor($this->cfg->syncSince, self::WINDOW_MAX);
+            DB::exec('INSERT INTO sync_state (`source`, cursor_value, last_run_at) VALUES (?, ?, ?)',
+                [self::RECOVERY, 'done', $this->now()]);
+            $pdo->commit();
+        } catch (Throwable $e) {
+            $pdo->rollBack();
+            throw $e;
+        }
+        ($this->log)('adversus-sync: genopretning (H009): optagelses-cursoren er sat tilbage til ' . self::iso($this->cfg->syncSince)
+            . ', ' . $pending . ' ventende fjernet — optagelser fra sync_since hentes igen');
+        return true;
+    }
+
     // ---------------------------------------------------------------- a) succes-leads
 
     /** @return int antal nye succes-leads */
@@ -245,7 +281,7 @@ final class Sync
         $new = 0;
         for ($i = 0; $i < self::LEAD_REQUESTS; $i++) {
             $data = $this->client->getJson('/leads', [
-                'filters'       => self::filter(['status' => ['$eq' => $this->cfg->successStatus], 'lastUpdatedTime' => ['$gt' => self::iso($c - 1)]]),
+                'filters'       => self::filter(['status' => ['$eq' => $this->cfg->successStatus], 'lastUpdatedTime' => ['$gt' => $this->cfg->filterTime($c - 1)]]),
                 'sortProperty'  => 'lastUpdatedTime',
                 'sortDirection' => 'ASC',
                 'pageSize'      => self::PAGE,
@@ -441,7 +477,7 @@ final class Sync
         for ($p = 1; ; $p++) {
             $this->need(1);
             $data = $this->client->getJson('/recordings', [
-                'filters'     => self::filter(['timestamp' => ['$gt' => self::iso($from - 1), '$lt' => self::iso($to)]]),
+                'filters'     => self::filter(['timestamp' => ['$gt' => $this->cfg->filterTime($from - 1), '$lt' => $this->cfg->filterTime($to)]]),
                 'page'        => $p,
                 'pageSize'    => self::PAGE,
                 'includeMeta' => 'true',
@@ -516,7 +552,7 @@ final class Sync
         for ($p = 1; $p <= $maxPages && $want !== []; $p++) {
             $this->need(1);
             $data = $this->client->getJson('/calls', [
-                'filters'       => self::filter(['start' => ['$gt' => self::iso($lo - 1), '$lt' => self::iso($hi)]]),
+                'filters'       => self::filter(['start' => ['$gt' => $this->cfg->filterTime($lo - 1), '$lt' => $this->cfg->filterTime($hi)]]),
                 'sortProperty'  => 'start',
                 'sortDirection' => $direction,
                 'page'          => $p,

@@ -17,6 +17,7 @@ use DateTimeZone;
  *   success_status = success   (valgfri; lead-status for en succesfuld registrering — kun de leads transcriberes)
  *   sync_since = 2026-11-12    (valgfri; F004: hentningens start, dansk midnat. since er probens og bruges ikke af sync)
  *   lag_minutes = 10           (valgfri; F004: så langt bag nu ligger det seneste optagelsesvindue, 1–120)
+ *   filter_tz = Europe/Copenhagen (valgfri; H009: zonen, Adversus læser filtrenes tidscifre i — se filterTime)
  */
 final class AdversusConfig
 {
@@ -29,9 +30,16 @@ final class AdversusConfig
      * cursoren. Kan sættes op i config, hvis DEV-loggen viser det.
      */
     public const LAG_DEFAULT = 600;
+    /**
+     * Adversus læser cifrene i et tidsfilter som væg-tid i kontoens zone og ignorerer "Z", men svarer i UTC med "Z"
+     * (målt med H009-diagnosen på DEV 2026-11-12: /recordings med $gt 15:54:42Z gav upload-tider fra 14:55:04Z).
+     * UTC er nødvejen, hvis Adversus en dag respekterer "Z".
+     */
+    public const FILTER_TZ_DEFAULT = 'Europe/Copenhagen';
 
     public readonly int $syncSince;
     public readonly int $lag;
+    public readonly DateTimeZone $filterTz;
 
     /** @param list<string> $recordingHosts */
     public function __construct(
@@ -42,9 +50,20 @@ final class AdversusConfig
         public readonly string $successStatus = 'success',
         ?int $syncSince = null,
         ?int $lag = null,
+        ?DateTimeZone $filterTz = null,
     ) {
         $this->syncSince = $syncSince ?? (int) self::localMidnight(self::SYNC_SINCE_DEFAULT);
         $this->lag = $lag ?? self::LAG_DEFAULT;
+        $this->filterTz = $filterTz ?? new DateTimeZone(self::FILTER_TZ_DEFAULT);
+    }
+
+    /**
+     * Et tidspunkt til Adversus' filtre: væg-tid i filter_tz med det suffiks ("Z"), som er målt accepteret. Sommertid
+     * følger af DateTimeZone. Kun til filtre — svar-tider læses med Sync::epoch().
+     */
+    public function filterTime(int $epoch): string
+    {
+        return (new DateTimeImmutable('@' . $epoch))->setTimezone($this->filterTz)->format('Y-m-d\TH:i:s') . 'Z';
     }
 
     /** ÅÅÅÅ-MM-DD som epoch for midnat i Europe/Copenhagen; null ved en ugyldig dato. */
@@ -105,7 +124,15 @@ final class AdversusConfig
             }
             $lag = (int) $str('lag_minutes') * 60;
         }
-        return new self($str('username'), $str('password'), $since->getTimestamp(), $hosts, $success, $syncSince, $lag);
+        $tz = null;
+        if ($str('filter_tz') !== '') {
+            try {
+                $tz = new DateTimeZone($str('filter_tz'));
+            } catch (\Exception) {
+                throw new AdversusError('[adversus] filter_tz er ikke en gyldig tidszone (fx Europe/Copenhagen eller UTC)');
+            }
+        }
+        return new self($str('username'), $str('password'), $since->getTimestamp(), $hosts, $success, $syncSince, $lag, $tz);
     }
 
     /** Datoen som ISO 8601 til Adversus' filtre. */

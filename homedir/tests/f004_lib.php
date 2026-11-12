@@ -58,14 +58,23 @@ function f004_setup(): string
     Flags::override(Feature::FLAG, true);
     DB::exec('DELETE FROM adversus_success_leads');
     DB::exec('DELETE FROM adversus_users');
+    // Systemet efter H009's engangs-genopretning; test_H009-AK3 fjerner markøren for at prøve den
+    DB::exec('INSERT IGNORE INTO sync_state (`source`, cursor_value) VALUES (?, ?)', [Sync::RECOVERY, 'done']);
     return $dir;
 }
 
+/** Et filtertidsstempel, som Adversus læser det (H009: cifrene er væg-tid i Europe/Copenhagen, suffikset ignoreres). */
+function f004_filter_epoch(string $v, string $tz = 'Europe/Copenhagen'): int
+{
+    $wall = (string) preg_replace('/(Z|[+-][0-9]{2}:?[0-9]{2})$/', '', $v);
+    return (new DateTimeImmutable($wall, new DateTimeZone($tz)))->getTimestamp();
+}
+
 /** @param list<string> $hosts */
-function f004_cfg(array $hosts = [F004_AUDIO_HOST], ?int $syncSince = null): AdversusConfig
+function f004_cfg(array $hosts = [F004_AUDIO_HOST], ?int $syncSince = null, ?string $filterTz = null): AdversusConfig
 {
     return new AdversusConfig('apiuser' . bin2hex(random_bytes(4)), 'pw-' . bin2hex(random_bytes(12)), f004_since(), $hosts, 'success',
-        $syncSince);
+        $syncSince, null, $filterTz === null ? null : new DateTimeZone($filterTz));
 }
 
 /**
@@ -171,8 +180,11 @@ final class FakeAdversus implements HttpTransport
     public ?Closure $onAudio = null;
     /** @var array<string, list<string>> filter-egenskaber pr. sti, der svarer 400 som hos Adversus (fx ['/v1/calls' => ['leadId']]) */
     public array $rejectFilters = [];
-    /** Sekunder, som et tidsstempel i et filter flyttes, før det sammenlignes (H009: Adversus tolker filtertid anderledes) */
-    public int $filterShift = 0;
+    /**
+     * Som målt på det rigtige Adversus (H009): cifrene i et tidsfilter er væg-tid i denne zone, og suffikset (Z eller
+     * offset) ignoreres; svarene er UTC med Z. null = filtre respekterer Z (den idealiserede opførsel, F004 antog).
+     */
+    public ?string $filterTz = 'Europe/Copenhagen';
 
     public function request(string $method, string $url, array $headers = [], ?string $body = null, ?string $saveTo = null): HttpResult
     {
@@ -245,7 +257,7 @@ final class FakeAdversus implements HttpTransport
             $v = $it[$field] ?? null;
             foreach (is_array($ops) ? $ops : [] as $op => $want) {
                 $isTime = is_string($want) && preg_match('/^[0-9]{4}-[0-9]{2}-[0-9]{2}/', $want) === 1;
-                $w = $isTime ? $this->num($want) + $this->filterShift : $this->num($want);
+                $w = $isTime ? $this->filterNum($want) : $this->num($want);
                 $ok = match ($op) {
                     '$eq'  => $isTime ? $this->num($v) === $w : $v === $want,
                     '$gt'  => $this->num($v) > $w,
@@ -258,6 +270,15 @@ final class FakeAdversus implements HttpTransport
             }
         }
         return true;
+    }
+
+    private function filterNum(string $want): float
+    {
+        if ($this->filterTz === null) {
+            return $this->num($want);
+        }
+        static $memo = [];
+        return $memo[$this->filterTz . '|' . $want] ??= (float) f004_filter_epoch($want, $this->filterTz);
     }
 
     private function num(mixed $v): float
