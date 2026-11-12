@@ -74,7 +74,7 @@ $jobLog = static function (string $line) use (&$warnings, $log): void {
 };
 $t = new Transcriber($engine, null, $jobLog, $engine->errorFile(), static function (array $ids) use ($lock): void {
     $lock->write(Slots::format($ids));
-});
+}, $settings->rtf);
 $reset = $t->resetStale(Slots::heldByOthers($slot));
 if ($reset > 0) {
     $log('transcribe: ' . $reset . ' hængende opkald sat tilbage');
