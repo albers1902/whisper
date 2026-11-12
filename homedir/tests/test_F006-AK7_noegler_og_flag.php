@@ -32,7 +32,7 @@ F006Check::that('AK7', !f006_mcp_ok($s['access']), 'slukket: OAuth access token 
 $r = (new F003Mcp(null))->rpc('tools/list');
 F006Check::that('AK7', $r->header('WWW-Authenticate') === 'Bearer realm="whisper"', 'slukket: 401 som i F003');
 $konto = $s['c']->get('/konto')->body;
-F006Check::that('AK7', str_contains($konto, 'Claude Desktop (MCP)') && str_contains($konto, 'Opret nøgle') && !str_contains($konto, 'Forbind Claude'),
+F006Check::that('AK7', str_contains($konto, 'Claude Desktop (MCP)') && str_contains($konto, 'Opret nøgle') && !str_contains($konto, 'Forbundne apps') && !str_contains($konto, 'connector-url'),
     'slukket: Konto som i F003');
 $r = $s['c']->post('/konto/mcp-noegle', ['name' => 'Bærbar']);
 F006Check::that('AK7', $r->status === 200 && str_contains($r->body, 'er oprettet'), 'slukket: nøgler kan oprettes');
