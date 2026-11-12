@@ -37,7 +37,8 @@ F004Check::that('AK2', array_column($jobs, 'id') === [(int) $a['id']], 'transcri
 // Prioritet (security S1): et manuelt valgt Adversus-opkald kommer efter Zendesk og succes, også når det er ældst
 $manual = f004_insert(2099, false, 'ventende', '2026-11-01 08:00:00');
 f002_audio($manual);
-$zen = f002_insert(['started_at' => '2026-11-02 08:00:00']);
+// Nyeste først (H012): Zendesk-opkaldet er nyere end succes-opkaldet
+$zen = f002_insert(['started_at' => gmdate('Y-m-d H:i:s', $S + 7200)]);
 f002_audio($zen);
 DB::exec("UPDATE calls SET transcript_status = 'ventende', claimed_at = NULL WHERE id = ?", [(int) $a['id']]);
 $order = array_column($t->claim(3), 'id');

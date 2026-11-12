@@ -27,10 +27,10 @@ $t = new Transcriber($engine, static function () use (&$now): int {
 
 F002Check::that('AK4', $t->runOnce() === null && $engine->calls === 0, 'tom kø: intet sker');
 $notYet = f002_insert(['started_at' => '2026-10-01 08:00:00']);   // lyden er ikke hentet: tages ikke
-$old = f002_insert(['started_at' => '2026-10-02 08:00:00', 'duration_sec' => 4000]);
-$new = f002_insert(['started_at' => '2026-10-03 08:00:00']);
-f002_audio($old);
-f002_audio($new);
+$first = f002_insert(['started_at' => '2026-10-03 08:00:00', 'duration_sec' => 4000]);
+$second = f002_insert(['started_at' => '2026-10-02 08:00:00']);
+f002_audio($first);
+f002_audio($second);
 
 // Motor ikke klar: intet opkald tages, intet forsøg bruges (QA F-3)
 $engine->ready = false;
@@ -39,12 +39,12 @@ F002Check::that('AK4', (int) DB::scalar('SELECT SUM(transcript_attempts) FROM ca
 $engine->ready = true;
 
 $id = $t->runOnce();
-F002Check::that('AK4', $id === $old, 'ældste ventende opkald med lyd tages først');
+F002Check::that('AK4', $id === $first, 'nyeste ventende opkald med lyd tages først (H012)');
 F002Check::that('AK4', $engine->calls === 1 && $engine->lastDuration === 4000, 'motoren kørt én gang med opkaldets varighed');
-$row = DB::all('SELECT * FROM calls WHERE id = ?', [$old])[0];
+$row = DB::all('SELECT * FROM calls WHERE id = ?', [$first])[0];
 F002Check::that('AK4', $row['transcript_status'] === 'faerdig' && $row['transcript_error'] === null, 'status faerdig');
-F002Check::that('AK4', DB::scalar('SELECT transcript_status FROM calls WHERE id = ?', [$new]) === 'ventende', 'det andet opkald venter stadig (ét ad gangen)');
-$tr = DB::all('SELECT * FROM transcripts WHERE call_id = ?', [$old])[0] ?? [];
+F002Check::that('AK4', DB::scalar('SELECT transcript_status FROM calls WHERE id = ?', [$second]) === 'ventende', 'det andet opkald venter stadig (ét ad gangen)');
+$tr = DB::all('SELECT * FROM transcripts WHERE call_id = ?', [$first])[0] ?? [];
 F002Check::that('AK4', ($tr['text'] ?? '') === 'Hej og velkommen. Det handler om strøm og måler.', 'tekst gemt (UTF-8)');
 $seg = json_decode((string) ($tr['segments_json'] ?? ''), true);
 F002Check::that('AK4', is_array($seg) && count($seg) === 2 && $seg[1]['start'] == 65.5, 'segmenter gemt som JSON');
@@ -54,8 +54,8 @@ F002Check::that('AK4', DB::scalar('SELECT transcript_status FROM calls WHERE id 
 // Fejl i motoren: fejlet med kort fejltekst uden sti; backoff 15 min; højst 3 forsøg
 $engine->result = new EngineError('motoren fejlede (exit 1)');
 $id = $t->runOnce();
-$row = DB::all('SELECT * FROM calls WHERE id = ?', [$new])[0];
-F002Check::that('AK4', $id === $new && $row['transcript_status'] === 'fejlet' && $row['transcript_error'] === 'motoren fejlede (exit 1)',
+$row = DB::all('SELECT * FROM calls WHERE id = ?', [$second])[0];
+F002Check::that('AK4', $id === $second && $row['transcript_status'] === 'fejlet' && $row['transcript_error'] === 'motoren fejlede (exit 1)',
     'motorfejl: status fejlet med fejltekst');
 F002Check::that('AK4', !str_contains((string) $row['transcript_error'], $var) && !str_contains((string) $row['transcript_error'], '/'),
     'fejlteksten har ingen sti');
@@ -63,10 +63,10 @@ F002Check::that('AK4', $t->runOnce() === null, 'backoff: ikke prøvet igen med d
 $now += 14 * 60;
 F002Check::that('AK4', $t->runOnce() === null, 'backoff: ikke prøvet igen efter 14 min');
 $now += 2 * 60;
-F002Check::that('AK4', $t->runOnce() === $new, 'backoff: prøvet igen efter 15 min');
+F002Check::that('AK4', $t->runOnce() === $second, 'backoff: prøvet igen efter 15 min');
 $now += 16 * 60;
 $t->runOnce();
-F002Check::that('AK4', (int) DB::scalar('SELECT transcript_attempts FROM calls WHERE id = ?', [$new]) === 3, 'tre forsøg');
+F002Check::that('AK4', (int) DB::scalar('SELECT transcript_attempts FROM calls WHERE id = ?', [$second]) === 3, 'tre forsøg');
 $now += 16 * 60;
 $before = $engine->calls;
 F002Check::that('AK4', $t->runOnce() === null && $engine->calls === $before, 'efter 3 forsøg tages opkaldet ikke igen');
@@ -77,8 +77,8 @@ $run = static function (array $args): array {
     $out = is_resource($p) ? (string) stream_get_contents($pipes[1]) . (string) stream_get_contents($pipes[2]) : '';
     return [is_resource($p) ? proc_close($p) : -1, $out];
 };
-[$code, $out] = $run(['--id=' . $new]);
-$row = DB::all('SELECT * FROM calls WHERE id = ?', [$new])[0];
+[$code, $out] = $run(['--id=' . $second]);
+$row = DB::all('SELECT * FROM calls WHERE id = ?', [$second])[0];
 F002Check::that('AK4', $code === 0 && str_contains($out, '1 opkald') && $row['transcript_status'] === 'ventende'
     && (int) $row['transcript_attempts'] === 0 && $row['transcript_error'] === null && $row['transcript_retry_at'] === null,
     'whisper-requeue.php --id: tilbage til ventende, forsøg nulstillet');
@@ -89,7 +89,7 @@ F002Check::that('AK4', str_contains($src, "PHP_SAPI !== 'cli'"), 'whisper-requeu
 
 // En uventet undtagelse fra motoren giver en fast tekst (ingen detaljer)
 $engine->result = (new FakeEngine())->result;
-$t->runOnce();   // $new bliver færdig
+$t->runOnce();   // $second bliver færdig
 $x = f002_insert(['started_at' => '2026-10-04 08:00:00']);
 f002_audio($x);
 $engine->result = ['segments' => 'ikke en liste'];

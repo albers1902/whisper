@@ -165,14 +165,14 @@ function h006_state(int $id): array
 }
 
 /**
- * Tre ventende opkald med lyd (A før B før C).
+ * Tre ventende opkald med lyd (A før B før C i køen: køen tager nyeste først, H012, så A er det nyeste).
  *
  * @return list<array{id: int, file: string}>
  */
 function h006_three_calls(): array
 {
     $out = [];
-    foreach (['2026-10-01 08:00:00', '2026-10-01 09:00:00', '2026-10-01 10:00:00'] as $at) {
+    foreach (['2026-10-01 10:00:00', '2026-10-01 09:00:00', '2026-10-01 08:00:00'] as $at) {
         $id = f002_insert(['started_at' => $at, 'duration_sec' => 125]);
         $out[] = ['id' => $id, 'file' => f002_audio($id)];
     }
