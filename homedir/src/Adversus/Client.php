@@ -161,7 +161,7 @@ final class Client
     {
         for ($try = 1; ; $try++) {
             if ($this->requests >= $this->maxRequests) {
-                throw new RateLimited('kaldsgrænsen for kørslen (' . $this->maxRequests . ' kald) er nået — proben stopper', 429);
+                throw new RateLimited('kaldsgrænsen for kørslen (' . $this->maxRequests . ' kald) er nået — kørslen stopper', 429);
             }
             $this->requests++;
             try {
@@ -183,7 +183,7 @@ final class Client
             }
             ($this->sleep)(max(1, $wait));
         }
-        throw new RateLimited('Adversus rate limit (HTTP 429) — proben stopper; prøv igen om et par minutter', 429);
+        throw new RateLimited('Adversus rate limit (HTTP 429) — kørslen stopper; prøv igen om et par minutter', 429);
     }
 
     /**

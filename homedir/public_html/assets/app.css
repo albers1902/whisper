@@ -244,6 +244,38 @@ table.calls tr:has(+ tr.snippet-row) td { border-bottom: 0; }
 .s-ventende, .s-ukendt { color: var(--neutral-text); background: var(--neutral-bg); }
 .s-lyd { color: var(--warning-text); background: var(--warning-bg); }
 .s-fejlet { color: var(--danger-text); background: var(--danger-bg); }
+/* F004: "Ikke valgt" — hul, neutral; ringen betyder "ikke startet" */
+.s-ikke-valgt { color: var(--text-muted); background: transparent; box-shadow: inset 0 0 0 1px var(--border-strong); }
+.s-ikke-valgt::before { background: transparent; box-shadow: inset 0 0 0 1.5px currentColor; }
+
+/* 9b. Tags (F004): egenskaber, ikke status — kantet outline uden prik */
+.tag {
+  display: inline-flex; align-items: center; gap: var(--sp-1); height: 20px; padding: 0 6px; border: 1px solid;
+  border-radius: var(--radius-sm); font-size: var(--fs-sm); font-weight: 500; line-height: 1; white-space: nowrap;
+  vertical-align: middle; background: transparent;
+}
+.tag-source { color: var(--text-muted); border-color: var(--border); }
+.tag-success { color: var(--success-text); border-color: var(--success-border); }
+.tags { display: inline-flex; gap: 6px; flex-wrap: wrap; }
+.head-tags { display: flex; gap: var(--sp-2); align-items: center; flex-wrap: wrap; }
+
+/* 9c. Visning (F004): segmentvælger med links */
+.view-switch { display: flex; align-items: center; gap: var(--sp-2); flex-wrap: wrap; margin: var(--sp-3) 0; font-size: var(--fs-md); }
+.segmented {
+  display: inline-flex; padding: 2px; gap: 2px; background: var(--surface);
+  border: 1px solid var(--border-strong); border-radius: var(--radius-sm);
+}
+.segmented a {
+  display: inline-flex; align-items: center; justify-content: center; min-height: 32px; padding: 0 var(--sp-3); border-radius: 4px;
+  font-weight: 500; color: var(--text-muted); text-decoration: none;
+  transition: background-color var(--dur) var(--ease), color var(--dur) var(--ease);
+}
+.segmented a:hover { color: var(--text); background: var(--surface-2); }
+.segmented a[aria-current="true"], .segmented a[aria-current="true"]:hover { color: var(--nav-active); background: var(--accent-subtle); font-weight: 600; }
+.select-call { margin-top: var(--sp-3); }
+@media (max-width: 480px) {
+  .select-call button { width: 100%; min-height: 44px; }
+}
 
 /* 10. Beskeder og systemstatus */
 .msg {
@@ -391,6 +423,9 @@ section.mcp table code { font-size: var(--fs-sm); }
   .wide-only { display: none; }
   .narrow-only { display: inline; }
   .pager .button { min-height: 44px; }
+  .view-switch { flex-direction: column; align-items: stretch; }
+  .segmented { display: flex; width: 100%; }
+  .segmented a { flex: 1; min-height: 44px; }
 }
 @media (max-width: 400px) {
   .secret { flex-direction: column; }

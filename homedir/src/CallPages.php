@@ -4,6 +4,9 @@ declare(strict_types=1);
 namespace Whisper;
 
 use Throwable;
+use Whisper\Adversus\AdversusConfig;
+use Whisper\Adversus\AdversusError;
+use Whisper\Adversus\Feature;
 use Whisper\Transcription\EngineError;
 use Whisper\Transcription\ProcessEngine;
 use Whisper\Zendesk\ZendeskConfig;
@@ -20,6 +23,10 @@ final class CallPages
     public const CFG_MISSING = 'Zendesk er ikke sat op.';
     public const CFG_INVALID = 'Zendesk-opsætningen i config.ini er ugyldig.';
     private const ZIP_TMP_MAX_AGE = 3600;
+    /** Højst så mange manuelt valgte Adversus-opkald (ikke succes) i kø eller under transcription ad gangen (security S1) */
+    public const MANUAL_MAX = 50;
+    /** Et opkalds fejlede lyd kan hentes igen med knappen højst så ofte (security N2) */
+    public const RESET_COOLDOWN = 3600;
 
     /** @param array<string, mixed> $user */
     public static function list(Request $req, array $user, string $csrf, ?string $flash): Response
@@ -34,7 +41,8 @@ final class CallPages
             $snippets = $f['q'] !== '' && $ids !== [] ? Calls::snippets($ids, $f['q']) : [];
             $config = $cfgError === null ? 'ok' : ($cfgError === self::CFG_INVALID ? 'invalid' : 'missing');
             return Response::html(UiCalls::list($user, $csrf, $flash, $f, $res['rows'], $res['total'], Calls::agents(), Calls::status(),
-                $config, self::engineReady(), $cfg?->subdomain, $snippets, time()));
+                $config, self::engineReady(), $cfg?->subdomain, $snippets, time(),
+                Feature::on() ? ['config' => self::adversusConfig(), 'status' => Calls::adversusStatus(), 'warning' => Calls::adversusWarning(time())] : null));
         }
         $notices = [];
         if ($cfgError !== null) {
@@ -51,8 +59,9 @@ final class CallPages
      * Listens filtre og side kommer med i query-strengen (F005), så detaljen kan linke tilbage til samme liste.
      *
      * @param array<string, mixed> $user
+     * @param array{0: ?string, 1: ?string} $flash  ok- og info-besked fra en handling (F004)
      */
-    public static function show(int $id, Request $req, array $user, string $csrf): Response
+    public static function show(int $id, Request $req, array $user, string $csrf, array $flash = [null, null]): Response
     {
         $call = Calls::find($id);
         $modern = Ui::modern();
@@ -65,7 +74,7 @@ final class CallPages
         [$cfg] = self::zendesk();
         $onDisk = Calls::audioFile(is_string($call['audio_path'] ?? null) ? $call['audio_path'] : null) !== null;
         if ($modern) {
-            return Response::html(UiCalls::show($user, $csrf, $call, Calls::transcript($id), $onDisk, $cfg?->subdomain, $f));
+            return Response::html(UiCalls::show($user, $csrf, $call, Calls::transcript($id), $onDisk, $cfg?->subdomain, $f, $flash[0], $flash[1]));
         }
         return Response::html(CallView::show($user, $csrf, $call, Calls::transcript($id), $onDisk, $cfg?->subdomain));
     }
@@ -214,6 +223,89 @@ final class CallPages
             if (is_file($old) && filemtime($old) < time() - self::ZIP_TMP_MAX_AGE) {
                 @unlink($old);
             }
+        }
+    }
+
+    /**
+     * POST /opkald/{id}/transcriber (F004, AK7): sætter et Adversus-opkald, der er "ikke valgt", i kø. App har tjekket
+     * login og CSRF. Én atomisk UPDATE, så knappen er idempotent: et opkald i kø, under arbejde eller færdigt ændres ikke.
+     * Svaret er altid en redirect (PRG) til detaljen med listens kontekst.
+     *
+     * @param array<string, mixed> $user
+     * @return array{0: int, 1: string, 2: string} [HTTP-status for fejl (0 = redirect), redirect-sti, ok|koe|faerdig]
+     */
+    public static function select(int $id, Request $req, array $user): array
+    {
+        $call = Calls::find($id);
+        if ($call === null || !Calls::isAdversus($call)) {
+            return [404, '', ''];
+        }
+        $ctx = $req->str('ctx');
+        // Konteksten er listens egen query; den renses gennem filter() igen, så intet andet kan smugles ind i redirecten
+        parse_str($ctx, $q);
+        $f = Calls::filter($q);
+        $back = CallView::query($f, $f['side']);
+        $url = '/opkald/' . $id . ($back !== '' ? '?' . $back : '');
+        $retry = $call['audio_status'] === 'fejlet' && $call['transcript_status'] === 'ventende';
+        if (!self::selectable($call)) {
+            return [0, $url, $call['transcript_status'] === 'faerdig' ? 'faerdig' : 'koe'];
+        }
+        $now = time();
+        if ($retry) {
+            // Genforsøg på fejlet lyd: ikke bag loftet (QA N-1), men højst én gang i timen pr. opkald (security N2).
+            // Én atomisk UPDATE; lyd-felterne sættes før audio_status, fordi MariaDB evaluerer SET fra venstre.
+            $n = DB::exec("UPDATE calls SET audio_attempts = 0, audio_error = NULL, audio_reset_at = ?, audio_status = 'venter', updated_at = ? "
+                . "WHERE id = ? AND `source` = 'adversus' AND audio_status = 'fejlet' AND transcript_status = 'ventende' "
+                . 'AND (audio_reset_at IS NULL OR audio_reset_at <= ?)',
+                [gmdate('Y-m-d H:i:s', $now), gmdate('Y-m-d H:i:s', $now), $id, gmdate('Y-m-d H:i:s', $now - self::RESET_COOLDOWN)]);
+            if ($n === 1) {
+                AccessLog::write((int) $user['id'], 'transcriber', ['opkald' => $id]);
+                return [0, $url, 'igen'];
+            }
+            $again = Calls::find($id);
+            return [0, $url, $again !== null && $again['audio_status'] === 'fejlet' ? 'nylig' : 'koe'];
+        }
+        // Loft over manuelt valgte opkald i gang (security S1): kun ikke-succes, og døde valg (lyd fejlet efter alle
+        // forsøg) tæller ikke (QA N-1). Intet ændres ved loftet. To samtidige klik kan gå én over loftet; det er
+        // accepteret (loftet er værn mod masse-valg, ikke et kvotesystem).
+        if ((int) $call['is_success'] === 0 && self::manualInProgress() >= self::MANUAL_MAX) {
+            return [0, $url, 'fuld'];
+        }
+        $n = DB::exec("UPDATE calls SET transcript_status = 'ventende', updated_at = ? WHERE id = ? AND `source` = 'adversus' "
+            . "AND transcript_status = 'ikke_valgt'", [gmdate('Y-m-d H:i:s', $now), $id]);
+        if ($n === 1) {
+            AccessLog::write((int) $user['id'], 'transcriber', ['opkald' => $id]);
+            return [0, $url, 'ok'];
+        }
+        return [0, $url, 'koe'];
+    }
+
+    /** Manuelt valgte Adversus-opkald, der reelt er i gang (ikke succes, ikke døde efter alle lydforsøg). */
+    public static function manualInProgress(): int
+    {
+        return (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus' AND is_success = 0 "
+            . "AND transcript_status IN ('ventende', 'transcriberer') AND NOT (audio_status = 'fejlet' AND audio_attempts >= ?)",
+            [Adversus\Sync::MAX_AUDIO_ATTEMPTS]);
+    }
+
+    /**
+     * Kan knappen bruges på opkaldet? "Ikke valgt", eller lyden er fejlet, før der blev lavet et transcript (QA F-2).
+     *
+     * @param array<string, mixed> $call
+     */
+    public static function selectable(array $call): bool
+    {
+        return Calls::isAdversus($call) && ($call['transcript_status'] === 'ikke_valgt'
+            || ($call['audio_status'] === 'fejlet' && $call['transcript_status'] === 'ventende'));
+    }
+
+    /** F004: 'ok' | 'missing' | 'invalid' for [adversus] i config.ini. */
+    public static function adversusConfig(): string
+    {
+        try {
+            return AdversusConfig::fromSection(Config::section('adversus')) === null ? 'missing' : 'ok';
+        } catch (AdversusError) {
+            return 'invalid';
         }
     }
 
