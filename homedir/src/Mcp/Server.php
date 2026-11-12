@@ -10,6 +10,9 @@ use Whisper\AccessLog;
 use Whisper\App;
 use Whisper\CallPages;
 use Whisper\Flags;
+use Whisper\OAuth\Grants;
+use Whisper\OAuth\Issuer;
+use Whisper\OAuth\OAuth;
 use Whisper\Request;
 use Whisper\Response;
 
@@ -20,6 +23,9 @@ use Whisper\Response;
  * session-, login- og CSRF-kæde er uændret for alle andre ruter.
  *
  * Rækkefølge: flag → metode → Origin → nøgle → rate limit → protokolversion → body → JSON-RPC.
+ *
+ * Med F006_oauth tændt (DECISIONS #47/#48) gælder KUN OAuth access tokens: F003-nøgler afvises som manglende, 401
+ * peger på protected resource metadata, og Claude's egne origins (claude.ai, claude.com) accepteres.
  */
 final class Server
 {
@@ -74,6 +80,28 @@ final class Server
         }
     }
 
+    /** Sitets egen origin, og med OAuth tændt også Claude's (DNS rebinding er stadig udelukket: alt kræver bearer-token). */
+    private static function originOk(string $site, string $origin, bool $oauth): bool
+    {
+        return hash_equals($site, $origin) || ($oauth && in_array($origin, ['https://claude.ai', 'https://claude.com'], true));
+    }
+
+    /**
+     * Brugeren bag Authorization-headeren: F003-nøgle med OAuth slukket; kun et OAuth access token til netop denne
+     * ressource med OAuth tændt (en F003-nøgle behandles da som ingen nøgle).
+     *
+     * @return array{rate_id: int, oauth: bool, user: array<string, mixed>}|null
+     */
+    private function authenticate(string $header, string $site, bool $oauth, int $now): ?array
+    {
+        if (!$oauth) {
+            $a = Tokens::authenticate($header);
+            return $a === null ? null : ['rate_id' => $a['token_id'], 'oauth' => false, 'user' => $a['user']];
+        }
+        $a = $site !== '' ? Issuer::authenticate($header, OAuth::resource($site), $now) : null;
+        return $a === null ? null : ['rate_id' => $a['grant_id'], 'oauth' => true, 'user' => $a['user']];
+    }
+
     /** id fra en request, der kan læses som et JSON-RPC-objekt; ellers null. */
     private static function requestId(string $body): int|string|null
     {
@@ -93,24 +121,34 @@ final class Server
         }
         $origin = $req->header('origin');
         $site = self::siteOrigin($req);
-        if ($origin !== '' && ($site === '' || !hash_equals($site, strtolower(rtrim($origin, '/'))))) {
+        $oauth = OAuth::enabled();
+        if ($origin !== '' && ($site === '' || !self::originOk($site, strtolower(rtrim($origin, '/')), $oauth))) {
             // MCP: en ugyldig Origin SKAL give 403 (DNS rebinding). Klienter uden Origin (mcp-remote) er i orden.
             return self::rpcError(403, null, -32600, 'Forbudt oprindelse.');
         }
 
         $now = ($this->clock)();
-        $auth = Tokens::authenticate($req->header('authorization'));
+        $auth = $this->authenticate($req->header('authorization'), $site, $oauth, $now);
         if ($auth === null) {
             // Ingen data og ingen forskel på manglende, forkert, tilbagekaldt nøgle eller deaktiveret bruger
+            if ($oauth && $site !== '') {
+                // RFC 9728 §5.1: herfra finder Claude metadata og starter login (claude.com/docs/connectors/building/authentication)
+                return self::plain(401, "Forbind Whisper som connector i Claude, og log ind.\n", ['WWW-Authenticate' => 'Bearer realm="whisper", '
+                    . 'resource_metadata="' . $site . OAuth::PRM_PATH . self::PATH . '"']);
+            }
             return self::plain(401, "Mangler eller ugyldig nøgle. Opret en ny under Konto i Whisper.\n",
                 ['WWW-Authenticate' => 'Bearer realm="whisper"']);
         }
-        $retry = RateLimit::hit($auth['token_id'], $now);
+        $retry = RateLimit::hit($auth['rate_id'], $now, $auth['oauth']);
         if ($retry > 0) {
             return self::plain(429, 'For mange forespørgsler: højst ' . RateLimit::LIMIT . " i minuttet pr. nøgle. Prøv igen om lidt.\n",
                 ['Retry-After' => (string) $retry]);
         }
-        Tokens::touch($auth['token_id'], $now);
+        if ($auth['oauth']) {
+            Grants::touch($auth['rate_id'], $now);
+        } else {
+            Tokens::touch($auth['rate_id'], $now);
+        }
 
         $version = trim($req->header('mcp-protocol-version'));
         if ($version !== '' && !in_array($version, self::VERSIONS, true)) {

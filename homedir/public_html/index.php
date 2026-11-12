@@ -14,6 +14,8 @@ use Whisper\Config;
 use Whisper\Flags;
 use Whisper\Mcp\Server;
 use Whisper\NativeSessionDriver;
+use Whisper\OAuth\Endpoints;
+use Whisper\OAuth\OAuth;
 use Whisper\Request;
 use Whisper\Response;
 use Whisper\Session;
@@ -25,14 +27,22 @@ if (!Flags::enabled(App::FLAG)) {
 }
 
 try {
-    $isMcp = Server::isPath((string) parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH));
-    // F003: kun /mcp læser body (med loft: én byte over, så Server kan svare 413 uden at læse resten)
-    $request = Request::fromGlobals($isMcp ? Server::MAX_BODY + 1 : 0);
+    $path = (string) parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH);
+    $isMcp = Server::isPath($path);
+    // F006: metadata, registrering og token — kun med flaget; slukket når de App's almindelige 404
+    $isOAuth = !$isMcp && Endpoints::isPath($path) && OAuth::enabled();
+    // F003: kun /mcp læser body (med loft: én byte over, så Server kan svare 413 uden at læse resten). F006: /oauth/register
+    $request = Request::fromGlobals($isMcp ? Server::MAX_BODY + 1 : ($isOAuth ? Endpoints::MAX_BODY + 1 : 0));
     if ($isMcp) {
         // Bearer-nøgle i stedet for session: ingen session startes og ingen cookie sendes, heller ikke hvis klienten
         // har en med. App's login- og CSRF-kæde er uændret for alle andre ruter.
         $response = (new Server())->handle($request);
-    } elseif (NativeSessionDriver::hasCookie() || rtrim($request->path, '/') === '/login') {
+    } elseif ($isOAuth) {
+        // Maskin-endpoints uden session og uden cookie, som /mcp
+        $response = (new Endpoints())->handle($request);
+    } elseif (NativeSessionDriver::hasCookie() || rtrim($request->path, '/') === '/login'
+        || (rtrim($request->path, '/') === Endpoints::AUTHORIZE && OAuth::enabled())) {
+        // F006: /oauth/authorize skal gemme den ventende anmodning hen over login, også for en anonym besøgende
         $driver = NativeSessionDriver::start(Config::baseDir());
         $session = new Session($driver, $driver->load());
         $response = (new App())->handle($request, $session);

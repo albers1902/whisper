@@ -6,6 +6,7 @@ namespace Whisper;
 use PDOException;
 use Throwable;
 use Whisper\Mcp\Tokens;
+use Whisper\OAuth\Grants;
 
 /**
  * Tabellen users (migration 0002). Al validering, der kan nå brugeren, kaster UserError med en dansk besked.
@@ -100,6 +101,10 @@ final class Users
                 throw new UserError('Den sidste aktive administrator kan ikke deaktiveres.');
             }
             DB::exec('UPDATE users SET active = ?, updated_at = ? WHERE id = ?', [$active ? 1 : 0, self::ts($now), $id]);
+            if (!$active) {
+                // F006: en fjernet bruger mister sine forbundne apps for altid, også efter en genaktivering
+                Grants::revokeAll($id, $now);
+            }
         });
     }
 
@@ -135,7 +140,8 @@ final class Users
                 'UPDATE users SET password_hash = ?, must_change_password = ?, updated_at = ? WHERE id = ?',
                 [$hash, $mustChange ? 1 : 0, self::ts($now), $id]
             );
-            $revoked = Tokens::revokeAll($id, $now);
+            // F006: også forbundne apps (OAuth-bevillinger) — uanset flaget, så en tændt OAuth aldrig arver en gammel kæde
+            $revoked = Tokens::revokeAll($id, $now) + Grants::revokeAll($id, $now);
             $pdo->commit();
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) {
