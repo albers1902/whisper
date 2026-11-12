@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Whisper;
 
 use Closure;
+use Whisper\Adversus\Feature;
 use Whisper\Mcp\Server;
 use Whisper\Mcp\Tokens;
 
@@ -118,7 +119,10 @@ final class App
         return match ($route) {
             'home'      => Flags::enabled(CallPages::FLAG) ? CallPages::list($req, $user, $csrf, $this->flash($s))
                 : Response::html(View::home($user, $csrf, $this->flash($s))),
-            'call_show'  => CallPages::show($id, $req, $user, $csrf),
+            // F004: detaljen viser kvitteringen fra "Transcribér dette opkald"; slukket røres sessionen ikke (AK9)
+            'call_show'  => CallPages::show($id, $req, $user, $csrf,
+                Feature::on() ? [$this->flash($s), $this->flash($s, 'flash_info')] : [null, null]),
+            'call_select' => $this->callSelect($req, $s, $user, $id, $csrf),
             'call_audio' => CallPages::audio($id, $req, $user),
             'call_txt'   => CallPages::transcript($id, $user),
             'call_zip'   => CallPages::zip($req, $user, $csrf),
@@ -148,6 +152,7 @@ final class App
         'call_audio'   => ['GET'],
         'call_txt'     => ['GET'],
         'call_zip'     => ['GET'],
+        'call_select'  => ['POST'],
         'mcp_create'   => ['POST'],
         'mcp_revoke'   => ['POST'],
     ];
@@ -164,6 +169,10 @@ final class App
             // F002: findes kun med flaget tændt (slukket: 404 som enhver ukendt sti, også for anonyme)
             if ($path === '/opkald/download') {
                 return ['call_zip', 0, ''];
+            }
+            // F004: "Transcribér dette opkald" findes kun med F004_adversus (og F005_ui) tændt
+            if (Feature::on() && preg_match('#^/opkald/([1-9][0-9]{0,9})/transcriber$#', $path, $m) === 1) {
+                return ['call_select', (int) $m[1], ''];
             }
             if (preg_match('#^/opkald/([1-9][0-9]{0,9})(/lyd|/transcript)?$#', $path, $m) === 1) {
                 $sub = $m[2] ?? '';
@@ -428,11 +437,30 @@ final class App
         return Response::html(View::error(403, $text, Csrf::token($s), $user), 403);
     }
 
-    private function flash(Session $s): ?string
+    private function flash(Session $s, string $key = 'flash'): ?string
     {
-        $f = $s->get('flash');
-        $s->remove('flash');
+        $f = $s->get($key);
+        $s->remove($key);
         return is_string($f) ? $f : null;
+    }
+
+    /**
+     * POST /opkald/{id}/transcriber (F004, UX §4): PRG med en kvittering, der siger, hvad der skete.
+     *
+     * @param array<string, mixed> $user
+     */
+    private function callSelect(Request $req, Session $s, array $user, int $id, string $csrf): Response
+    {
+        [$status, $url, $kind] = CallPages::select($id, $req, $user);
+        if ($status !== 0) {
+            return Response::html(UiPages::error(404, 'Opkaldet findes ikke.', $csrf, $user), 404);
+        }
+        if ($kind === 'ok') {
+            $s->set('flash', 'Opkaldet er sat i kø. Lyden hentes fra Adversus, og transcriptet laves derefter.');
+        } else {
+            $s->set('flash_info', $kind === 'faerdig' ? 'Opkaldet er allerede transcriberet.' : 'Opkaldet er allerede i kø.');
+        }
+        return Response::redirect($url);
     }
 
     /** Sikkerheds-headere på alle svar fra appen. no-store: siderne kan vise engangskoder og persondata. */

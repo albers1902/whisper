@@ -4,6 +4,9 @@ declare(strict_types=1);
 namespace Whisper;
 
 use Throwable;
+use Whisper\Adversus\AdversusConfig;
+use Whisper\Adversus\AdversusError;
+use Whisper\Adversus\Feature;
 use Whisper\Transcription\EngineError;
 use Whisper\Transcription\ProcessEngine;
 use Whisper\Zendesk\ZendeskConfig;
@@ -34,7 +37,8 @@ final class CallPages
             $snippets = $f['q'] !== '' && $ids !== [] ? Calls::snippets($ids, $f['q']) : [];
             $config = $cfgError === null ? 'ok' : ($cfgError === self::CFG_INVALID ? 'invalid' : 'missing');
             return Response::html(UiCalls::list($user, $csrf, $flash, $f, $res['rows'], $res['total'], Calls::agents(), Calls::status(),
-                $config, self::engineReady(), $cfg?->subdomain, $snippets, time()));
+                $config, self::engineReady(), $cfg?->subdomain, $snippets, time(),
+                Feature::on() ? ['config' => self::adversusConfig(), 'status' => Calls::adversusStatus()] : null));
         }
         $notices = [];
         if ($cfgError !== null) {
@@ -51,8 +55,9 @@ final class CallPages
      * Listens filtre og side kommer med i query-strengen (F005), så detaljen kan linke tilbage til samme liste.
      *
      * @param array<string, mixed> $user
+     * @param array{0: ?string, 1: ?string} $flash  ok- og info-besked fra en handling (F004)
      */
-    public static function show(int $id, Request $req, array $user, string $csrf): Response
+    public static function show(int $id, Request $req, array $user, string $csrf, array $flash = [null, null]): Response
     {
         $call = Calls::find($id);
         $modern = Ui::modern();
@@ -65,7 +70,7 @@ final class CallPages
         [$cfg] = self::zendesk();
         $onDisk = Calls::audioFile(is_string($call['audio_path'] ?? null) ? $call['audio_path'] : null) !== null;
         if ($modern) {
-            return Response::html(UiCalls::show($user, $csrf, $call, Calls::transcript($id), $onDisk, $cfg?->subdomain, $f));
+            return Response::html(UiCalls::show($user, $csrf, $call, Calls::transcript($id), $onDisk, $cfg?->subdomain, $f, $flash[0], $flash[1]));
         }
         return Response::html(CallView::show($user, $csrf, $call, Calls::transcript($id), $onDisk, $cfg?->subdomain));
     }
@@ -214,6 +219,45 @@ final class CallPages
             if (is_file($old) && filemtime($old) < time() - self::ZIP_TMP_MAX_AGE) {
                 @unlink($old);
             }
+        }
+    }
+
+    /**
+     * POST /opkald/{id}/transcriber (F004, AK7): sætter et Adversus-opkald, der er "ikke valgt", i kø. App har tjekket
+     * login og CSRF. Én atomisk UPDATE, så knappen er idempotent: et opkald i kø, under arbejde eller færdigt ændres ikke.
+     * Svaret er altid en redirect (PRG) til detaljen med listens kontekst.
+     *
+     * @param array<string, mixed> $user
+     * @return array{0: int, 1: string, 2: string} [HTTP-status for fejl (0 = redirect), redirect-sti, ok|koe|faerdig]
+     */
+    public static function select(int $id, Request $req, array $user): array
+    {
+        $call = Calls::find($id);
+        if ($call === null || !Calls::isAdversus($call)) {
+            return [404, '', ''];
+        }
+        $ctx = $req->str('ctx');
+        // Konteksten er listens egen query; den renses gennem filter() igen, så intet andet kan smugles ind i redirecten
+        parse_str($ctx, $q);
+        $f = Calls::filter($q);
+        $back = CallView::query($f, $f['side']);
+        $url = '/opkald/' . $id . ($back !== '' ? '?' . $back : '');
+        $n = DB::exec("UPDATE calls SET transcript_status = 'ventende', updated_at = ? WHERE id = ? AND `source` = 'adversus' "
+            . "AND transcript_status = 'ikke_valgt'", [gmdate('Y-m-d H:i:s'), $id]);
+        if ($n === 1) {
+            AccessLog::write((int) $user['id'], 'transcriber', ['opkald' => $id]);
+            return [0, $url, 'ok'];
+        }
+        return [0, $url, $call['transcript_status'] === 'faerdig' ? 'faerdig' : 'koe'];
+    }
+
+    /** F004: 'ok' | 'missing' | 'invalid' for [adversus] i config.ini. */
+    public static function adversusConfig(): string
+    {
+        try {
+            return AdversusConfig::fromSection(Config::section('adversus')) === null ? 'missing' : 'ok';
+        } catch (AdversusError) {
+            return 'invalid';
         }
     }
 

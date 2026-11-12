@@ -112,4 +112,16 @@
       }
     });
   });
+
+  /* 4. F004: "Transcribér dette opkald" — én afsendelse; serveren er idempotent, så uden JS sker intet værre */
+  d.querySelectorAll('form.select-call').forEach(function (form) {
+    form.addEventListener('submit', function () {
+      var btn = form.querySelector('button[data-busy]');
+      if (!btn) { return; }
+      btn.textContent = btn.getAttribute('data-busy');
+      btn.setAttribute('aria-disabled', 'true');
+      setTimeout(function () { btn.disabled = true; }, 0);
+      say('Sætter opkaldet i kø.');
+    });
+  });
 })();

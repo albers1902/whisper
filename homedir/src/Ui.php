@@ -97,6 +97,9 @@ final class Ui
      */
     public static function status(string $audio, string $transcript, ?bool $audioOnDisk = null): array
     {
+        if ($transcript === 'ikke_valgt') {
+            return ['s-ikke-valgt', 'Ikke valgt'];   // F004: afgøres før lyden, som aldrig hentes for et fravalgt opkald
+        }
         if ($audio === 'venter') {
             return ['s-ventende', 'Venter på lyd'];
         }
@@ -288,7 +291,20 @@ final class Ui
         'log-out'        => '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>',
         'key-round'      => '<path d="M2.586 17.414A2 2 0 0 0 2 18.828V21a1 1 0 0 0 1 1h3a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h1a1 1 0 0 0 1-1v-1a1 1 0 0 1 1-1h.172a2 2 0 0 0 1.414-.586l.814-.814a6.5 6.5 0 1 0-4-4z"/><circle cx="16.5" cy="7.5" r=".5" fill="currentColor"/>',
         'inbox'          => '<polyline points="22 12 16 12 14 15 10 15 8 12 2 12"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z"/>',
+        'trophy'         => '<path d="M6 9H4.5a2.5 2.5 0 0 1 0-5H6"/><path d="M18 9h1.5a2.5 2.5 0 0 0 0-5H18"/><path d="M4 22h16"/><path d="M10 14.66V17c0 .55-.47.98-.97 1.21C7.85 18.75 7 20.24 7 22"/><path d="M14 14.66V17c0 .55.47.98.97 1.21C16.15 18.75 17 20.24 17 22"/><path d="M18 2H6v7a6 6 0 0 0 12 0V2Z"/>',
     ];
+
+    /** Kilde-etiket (F004, visual brief: neutral .tag, ens for alle kilder). */
+    public static function sourceTag(string $source): string
+    {
+        return '<span class="tag tag-source">' . self::e(Calls::sourceName($source)) . '</span>';
+    }
+
+    /** "Succes-lead"-etiket (F004): outline, trofæ, ingen prik — en egenskab, ikke en status. */
+    public static function successTag(): string
+    {
+        return '<span class="tag tag-success">' . self::icon('trophy', 14) . 'Succes-lead</span>';
+    }
 
     public static function icon(string $name, int $size = 16): string
     {
