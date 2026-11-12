@@ -109,7 +109,7 @@ final class UiCalls
             } else {
                 $table = $all
                     ? self::empty('Ingen opkald endnu', 'Opkald med optagelse fra Zendesk og Adversus dukker op her inden for 10 minutter.', '')
-                    : self::empty('Ingen opkald endnu', 'Opkald fra Zendesk og opkald på succes-leads fra Adversus dukker op her inden for 10 minutter.',
+                    : self::empty('Ingen opkald endnu', 'Opkald fra Zendesk, Adversus-opkald på succes-leads og opkald, der er valgt til transcription, dukker op her inden for 10 minutter.',
                         '<a class="button secondary" href="/?vis=alle">Vis alle opkald</a>');
             }
         } elseif ($rows === []) {
@@ -169,7 +169,7 @@ final class UiCalls
     }
 
     /**
-     * Segmentvælgeren "Vis: Succes-leads · Alle opkald" (F004, UX §3.1, D-F4-2): links, der bevarer filtrene og nulstiller
+     * Segmentvælgeren "Vis: Succes og valgte · Alle opkald" (QA N-4) (F004, UX §3.1, D-F4-2): links, der bevarer filtrene og nulstiller
      * siden. Det aktive valg har aria-current og fed tekst (ikke kun farve).
      *
      * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string} $f
@@ -180,7 +180,7 @@ final class UiCalls
         $link = static fn(string $vis, string $label, bool $active): string => '<a href="' . Ui::e(self::listUrl(['vis' => $vis] + $f)) . '"'
             . ($active ? ' aria-current="true"' : '') . '>' . $label . '</a>';
         return '<div class="view-switch" role="group" aria-labelledby="vis-label"><span id="vis-label" class="muted">Vis:</span>'
-            . '<div class="segmented">' . $link('', 'Succes-leads', !$all) . $link('alle', 'Alle opkald', $all) . '</div></div>';
+            . '<div class="segmented">' . $link('', 'Succes og valgte', !$all) . $link('alle', 'Alle opkald', $all) . '</div></div>';
     }
 
     /**
@@ -288,7 +288,7 @@ final class UiCalls
                 }
             }
         }
-        $caption = $adv ? ($all ? 'Opkald – alle' : 'Opkald – succes-leads') : 'Opkald';
+        $caption = $adv ? ($all ? 'Opkald – alle' : 'Opkald – succes og valgte') : 'Opkald';
         return '<div class="table-wrap"><table class="calls"><caption class="sr-only">' . $caption . '</caption><thead><tr><th scope="col">Dato og tid</th>'
             . ($adv ? '<th scope="col">Kilde</th>' : '')
             . '<th scope="col">Retning</th><th scope="col">Kunde</th><th scope="col">Agent</th><th scope="col" class="num">Varighed</th>'

@@ -40,8 +40,9 @@ F004Check::that('AK6', str_contains($std->body, '<th scope="col">Dato og tid</th
 F004Check::that('AK6', str_contains($std->body, '<span class="tag tag-source">Adversus</span>') && str_contains($std->body, '<span class="tag tag-source">Zendesk</span>'),
     'kilden vises som neutralt tag');
 F004Check::that('AK6', !str_contains($std->body, 'tag-success'), 'standard: intet Succes-lead-mærke i listen (Team Lead 2)');
-F004Check::that('AK6', str_contains($std->body, '<a href="/" aria-current="true">Succes-leads</a>') && str_contains($std->body, '<a href="/?vis=alle">Alle opkald</a>'),
-    'segmentvælgeren: Succes-leads aktiv, standarden står ikke i URL\'en');
+F004Check::that('AK6', str_contains($std->body, '<a href="/" aria-current="true">Succes og valgte</a>') && str_contains($std->body, '<a href="/?vis=alle">Alle opkald</a>'),
+    'segmentvælgeren: "Succes og valgte" aktiv (QA N-4), standarden står ikke i URL\'en');
+F004Check::that('AK6', str_contains($std->body, '<caption class="sr-only">Opkald – succes og valgte</caption>'), 'caption "Opkald – succes og valgte"');
 F004Check::that('AK6', !str_contains($std->body, 'name="vis"'), 'standard: intet skjult vis-felt');
 
 $all = f002_get($c, '/', ['vis' => 'alle']);
@@ -63,5 +64,5 @@ F004Check::that('AK6', !str_contains($bad->body, '/opkald/' . $no . '"') && !str
 // Tom standardvisning: henvis til "Alle opkald"
 DB::exec('DELETE FROM calls WHERE id IN (?, ?, ?)', [$z, $ok, $sel]);
 $empty = f002_get($c, '/');
-F004Check::that('AK6', str_contains($empty->body, 'Vis alle opkald') && str_contains($empty->body, 'succes-leads fra Adversus'), 'tom standardvisning');
+F004Check::that('AK6', str_contains($empty->body, 'Vis alle opkald') && str_contains($empty->body, 'valgt til transcription') && str_contains($empty->body, 'Opkald – succes og valgte') === false, 'tom standardvisning');
 F004Check::done();
