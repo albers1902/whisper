@@ -319,3 +319,19 @@ H009 · Accepteret risiko (LOW, security-critic H009_v1, S1–S4):
 - S4: der er ingen meddelelse ved `logs/deploying` og ingen kvote på tværs af kørsler.
 S1, S2 og S4 rettes i H009 PR 2. Ejeren ser linjerne med "afvist (" og "✘" igennem, før outputtet sendes.
 Udløber: 2027-02-10
+
+## #52 — 2026-11-12 — H009-S2: diagnosen fanger ikke Throwable
+H009-S2 · Accepteret risiko (LOW, security-critic H009_v1): `cron/adversus-diagnose.php` fanger ikke Throwable. En DB-
+eller programfejl giver derfor PHP's egen fejludskrift. Rettes i H009 PR 2. (#51 dækker S1. Fundene står her i hvert
+sit afsnit, fordi CI kræver ét afsnit pr. fund.)
+Udløber: 2027-02-10
+
+## #53 — 2026-11-12 — H009-S3: renset fejltekst fra Adversus kan indeholde fri tekst
+H009-S3 · Accepteret risiko (LOW, security-critic H009_v1): den rensede fejltekst fra Adversus (op til 200 tegn) kan
+indeholde navne eller korte numre. Ejeren gennemser linjerne med "afvist (" og "✘", før outputtet sendes.
+Udløber: 2027-02-10
+
+## #54 — 2026-11-12 — H009-S4: ingen meddelelse ved deploying og ingen kvote på tværs af kørsler
+H009-S4 · Accepteret risiko (LOW, security-critic H009_v1): diagnosen har ingen lås eller meddelelse ved
+`logs/deploying` og ingen kvote på tværs af kørsler. Rettes i H009 PR 2 (meddelelse ved deploying).
+Udløber: 2027-02-10
