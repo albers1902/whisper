@@ -10,6 +10,7 @@ use Closure;
  *   threads   = 1–32   (standard: antal kerner − 1, mindst 1; kendes kernerne ikke: 4 som faster-whisper selv)
  *   beam_size = 1–10   (standard 1)
  *   vad       = on|off (standard on)
+ *   batch     = 1–50   (standard 10: opkald pr. motorkald, så modellen indlæses én gang pr. batch; 1 = ét pr. kald)
  * Ugyldige værdier giver standarden og én advarsel pr. nøgle, så en tastefejl i config ikke stopper køen.
  * Værdierne ender som argv-elementer til transcribe.py, så konstruktøren afviser alt uden for intervallerne.
  */
@@ -19,11 +20,15 @@ final class WhisperSettings
     public const MAX_BEAM = 10;
     public const DEFAULT_BEAM = 1;
     public const FALLBACK_THREADS = 4;
+    public const MAX_BATCH = 50;
+    public const DEFAULT_BATCH = 10;
 
-    public function __construct(public readonly int $threads, public readonly int $beam, public readonly bool $vad)
+    public function __construct(public readonly int $threads, public readonly int $beam, public readonly bool $vad,
+        public readonly int $batch = self::DEFAULT_BATCH)
     {
-        if ($threads < 1 || $threads > self::MAX_THREADS || $beam < 1 || $beam > self::MAX_BEAM) {
-            throw new EngineError('[whisper] threads skal være 1–32 og beam_size 1–10');
+        if ($threads < 1 || $threads > self::MAX_THREADS || $beam < 1 || $beam > self::MAX_BEAM
+            || $batch < 1 || $batch > self::MAX_BATCH) {
+            throw new EngineError('[whisper] threads skal være 1–32, beam_size 1–10 og batch 1–50');
         }
     }
 
@@ -57,7 +62,8 @@ final class WhisperSettings
                 $warn('transcribe: advarsel: [whisper] vad skal være on eller off — bruger on');
             }
         }
-        return new self($threads, $beam, $vad);
+        $batch = self::intOr($section, 'batch', 1, self::MAX_BATCH, self::DEFAULT_BATCH, $warn);
+        return new self($threads, $beam, $vad, $batch);
     }
 
     /** Antal kerner uden shell: /proc/cpuinfo, ellers /sys/devices/system/cpu/online. null = ukendt. */
