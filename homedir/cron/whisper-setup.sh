@@ -8,6 +8,7 @@
 # præcise versioner og sha256, så pip aldrig vælger en nyere transitiv pakke) og henter modellen fra
 # [whisper] model i config/config.ini (turbo, standard; eller large-v3) til var/whisper/models på en låst revision.
 # Ingen separat ffmpeg: faster-whisper afkoder med PyAV, som har FFmpeg-bibliotekerne med (F002 v0).
+# H011: henter også diarization-modellerne (låst revision og sha256) og skriver "DIARIZATION: KLAR" eller "DIARIZATION: FEJL".
 # Slutter med "WHISPER: KLAR (<model>)".
 [ -e "$(dirname "$0")/../logs/deploying" ] && { echo "En udrulning kører — prøv igen om et par minutter."; exit 0; }
 set -euo pipefail
@@ -105,6 +106,80 @@ segments, info = model.transcribe(silence, language="da")
 list(segments)
 print("✔ modellen %s er hentet (%s@%s) og transcriberer" % (name, repo, rev[:12]))
 PY
+
+# H011: diarization-modellerne til cron/diarize.py (låst revision og sha256) og en selvtest med samme kald som i drift.
+# En fejl her stopper ikke transcription: markøren ready-diarization skrives kun, når alt lykkes, og uden den gør
+# cron/diarize.php intet. Ny model eller revision = nyt H-ID.
+rm -f var/whisper/ready-diarization
+mkdir -p var/whisper/diarization
+if HF_HOME="$H/var/whisper/hf" "$VENV/bin/python" - "$H/var/whisper/diarization" "$H/cron/diarize.py" <<'PY'
+import hashlib
+import importlib.util
+import math
+import os
+import shutil
+import struct
+import sys
+import wave
+
+from huggingface_hub import hf_hub_download
+
+root, script = sys.argv[1:3]
+FILES = [
+    # (fil i var/whisper/diarization, Hugging Face-repo, låst commit, fil i repoet, sha256)
+    ("segmentation.onnx", "csukuangfj/sherpa-onnx-pyannote-segmentation-3-0", "9403a6902bb58e3d5ae8c7e77c3422de279db2e0",
+     "model.onnx", "220ad67ca923bef2fa91f2390c786097bf305bceb5e261d4af67b38e938e1079"),
+    ("embedding.onnx", "csukuangfj/speaker-embedding-models", "0743f301363dec56491a490f6d6cbc9d67f9a3bf",
+     "3dspeaker_speech_campplus_sv_en_voxceleb_16k.onnx", "357a834f702b80161e5b981182c038e18553c1f2ca752ed6cec2052365d4129b"),
+]
+
+
+def sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+for target, repo, rev, name, want in FILES:
+    dst = os.path.join(root, target)
+    if os.path.isfile(dst) and sha256(dst) == want:
+        print("✔ %s findes (%s@%s)" % (target, repo, rev[:12]))
+        continue
+    src = hf_hub_download(repo, name, revision=rev)
+    if sha256(src) != want:
+        sys.exit("✘ %s fra %s@%s har ikke den låste sha256 — bruges ikke" % (name, repo, rev[:12]))
+    shutil.copyfile(src, dst + ".tmp")
+    os.replace(dst + ".tmp", dst)
+    print("✔ %s hentet (%s@%s, sha256 tjekket)" % (target, repo, rev[:12]))
+
+# Selvtest gennem cron/diarize.py's egne funktioner: PyAV-afkodning og sherpa-onnx på 3 s syntetisk lyd (to toner),
+# så en pakke, der importerer fint men fejler ved brug, stopper her og ikke i cron
+spec = importlib.util.spec_from_file_location("diarize", script)
+d = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(d)
+from faster_whisper.audio import decode_audio
+
+test = os.path.join(root, "selvtest.wav")
+with wave.open(test, "wb") as w:
+    w.setnchannels(1)
+    w.setsampwidth(2)
+    w.setframerate(16000)
+    for hz in (220, 0, 330):
+        w.writeframes(b"".join(struct.pack("<h", int(8000 * math.sin(2 * math.pi * hz * i / 16000))) for i in range(16000)))
+try:
+    iv = d.diarize(d.create(root, 2), decode_audio(test, sampling_rate=d.SAMPLE_RATE))
+finally:
+    os.remove(test)
+print("✔ diarization virker (selvtest: %d intervaller)" % len(iv))
+PY
+then
+  date -u +%Y-%m-%dT%H:%M:%SZ > var/whisper/ready-diarization
+  echo "DIARIZATION: KLAR"
+else
+  echo "DIARIZATION: FEJL — transcription kører videre uden talere (detaljen står ovenfor)"
+fi
 # Markøren til sidst: transcribe.php tager først opkald, når setup er kørt helt færdig for netop denne model (QA F-3)
 date -u +%Y-%m-%dT%H:%M:%SZ > "var/whisper/ready-$model"
 echo "WHISPER: KLAR ($model)"
