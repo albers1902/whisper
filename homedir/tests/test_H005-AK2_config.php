@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 // H005-AK2: [whisper] threads, beam_size og vad i config.ini overholdes; ugyldige værdier giver standarden og én
-// advarsel pr. nøgle. Antal kerner findes uden shell (/proc/cpuinfo, ellers /sys/devices/system/cpu/online).
+// advarsel pr. nøgle. Kerner − 1 er standarden ved workers = 1 (H007: workers 2 deler kernerne, se H007-AK3). Antal kerner findes uden shell (/proc/cpuinfo, ellers /sys/devices/system/cpu/online).
 
 require_once __DIR__ . '/h005_lib.php';
 
@@ -26,12 +26,12 @@ H005Check::that('AK2', $s->threads === 32 && $s->beam === 10 && $s->vad === true
 $s = WhisperSettings::fromSection(['threads' => '4', 'beam_size' => '5', 'vad' => 'off'], 6, $collect($w));
 H005Check::that('AK2', $s->argv() === ['--threads', '4', '--beam', '5', '--vad', '0'] && $s->label() === 'threads 4, beam 5, vad off',
     'den gamle adfærd kan sættes i config (rollback uden deploy)');
-$s = WhisperSettings::fromSection(['threads' => '', 'beam_size' => '', 'vad' => ''], 6, $collect($w));
+$s = WhisperSettings::fromSection(['threads' => '', 'beam_size' => '', 'vad' => '', 'workers' => '1'], 6, $collect($w));
 H005Check::that('AK2', $s->threads === 5 && $s->beam === 1 && $s->vad === true && $w === [], 'tomme nøgler = standarden uden advarsel');
 
 // Ugyldige værdier: standarden og én advarsel pr. nøgle
 $w = [];
-$s = WhisperSettings::fromSection(['threads' => '0', 'beam_size' => '99', 'vad' => 'måske'], 6, $collect($w));
+$s = WhisperSettings::fromSection(['threads' => '0', 'beam_size' => '99', 'vad' => 'måske', 'workers' => '1'], 6, $collect($w));
 H005Check::that('AK2', $s->threads === 5 && $s->beam === 1 && $s->vad === true, 'threads = 0, beam_size = 99, vad = måske → standarderne');
 H005Check::that('AK2', count($w) === 3, 'præcis tre advarsler: ' . implode(' | ', $w));
 H005Check::that('AK2', count(array_filter($w, static fn(string $l): bool => str_contains($l, '[whisper] threads'))) === 1
@@ -41,7 +41,7 @@ H005Check::that('AK2', !str_contains(implode('', $w), 'måske') && !str_contains
     'advarslen gentager ikke den ugyldige værdi');
 foreach (['33', '-1', '4; rm -rf /', '1e2', '2.5', '０', 'abc'] as $bad) {
     $w = [];
-    $s = WhisperSettings::fromSection(['threads' => $bad, 'beam_size' => $bad], 6, $collect($w));
+    $s = WhisperSettings::fromSection(['threads' => $bad, 'beam_size' => $bad, 'workers' => '1'], 6, $collect($w));
     H005Check::that('AK2', $s->threads === 5 && $s->beam === 1 && count($w) === 2, 'ugyldig værdi "' . $bad . '" → standarden og advarsel');
 }
 

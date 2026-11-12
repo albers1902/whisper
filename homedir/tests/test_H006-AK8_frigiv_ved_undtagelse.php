@@ -31,7 +31,7 @@ try {
 } catch (Throwable) {
     $thrown = true;
 }
-H006Check::that('AK8', !$thrown && $n === 3, 'runBatch kaster ikke videre og melder 3 opkald taget');
+H006Check::that('AK8', !$thrown && $n === 0, 'runBatch kaster ikke videre og melder 0, så kørslen stopper til næste minut (H007, DECISIONS #34)');
 H006Check::that('AK8', (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE transcript_status = 'transcriberer'") === 0,
     'intet opkald står tilbage i transcriberer');
 $a = h006_state($calls[0]['id']);
