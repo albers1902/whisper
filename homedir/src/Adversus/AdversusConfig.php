@@ -15,9 +15,15 @@ use DateTimeZone;
  *   since = 2026-10-01
  *   recording_hosts = …        (valgfri; værter, optagelsens 307-redirect må gå til — hentes uden login)
  *   success_status = success   (valgfri; lead-status for en succesfuld registrering — kun de leads transcriberes)
+ *   sync_since = 2026-11-12    (valgfri; F004: hentningens start, dansk midnat. since er probens og bruges ikke af sync)
  */
 final class AdversusConfig
 {
+    /** F004 (DECISIONS #31): uden sync_since starter hentningen 2026-11-12 00:00 dansk tid */
+    public const SYNC_SINCE_DEFAULT = '2026-11-12';
+
+    public readonly int $syncSince;
+
     /** @param list<string> $recordingHosts */
     public function __construct(
         public readonly string $username,
@@ -25,7 +31,16 @@ final class AdversusConfig
         public readonly int $since,
         public readonly array $recordingHosts = [],
         public readonly string $successStatus = 'success',
+        ?int $syncSince = null,
     ) {
+        $this->syncSince = $syncSince ?? self::localMidnight(self::SYNC_SINCE_DEFAULT);
+    }
+
+    /** ÅÅÅÅ-MM-DD som epoch for midnat i Europe/Copenhagen; null ved en ugyldig dato. */
+    public static function localMidnight(string $ymd): ?int
+    {
+        $d = DateTimeImmutable::createFromFormat('!Y-m-d', $ymd, new DateTimeZone('Europe/Copenhagen'));
+        return $d === false || $d->format('Y-m-d') !== $ymd ? null : $d->getTimestamp();
     }
 
     /**
@@ -65,7 +80,14 @@ final class AdversusConfig
         if (preg_match('/^[A-Za-z_-]{1,40}$/D', $success) !== 1) {
             throw new AdversusError('[adversus] success_status er ugyldig (kun bogstaver, _ og -, højst 40 tegn)');
         }
-        return new self($str('username'), $str('password'), $since->getTimestamp(), $hosts, $success);
+        $syncSince = null;
+        if ($str('sync_since') !== '') {
+            $syncSince = self::localMidnight($str('sync_since'));
+            if ($syncSince === null) {
+                throw new AdversusError('[adversus] sync_since er ikke ÅÅÅÅ-MM-DD');
+            }
+        }
+        return new self($str('username'), $str('password'), $since->getTimestamp(), $hosts, $success, $syncSince);
     }
 
     /** Datoen som ISO 8601 til Adversus' filtre. */

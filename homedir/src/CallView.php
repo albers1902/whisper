@@ -10,7 +10,7 @@ final class CallView
 {
     /**
      * @param array<string, mixed> $user
-     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int} $f
+     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string} $f
      * @param list<array<string, mixed>> $rows
      * @param list<string> $agents
      * @param array{last_ok_at: ?string, last_error: ?string, waiting: int, audio_waiting: int} $status
@@ -170,11 +170,12 @@ final class CallView
         return '<span class="badge s-' . View::e($t) . '">' . View::e(Calls::statusName($t)) . '</span>';
     }
 
-    /** @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int} $f */
+    /** @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string} $f */
     public static function query(array $f, int $side = 1): string
     {
-        $q = array_filter(['fra' => $f['fra'], 'til' => $f['til'], 'retning' => $f['retning'], 'agent' => $f['agent'], 'q' => $f['q']],
-            static fn(string $v): bool => $v !== '');
+        // vis (F004) er kun sat, når flaget er tændt og "Alle opkald" er valgt, så den gamle query er uændret ellers
+        $q = array_filter(['fra' => $f['fra'], 'til' => $f['til'], 'retning' => $f['retning'], 'agent' => $f['agent'], 'q' => $f['q'],
+            'vis' => $f['vis'] ?? ''], static fn(string $v): bool => $v !== '');
         if ($side > 1) {
             $q['side'] = (string) $side;
         }

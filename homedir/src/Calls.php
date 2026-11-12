@@ -5,6 +5,7 @@ namespace Whisper;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use Whisper\Adversus\Feature;
 
 /**
  * Opkald og transcripts til siderne (F002). Tider gemmes i UTC og vises i dansk tid; filtrenes datoer er danske.
@@ -24,7 +25,7 @@ final class Calls
      * Filtrene fra query-strengen, renset. Ugyldige værdier ignoreres.
      *
      * @param array<mixed> $q
-     * @return array{fra: string, til: string, retning: string, agent: string, q: string, side: int}
+     * @return array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string}
      */
     public static function filter(array $q): array
     {
@@ -42,17 +43,20 @@ final class Calls
             'agent'   => mb_substr($s('agent'), 0, 120),
             'q'       => mb_substr($s('q'), 0, 200),
             'side'    => max(1, min($side, 100000)),
+            // F004: visningen "Alle opkald" (vis=alle); standarden "Succes-leads" står aldrig i URL'en (UX D-F4-1)
+            'vis'     => Feature::on() && $s('vis') === 'alle' ? 'alle' : '',
         ];
     }
 
     /**
-     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int} $f
+     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string} $f
      * @return array{0: string, 1: list<mixed>} WHERE-del (faste SQL-stykker) og parametre
      */
     private static function where(array $f, bool $onlyDone = false): array
     {
         $sql = ['1 = 1'];
         $p = [];
+        $sql[] = self::sourceSql($f['vis'] ?? '');
         if ($f['fra'] !== '') {
             $sql[] = 'c.started_at >= ?';
             $p[] = self::utcDayStart($f['fra'], 0);
@@ -83,6 +87,18 @@ final class Calls
             $sql[] = "c.transcript_status = 'faerdig'";
         }
         return [implode(' AND ', $sql), $p];
+    }
+
+    /**
+     * Kildeværnet (F004): med flaget slukket kun Zendesk (AK9: siderne og MCP er som før, selv om der ligger
+     * Adversus-rækker). Tændt: "Succes-leads" (standard) = Zendesk + Adversus på succes-leads; "alle" = alt.
+     */
+    public static function sourceSql(string $vis, string $alias = 'c'): string
+    {
+        if (!Feature::on()) {
+            return $alias . ".`source` = 'zendesk'";
+        }
+        return $vis === 'alle' ? '1 = 1' : '(' . $alias . ".`source` = 'zendesk' OR " . $alias . '.is_success = 1)';
     }
 
     /**
@@ -136,7 +152,7 @@ final class Calls
      * Én side af listen. Siden klemmes til sidste side, så ?side=99999 hverken giver en tom side eller et dyrt OFFSET
      * (QA F-9, security S3).
      *
-     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int} $f
+     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string} $f
      * @return array{rows: list<array<string, mixed>>, total: int, side: int}
      */
     public static function search(array $f): array
@@ -154,7 +170,7 @@ final class Calls
      * Et udsnit af samme liste som search() (samme WHERE og rækkefølge) med frit offset og højst PAGE_SIZE rækker —
      * til MCP (F003), hvor klienten vælger limit. Et offset ud over listen giver ingen rækker og ingen dyr OFFSET-query.
      *
-     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int} $f
+     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string} $f
      * @return array{rows: list<array<string, mixed>>, total: int}
      */
     public static function range(array $f, int $offset, int $limit): array
@@ -172,7 +188,7 @@ final class Calls
      * Id'erne på de færdige transcripts i filtret til zip (nyeste først, højst ZIP_MAX). Teksterne læses bagefter i
      * batches med zipRows(), så hukommelsen ikke vokser med antallet (QA F-4).
      *
-     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int} $f
+     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string} $f
      * @return list<int>
      */
     public static function zipIds(array $f): array
@@ -210,7 +226,7 @@ final class Calls
     /** @return array<string, mixed>|null */
     public static function find(int $id): ?array
     {
-        $rows = DB::all('SELECT * FROM calls WHERE id = ?', [$id]);
+        $rows = DB::all('SELECT * FROM calls c WHERE c.id = ? AND ' . self::sourceSql('alle'), [$id]);
         return $rows[0] ?? null;
     }
 
@@ -240,7 +256,7 @@ final class Calls
     /** @return list<string> */
     public static function agents(): array
     {
-        $rows = DB::all("SELECT DISTINCT agent_name FROM calls WHERE agent_name <> '' ORDER BY agent_name");
+        $rows = DB::all("SELECT DISTINCT c.agent_name FROM calls c WHERE c.agent_name <> '' AND " . self::sourceSql('alle') . ' ORDER BY c.agent_name');
         return array_map(static fn(array $r): string => (string) $r['agent_name'], $rows);
     }
 
@@ -249,13 +265,42 @@ final class Calls
     {
         $s = DB::all('SELECT last_ok_at, last_error FROM sync_state WHERE `source` = ?', ['zendesk']);
         // Kun opkald, hvis lyd er hentet, venter reelt på transcription (QA F-6)
-        $waiting = (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE audio_status = 'hentet' "
-            . "AND transcript_status IN ('ventende', 'transcriberer')");
-        $audio = (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE audio_status = 'venter'");
+        $src = self::sourceSql('alle');
+        $waiting = (int) DB::scalar("SELECT COUNT(*) FROM calls c WHERE c.audio_status = 'hentet' "
+            . "AND c.transcript_status IN ('ventende', 'transcriberer') AND " . $src);
+        // "Ikke valgt" (F004) venter ikke på lyd: den hentes først, når nogen vælger opkaldet
+        $audio = (int) DB::scalar("SELECT COUNT(*) FROM calls c WHERE c.audio_status = 'venter' AND c.transcript_status <> 'ikke_valgt' AND " . $src);
         $ok = $s[0]['last_ok_at'] ?? null;
         $err = $s[0]['last_error'] ?? null;
         return ['last_ok_at' => is_string($ok) ? $ok : null, 'last_error' => is_string($err) ? $err : null,
             'waiting' => $waiting, 'audio_waiting' => $audio];
+    }
+
+    /**
+     * Adversus-hentningens status (F004), eller null når Adversus aldrig har kørt.
+     *
+     * @return array{last_ok_at: ?string, last_error: ?string}|null
+     */
+    public static function adversusStatus(): ?array
+    {
+        $s = DB::all('SELECT last_run_at, last_ok_at, last_error FROM sync_state WHERE `source` = ?', ['adversus']);
+        if ($s === []) {
+            return null;
+        }
+        $ok = $s[0]['last_ok_at'] ?? null;
+        $err = $s[0]['last_error'] ?? null;
+        return ['last_ok_at' => is_string($ok) ? $ok : null, 'last_error' => is_string($err) ? $err : null];
+    }
+
+    /** @param array<string, mixed> $call */
+    public static function isAdversus(array $call): bool
+    {
+        return ($call['source'] ?? '') === 'adversus';
+    }
+
+    public static function sourceName(string $source): string
+    {
+        return ['zendesk' => 'Zendesk', 'adversus' => 'Adversus'][$source] ?? '—';
     }
 
     /**
@@ -317,7 +362,8 @@ final class Calls
 
     public static function statusName(string $s): string
     {
-        return ['ventende' => 'Venter', 'transcriberer' => 'Transcriberer', 'faerdig' => 'Færdig', 'fejlet' => 'Fejlet'][$s] ?? $s;
+        return ['ventende' => 'Venter', 'transcriberer' => 'Transcriberer', 'faerdig' => 'Færdig', 'fejlet' => 'Fejlet',
+            'ikke_valgt' => 'Ikke valgt'][$s] ?? $s;
     }
 
     /**
@@ -335,8 +381,15 @@ final class Calls
             'Nummer:   ' . (string) $call['customer_phone'],
             'Agent:    ' . (string) $call['agent_name'],
             'Varighed: ' . self::duration((int) $call['duration_sec']),
-            'Ticket:   ' . ($ticket > 0 ? $ticket . ($ticketUrl !== null ? ' (' . $ticketUrl . ')' : '') : '—'),
         ];
+        if (self::isAdversus($call)) {
+            // F004: Adversus-opkald har ingen ticket, men et lead
+            $lead = (int) ($call['lead_id'] ?? 0);
+            $head[] = 'Kilde:    Adversus';
+            $head[] = 'Lead:     ' . ($lead > 0 ? $lead . ((int) ($call['is_success'] ?? 0) === 1 ? ' (succes-lead)' : '') : '—');
+        } else {
+            $head[] = 'Ticket:   ' . ($ticket > 0 ? $ticket . ($ticketUrl !== null ? ' (' . $ticketUrl . ')' : '') : '—');
+        }
         $body = [];
         foreach ($segments as $s) {
             $body[] = '[' . self::stamp($s['start']) . '] ' . $s['text'];
@@ -355,6 +408,11 @@ final class Calls
     public static function fileName(array $call): string
     {
         $ticket = (int) ($call['ticket_id'] ?? 0);
+        if (self::isAdversus($call)) {
+            $lead = (int) ($call['lead_id'] ?? 0);
+            return self::local($call['started_at'] ?? null, 'Y-m-d_Hi') . '_' . ($call['direction'] === 'outbound' ? 'ud' : 'ind')
+                . '_adversus_' . ($lead > 0 ? 'lead' . $lead : 'ingen') . '.txt';
+        }
         return self::local($call['started_at'] ?? null, 'Y-m-d_Hi') . '_' . ($call['direction'] === 'outbound' ? 'ud' : 'ind')
             . '_' . ($ticket > 0 ? (string) $ticket : 'ingen') . '.txt';
     }

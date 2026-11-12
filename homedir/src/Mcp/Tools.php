@@ -5,6 +5,7 @@ namespace Whisper\Mcp;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use Whisper\Adversus\Feature;
 use Whisper\Calls;
 use Whisper\DB;
 
@@ -47,7 +48,7 @@ final class Tools
             [
                 'name' => 'search_calls',
                 'title' => 'Søg i opkald',
-                'description' => 'Søger i Whispers opkald (Zendesk Talk) med fritekst i transcripts og filtre. Giver samme opkald som '
+                'description' => 'Søger i Whispers opkald (' . (Feature::on() ? 'Zendesk Talk og Adversus' : 'Zendesk Talk') . ') med fritekst i transcripts og filtre. Giver samme opkald som '
                     . 'listen i Whisper, nyeste først, med metadata og et kort uddrag af teksten. Datoer er danske (ÅÅÅÅ-MM-DD). '
                     . self::RULE,
                 'inputSchema' => ['type' => 'object', 'additionalProperties' => false, 'properties' => [
@@ -177,7 +178,7 @@ final class Tools
         $id = self::int($args, 'call_id', 1, 4294967295, 0);
         $rows = DB::all('SELECT c.*, LEFT(t.`text`, ?) AS t_text, CHAR_LENGTH(t.`text`) AS t_len, '
             . "CASE WHEN LENGTH(t.segments_json) <= ? THEN t.segments_json ELSE '' END AS t_segments "
-            . "FROM calls c JOIN transcripts t ON t.call_id = c.id WHERE c.id = ? AND c.transcript_status = 'faerdig'",
+            . "FROM calls c JOIN transcripts t ON t.call_id = c.id WHERE c.id = ? AND c.transcript_status = 'faerdig' AND " . Calls::sourceSql('alle'),
             [self::MAX_CHARS + 1, self::MAX_SEGMENT_BYTES, $id]);
         if ($rows === []) {
             // Samme svar for "findes ikke" og "ikke færdigt": ingen detaljer
@@ -211,9 +212,19 @@ final class Tools
             'Nummer:   ' . $row['customer_phone'],
             'Agent:    ' . $row['agent'],
             'Varighed: ' . Calls::duration((int) $c['duration_sec']),
-            'Ticket:   ' . ($row['ticket_id'] !== null ? (string) $row['ticket_id'] : '—'),
-            'Link:     ' . $row['url'],
         ];
+        if (Calls::isAdversus($c)) {
+            // F004: kilde og succes-markering; Adversus har lead i stedet for ticket
+            $lead = (int) ($c['lead_id'] ?? 0);
+            $head[] = 'Kilde:    Adversus';
+            $head[] = 'Lead:     ' . ($lead > 0 ? $lead . ((int) ($c['is_success'] ?? 0) === 1 ? ' (succes-lead)' : '') : '—');
+        } else {
+            if (Feature::on()) {
+                $head[] = 'Kilde:    Zendesk';
+            }
+            $head[] = 'Ticket:   ' . ($row['ticket_id'] !== null ? (string) $row['ticket_id'] : '—');
+        }
+        $head[] = 'Link:     ' . $row['url'];
         // Hovedet er Whispers egne metadata; kun kundetalen står i rammen
         $text = implode("\n", $head) . "\n\n" . self::FRAME_START . "\n" . implode("\n", $lines) . "\n" . self::FRAME_END . "\n";
         if ($truncated) {
@@ -259,7 +270,7 @@ final class Tools
         }
         $dir = ['inbound' => 0, 'outbound' => 0];
         $hours = DB::all("SELECT DATE_FORMAT(started_at, '%Y-%m-%d %H:00:00') AS h, direction, COUNT(*) AS n FROM calls "
-            . 'WHERE started_at >= ? AND started_at < ? GROUP BY h, direction', $range);
+            . 'WHERE started_at >= ? AND started_at < ? AND ' . Calls::sourceSql('alle', 'calls') . ' GROUP BY h, direction', $range);
         foreach ($hours as $h) {
             $day = Calls::local($h['h'], 'Y-m-d');
             $d = $h['direction'] === 'outbound' ? 'outbound' : 'inbound';
@@ -270,8 +281,8 @@ final class Tools
             }
             $dir[$d] += $n;
         }
-        $agents = DB::all('SELECT agent_name, COUNT(*) AS n FROM calls WHERE started_at >= ? AND started_at < ? '
-            . 'GROUP BY agent_name ORDER BY n DESC, agent_name LIMIT ' . (self::MAX_AGENTS + 1), $range);
+        $agents = DB::all('SELECT agent_name, COUNT(*) AS n FROM calls WHERE started_at >= ? AND started_at < ? AND '
+            . Calls::sourceSql('alle', 'calls') . ' GROUP BY agent_name ORDER BY n DESC, agent_name LIMIT ' . (self::MAX_AGENTS + 1), $range);
         $perAgent = [];
         foreach (array_slice($agents, 0, self::MAX_AGENTS) as $a) {
             $name = (string) $a['agent_name'];
@@ -316,13 +327,14 @@ final class Tools
      *
      * @param array<string, mixed> $c
      * @return array{call_id: int, started_at: string, date: string, time: string, direction: string, duration_sec: int,
-     *     agent: string, customer_phone: string, ticket_id: int|null, transcript_status: string, url: string}
+     *     agent: string, customer_phone: string, ticket_id: int|null, transcript_status: string, url: string,
+     *     source?: string, lead_id?: int|null, success_lead?: bool}
      */
     private static function callRow(array $c, string $origin): array
     {
         $id = (int) $c['id'];
         $ticket = (int) ($c['ticket_id'] ?? 0);
-        return [
+        $row = [
             'call_id'           => $id,
             'started_at'        => Calls::local($c['started_at'] ?? null, 'c'),
             'date'              => Calls::local($c['started_at'] ?? null, 'Y-m-d'),
@@ -335,6 +347,14 @@ final class Tools
             'transcript_status' => (string) $c['transcript_status'],
             'url'               => $origin . '/opkald/' . $id,
         ];
+        if (Feature::on()) {
+            // F004: kilde og succes-markering (slukket: præcis de gamle felter)
+            $lead = (int) ($c['lead_id'] ?? 0);
+            $row['source'] = (string) $c['source'];
+            $row['lead_id'] = $lead > 0 ? $lead : null;
+            $row['success_lead'] = Calls::isAdversus($c) && (int) ($c['is_success'] ?? 0) === 1;
+        }
+        return $row;
     }
 
     /** @param array<mixed> $args  @param list<string> $allowed */

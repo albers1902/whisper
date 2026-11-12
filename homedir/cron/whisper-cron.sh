@@ -18,6 +18,7 @@ mkdir -p "$H/logs"
 want=(
   "cron/zendesk-sync.php|*/10 * * * * $PHP $H/cron/zendesk-sync.php >> $H/logs/zendesk-sync.log 2>&1"
   "cron/transcribe.php|* * * * * $PHP $H/cron/transcribe.php >> $H/logs/transcribe.log 2>&1"
+  "cron/adversus-sync.php|*/10 * * * * $PHP $H/cron/adversus-sync.php >> $H/logs/adversus-sync.log 2>&1"
 )
 cur=$(crontab -l 2>/dev/null || true)
 add=""
