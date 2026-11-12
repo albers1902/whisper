@@ -23,11 +23,19 @@ final class F007Check
         echo ($cond ? 'ok:   ' : 'FAIL: ') . "F007-$ak $msg\n";
         if (!$cond) {
             self::$fails++;
+            self::$failed[] = "F007-$ak $msg";
         }
     }
 
+    /** @var list<string> */
+    private static array $failed = [];
+
     public static function done(): never
     {
+        // De fejlede gentages til sidst: DEV's PR-kommentar viser kun loggens sidste linjer
+        foreach (self::$failed as $f) {
+            echo 'FAIL (gentaget): ' . $f . "\n";
+        }
         echo self::$fails === 0 ? "alle tjek bestået\n" : self::$fails . " tjek fejlede\n";
         exit(self::$fails === 0 ? 0 : 1);
     }
