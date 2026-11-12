@@ -211,3 +211,16 @@ forsøg. Den logges kun som fast tekst og kan gentages hvert minut, indtil undta
 H006_v2, fund 2). Sandsynligheden er lav. Rettes i H007, som alligevel ændrer `runBatch`: undtagelsens klasse og linje
 logges i `sidste-fejl.log`, og løkken stopper til næste minut.
 Udløber: 2027-02-10
+
+## #35 — 2026-11-12 — H007: låsefilens indhold skrives ikke atomisk
+H007 · Accepteret risiko: `Lock::write()` trunkerer før skrivning, så en samtidig læsning kan se en tom fil og ikke skåne
+et opkald (LOW, security-critic H007_v1, L1). Vinduet er mikrosekunder og rammer kun, hvor opkaldene er friske, så
+stale-reglen ikke kan ramme dem. Rettes ved at skrive før trunkering.
+Udløber: 2027-02-10
+
+## #36 — 2026-11-12 — H007: opkald med deterministisk undtagelse blokerer køen
+H007 · Accepteret risiko: En undtagelse efter claim refunderer forsøget, og `runBatch` stopper kørslen, så et
+poison-pill-opkald forrest i køen gentages hvert minut uden at nå `MAX_ATTEMPTS` (LOW, security-critic H007_v1, L2).
+Detaljen står i `sidste-fejl[-n].log` (0600). #34 er lukket af H007 for logning og løkkestop. Denne post er resten.
+Rettes ved at lade det første opkald i batchen bruge forsøget ved en undtagelse uden for motoren, senest før STABLE.
+Udløber: 2027-02-10
