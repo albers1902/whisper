@@ -1,15 +1,18 @@
 # Impact H012: kortere kø (nyeste først, spring korte og gamle over)
 
-Tier: 2. Hvis mekanismen kræver en migration (ny status), er det tier 1, og så siger engineeren til.
+Tier: 1
 
-Grund: kø-logikken i Transcriber (claim-sortering og filtre), en ny status og UI-tæller. Ingen auth, ingen ny modtager.
-Critic: `security-critic`, fordi ændringen rører kø og tilstand. `qa-critic` tilføjes ved tier 1.
+Grund: migration 0008 (`calls.manual_at`, reversibel). Det er valgt i v0 og godkendt af Team Lead 2026-11-12.
+Reglerne regnes ud fra config og gemmes ikke som status. Desuden kø-logikken i Transcriber (claim-sortering og filtre),
+`source_priority` (spec v2), UI-tæller og knappen. Ingen auth, ingen ny modtager.
+Critic: `qa-critic` og `security-critic`. Ændringen rører migration, kø, tilstand og en POST-handling.
 
 ## Berørte stier
 - `homedir/src/Transcription/Transcriber.php`, `WhisperSettings.php`
 - lydhentning (Zendesk/Adversus) for rækkefølge, hvis relevant
 - `homedir/src/Calls.php`, `UiCalls.php`, `Ui.php`, `CallPages.php` (status, tæller, knap)
-- evt. `homedir/migrations/0008_*`
+- `homedir/src/Transcription/QueueRules.php` (ny), `homedir/cron/transcribe.php`, `homedir/src/App.php` (route)
+- `homedir/migrations/0008_v0.8.0_manuelt_valgt.sql` + down
 - `homedir/tests/`
 
 ## Persondata og eksterne modtagere
