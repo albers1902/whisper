@@ -24,7 +24,10 @@ Status: `bash shared/report.sh status` og `bash shared/report.sh check`. Ingen t
 - Ejerskab af logfilerne i `logs/` er afklaret (sysadmin-siden 2026-11-11). Ejerens `chown` på DEV står ved magt og
   overlever logrotate, fordi den globale `create` kopierer den gamle ejer. **Det må ikke gentages på STABLE**, hvor
   det går gennem sysadmin-siden (DECISIONS #7).
+- **H013 må ikke på STABLE uden F007** (QA H013 v1 M3). H013 gemmer alle Adversus-CDR'er, og listens indekser
+  kommer med F007's migration 0010. Retention for telefonnumre (DECISIONS #79) skal afklares med ejeren før STABLE.
 - Senere H (ikke blokerende):
+  - H013 N1 og S5: gem opkald med ukendt retning, så kontrollerne ikke genhenter (QA H013 v2 N1, DECISIONS #82)
   - `/health` rate limit/cache (DECISIONS #5)
   - `migrate.php --status` uden lås (QA H001 v2 A)
   - fejl i agent-opslag fjerner opkaldet, og poison-opkald logges ofte (QA F002 v2 N-2 og N-3)
