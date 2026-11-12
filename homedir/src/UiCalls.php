@@ -7,6 +7,7 @@ use DateTimeImmutable;
 use DateTimeZone;
 use Whisper\Adversus\Feature;
 use Whisper\Adversus\Sync as AdversusSync;
+use Whisper\Transcription\Diarization;
 use Whisper\Zendesk\Sync;
 
 /**
@@ -335,7 +336,7 @@ final class UiCalls
      *
      * @param array<string, mixed> $user
      * @param array<string, mixed> $call
-     * @param array{text: string, segments: list<array{start: float, end: float, text: string}>}|null $transcript
+     * @param array{text: string, segments: list<array{start: float, end: float, text: string, speaker?: int, role?: string}>}|null $transcript
      * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string} $f  listens kontekst
      * @param ?string $flash  ok-besked efter en handling (F004: "sat i kø")
      * @param ?string $info   info-besked efter en handling, der ikke ændrede noget (F004: idempotent)
@@ -489,7 +490,7 @@ final class UiCalls
     /**
      * Segmenterne som <ol class="transcript">, eller den samlede tekst i afsnit uden segmenter. '' = ingen tale.
      *
-     * @param array{text: string, segments: list<array{start: float, end: float, text: string}>} $t
+     * @param array{text: string, segments: list<array{start: float, end: float, text: string, speaker?: int, role?: string}>} $t
      * @param list<string> $terms
      * @return array{0: string, 1: int} HTML og antal fund
      */
@@ -498,10 +499,15 @@ final class UiCalls
         $found = 0;
         $items = '';
         $ids = [];
+        $prev = null;
         foreach ($t['segments'] as $s) {
             if (trim($s['text']) === '') {
                 continue;
             }
+            // Taleren (H011) står kun ved et skift; uden taler er linjen som før
+            $label = Diarization::label($s);
+            $who = $label !== null && $label !== $prev ? '<strong class="speaker">' . View::e($label) . ':</strong> ' : '';
+            $prev = $label;
             $sec = (int) floor($s['start']);
             $stamp = Calls::stamp($s['start']);
             $idAttr = isset($ids[$sec]) ? '' : ' id="t-' . $sec . '"';
@@ -510,7 +516,7 @@ final class UiCalls
                 ? '<button type="button" class="ts" data-start="' . sprintf('%.2f', $s['start']) . '" disabled aria-label="Afspil fra ' . $stamp . '">'
                     . $stamp . '</button>'
                 : '<span class="ts">' . $stamp . '</span>';
-            $items .= '<li' . $idAttr . '>' . $ts . '<p>' . Ui::highlight(trim($s['text']), $terms, $found, true) . '</p></li>';
+            $items .= '<li' . $idAttr . '>' . $ts . '<p>' . $who . Ui::highlight(trim($s['text']), $terms, $found, true) . '</p></li>';
         }
         if ($items !== '') {
             return ['<ol class="transcript" id="transcript">' . $items . '</ol>', $found];

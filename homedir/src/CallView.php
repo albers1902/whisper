@@ -3,6 +3,8 @@ declare(strict_types=1);
 
 namespace Whisper;
 
+use Whisper\Transcription\Diarization;
+
 /**
  * Siderne for F002 (opkaldsliste og detaljeside) i View's ramme. Al dynamisk tekst går gennem View::e().
  */
@@ -97,7 +99,7 @@ final class CallView
     /**
      * @param array<string, mixed> $user
      * @param array<string, mixed> $call
-     * @param array{text: string, segments: list<array{start: float, end: float, text: string}>}|null $transcript
+     * @param array{text: string, segments: list<array{start: float, end: float, text: string, speaker?: int, role?: string}>}|null $transcript
      */
     public static function show(array $user, string $csrf, array $call, ?array $transcript, bool $audioOnDisk, ?string $subdomain): string
     {
@@ -132,8 +134,13 @@ final class CallView
         $status = (string) $call['transcript_status'];
         if ($status === 'faerdig' && $transcript !== null) {
             $lines = '';
+            $prev = null;
             foreach ($transcript['segments'] as $s) {
-                $lines .= '<p><span class="ts">[' . $e(Calls::stamp($s['start'])) . ']</span> ' . $e($s['text']) . '</p>';
+                // Taleren (H011) står kun ved et skift; uden taler er linjen som før
+                $label = Diarization::label($s);
+                $who = $label !== null && $label !== $prev ? '<strong class="speaker">' . $e($label) . ':</strong> ' : '';
+                $prev = $label;
+                $lines .= '<p><span class="ts">[' . $e(Calls::stamp($s['start'])) . ']</span> ' . $who . $e($s['text']) . '</p>';
             }
             if ($lines === '') {
                 $lines = '<p>' . $e($transcript['text']) . '</p>';

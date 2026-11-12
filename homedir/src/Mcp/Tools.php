@@ -190,7 +190,7 @@ final class Tools
         $used = 0;
         $truncated = false;
         foreach (Calls::segments((string) $c['t_segments']) as $s) {
-            $line = '[' . Calls::stamp($s['start']) . '] ' . $s['text'];
+            $line = Calls::segmentLine($s);   // H011: med taler, når den er beregnet
             $len = mb_strlen($line, 'UTF-8') + 1;
             if ($used + $len > self::MAX_CHARS) {
                 $lines[] = mb_substr($line, 0, max(0, self::MAX_CHARS - $used), 'UTF-8');

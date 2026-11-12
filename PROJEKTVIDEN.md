@@ -33,6 +33,11 @@ Målt viden om kodebasen og miljøerne. Kurateret.
 
   [whisper]
   model = turbo
+
+  ; [diarization]   (H011, alle valgfri; uden sektionen gælder standarderne herunder)
+  ; enabled = on    (off = nødbremse: ingen nye talere; visningen følger flaget H011_diarization)
+  ; agent_phrases = du snakker med|du taler med|du har ringet til|velkommen til|fra tryg energi
+  ; threads = 3     (standard: som whispers tråde pr. worker)
   ```
 - Auth sker med OAuth `client_credentials`, for API-tokens er fjernet af Zendesk (DECISIONS #14). Tokenet caches i
   `~/var/zendesk-token.json` (0600).
@@ -52,6 +57,15 @@ Målt viden om kodebasen og miljøerne. Kurateret.
 - Kvalitet måles ikke automatisk. Efter en ændring stikprøvekontrolleres 3–5 opkald: lyt og læs. Mangler der tale,
   sættes `vad = off`, og er teksten mærkbart dårligere, sættes `beam_size = 5`, begge under `[whisper]` i
   `~/config/config.ini`. Det kræver ingen deploy.
+
+## Hvem taler (H011)
+- `cron/diarize.php` (hvert minut, lagt af `whisper-cron.sh`) lægger talere på færdige transcripts, kun når
+  transcription-køen er tom, nyeste først. Den stopper inden for ca. 5 s, når et opkald kommer. Log: `~/logs/diarize.log`,
+  motorens fejl: `~/var/whisper/diarize-fejl.log`.
+- En motorfejl giver 30 min pause (`~/var/whisper/diarize-pause`) uden brugte forsøg. Et opkald prøves højst 3 gange med
+  mindst 30 min imellem.
+- Beregn igen (fx efter ændrede `agent_phrases`): `php ~/cron/diarize.php --reset <opkalds-id|fejlet|alle>`.
+- Down-migrationen 0007 må kun køres efter en revert af H011-koden (`Transcriber` skriver kolonnerne).
 
 ## Sessioner (F001)
 - PHP-sessionerne ligger i `~/var/sessions` (0700, oprettes af appen). `var/` er projektets efter SERVERKONTRAKT §2,
