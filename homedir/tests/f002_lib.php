@@ -122,6 +122,13 @@ final class FakeEngine implements Engine
         return $this->ready;
     }
 
+    public string $label = 'threads 5, beam 1, vad on';
+
+    public function label(): string
+    {
+        return $this->label;
+    }
+
     public function transcribe(string $audioFile, int $durationSec): array
     {
         $this->calls++;

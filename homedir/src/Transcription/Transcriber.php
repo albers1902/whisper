@@ -91,7 +91,10 @@ final class Transcriber
             if ($file === null) {
                 throw new EngineError('Lydfilen mangler på serveren');
             }
-            $result = self::validate($this->engine->transcribe($file, $job['duration']));
+            $t0 = ($this->clock)();
+            $raw = $this->engine->transcribe($file, $job['duration']);
+            $took = max(0, ($this->clock)() - $t0);
+            $result = self::validate($raw);
             DB::ensureAlive();   // motoren kan have kørt i timer
             $pdo = DB::pdo();
             $pdo->beginTransaction();
@@ -108,7 +111,9 @@ final class Transcriber
                 $pdo->rollBack();
                 throw $e;
             }
-            ($this->log)('transcribe: opkald ' . $id . ': færdig');
+            $audio = $job['duration'] > 0 ? $job['duration']
+                : (is_numeric($raw['duration'] ?? null) ? (int) round((float) $raw['duration']) : 0);
+            ($this->log)('transcribe: opkald ' . $id . ': ' . self::doneLine($audio, $took, $this->engine->label()));
         } catch (Throwable $e) {
             $msg = $e instanceof EngineError ? $e->getMessage() : 'Intern fejl ved transcription';
             DB::ensureAlive();
@@ -144,6 +149,27 @@ final class Transcriber
         $model = is_string($raw['model'] ?? null) ? mb_substr($raw['model'], 0, 40) : '';
         $lang = is_string($raw['language'] ?? null) && preg_match('/^[a-z]{2}$/', $raw['language']) === 1 ? $raw['language'] : 'da';
         return ['text' => $text, 'segments' => $segments, 'model' => $model, 'language' => $lang];
+    }
+
+    /**
+     * "færdig (lyd 4:12, tid 1:05, RTF 0,26, threads 5, beam 1, vad on)". RTF = tid / lyd; under 1 er hurtigere end
+     * realtid. Ukendt lydlængde giver "RTF -".
+     */
+    public static function doneLine(int $audioSec, int $tookSec, string $label): string
+    {
+        $rtf = $audioSec > 0 ? str_replace('.', ',', sprintf('%.2f', $tookSec / $audioSec)) : '-';
+        return 'færdig (lyd ' . self::clock($audioSec) . ', tid ' . self::clock($tookSec) . ', RTF ' . $rtf
+            . ($label !== '' ? ', ' . $label : '') . ')';
+    }
+
+    /** m:ss, eller t:mm:ss fra en time */
+    public static function clock(int $sec): string
+    {
+        $sec = max(0, $sec);
+        $h = intdiv($sec, 3600);
+        $m = intdiv($sec % 3600, 60);
+        $s = $sec % 60;
+        return $h > 0 ? sprintf('%d:%02d:%02d', $h, $m, $s) : sprintf('%d:%02d', $m, $s);
     }
 
     private function now(): string
