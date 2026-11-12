@@ -429,3 +429,15 @@ Udløber: 2027-02-10
 F006-N5 · Accepteret risiko (LOW, security-critic F006_v2): gap-låse ved ukendte hashes kan give kortvarige 500-svar
 ved samtidige kald. Klienten kan prøve igen.
 Udløber: 2027-02-10
+
+## #71 — 2026-11-12 — H011-R1: diarization deler altid i to talere (num_clusters = 2)
+H011-R1 · Accepteret risiko: `diarize.py` bruger `num_clusters = 2`, så voicemail/IVR (én stemme) og viderestilling/konference (tre) får forkert attribution af talere. Det kan fejlfortolkes i MCP-analyser (LOW, security-critic H011_v2 R1). Valget er målt (automatisk antal gav for mange talere). Revurderes med et tærskelbaseret antal eller en markering i et opfølgende H-nummer.
+Udløber: 2027-02-10
+
+## #72 — 2026-11-12 — H011-R2: rolleetiketter og tekst i MCP kan påvirkes af kundens tale (F2-rest)
+H011-R2 · Accepteret risiko: Agent/Kunde afgøres af en markørfrase i de første 60 s (uden "mit navn er") og kan stadig påvirkes af kundens tale. Linjerne står uden ramme i MCP og udvider #22 (MEDIUM, security-critic H011_v2 R2, restfund efter F2). Rettes med den faste ramme om transcript i det opfølgende H-nummer fra #22 og en rolleafgørelse uafhængig af kundens tekst.
+Udløber: 2027-02-10
+
+## #73 — 2026-11-12 — H011-R3: længdegrænsen på 60 min bygger på duration_sec fra udbyderen
+H011-R3 · Accepteret risiko: `Diarizer::MAX_AUDIO` tjekker `calls.duration_sec` (udbyderens metadata, default 0), ikke filens egentlige længde. Et opkald uden eller med forkert varighed kan få en meget lang fil afkodet til hukommelsen (LOW, security-critic H011_v2 R3). Motoren kører med `nice`/`ionice` og tidsgrænse, og en motorfejl giver blot pause. Filstørrelsestjek eller måling i `diarize.py` laves i et opfølgende H-nummer.
+Udløber: 2027-02-10
