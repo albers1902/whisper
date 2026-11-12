@@ -28,7 +28,7 @@ final class Calls
      * Filtrene fra query-strengen, renset. Ugyldige værdier ignoreres.
      *
      * @param array<mixed> $q
-     * @return array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string}
+     * @return array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string, kilde?: string, status?: string}
      */
     public static function filter(array $q): array
     {
@@ -48,11 +48,43 @@ final class Calls
             'side'    => max(1, min($side, 100000)),
             // F004: visningen "Alle opkald" (vis=alle); standarden "Succes-leads" står aldrig i URL'en (UX D-F4-1)
             'vis'     => Feature::on() && $s('vis') === 'alle' ? 'alle' : '',
-        ];
+        ] + (UiV2::on() ? [
+            // F007: fanen (kun 'adversus'; '' = intet kildefilter, som MCP) og statusfiltret; nøglerne findes kun med flaget
+            'kilde'  => Feature::on() && $s('kilde') === 'adversus' ? 'adversus' : '',
+            'status' => in_array($s('status'), [self::STATUS_DONE, self::STATUS_QUEUE], true) ? $s('status') : '',
+        ] : []);
+    }
+
+    public const STATUS_DONE = 'faerdig';
+    public const STATUS_QUEUE = 'koe';
+
+    /**
+     * Listens, detaljens, zip'ens og "Transcribér"-redirectens filtre (F007): som filter(), men med fanen afgjort —
+     * 'zendesk' eller 'adversus', aldrig ''. Gamle /?vis=alle åbner Adversus; Zendesk har ingen visning. MCP bruger
+     * filter() og får aldrig et kildefilter. Med flaget slukket er det præcis filter().
+     *
+     * @param array<mixed> $q
+     * @return array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string, kilde?: string, status?: string}
+     */
+    public static function uiFilter(array $q): array
+    {
+        $f = self::filter($q);
+        if (!isset($f['kilde'])) {
+            return $f;
+        }
+        $given = is_string($q['kilde'] ?? null) && trim($q['kilde']) !== '';
+        if ($f['kilde'] === '' && !$given && ($f['vis'] ?? '') === 'alle') {
+            $f['kilde'] = 'adversus';
+        }
+        if ($f['kilde'] !== 'adversus') {
+            $f['kilde'] = 'zendesk';
+            $f['vis'] = '';
+        }
+        return $f;
     }
 
     /**
-     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string} $f
+     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string, kilde?: string, status?: string} $f
      * @return array{0: string, 1: list<mixed>} WHERE-del (faste SQL-stykker) og parametre
      */
     private static function where(array $f, bool $onlyDone = false): array
@@ -88,6 +120,19 @@ final class Calls
         }
         if ($onlyDone) {
             $sql[] = "c.transcript_status = 'faerdig'";
+        }
+        // F007: fanen og statusfiltret, kun når de er sat (MCP sætter dem aldrig)
+        $kilde = $f['kilde'] ?? '';
+        if ($kilde === 'zendesk' || $kilde === 'adversus') {
+            $sql[] = "c.`source` = '" . $kilde . "'";
+        }
+        $status = $f['status'] ?? '';
+        if ($status === self::STATUS_DONE) {
+            $sql[] = "c.transcript_status = 'faerdig'";
+        } elseif ($status === self::STATUS_QUEUE) {
+            [$sqlQ, $pQ] = self::queueSql();
+            $sql[] = $sqlQ;
+            array_push($p, ...$pQ);
         }
         return [implode(' AND ', $sql), $p];
     }
@@ -157,7 +202,7 @@ final class Calls
      * Én side af listen. Siden klemmes til sidste side, så ?side=99999 hverken giver en tom side eller et dyrt OFFSET
      * (QA F-9, security S3).
      *
-     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string} $f
+     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string, kilde?: string, status?: string} $f
      * @return array{rows: list<array<string, mixed>>, total: int, side: int}
      */
     public static function search(array $f): array
@@ -172,10 +217,44 @@ final class Calls
     }
 
     /**
+     * F007: antal tælles højst til COUNT_CAP (+1, så "flere end" kan ses). Ved flere hundrede tusinde opkald tæller en
+     * fuld COUNT hele indekset ved hver sidevisning; med loftet stopper den efter COUNT_CAP + 1 indeksposter. Pageren
+     * går derfor højst til COUNT_CAP / PAGE_SIZE sider, så OFFSET aldrig bliver stort.
+     */
+    public const COUNT_CAP = 10000;
+
+    /**
+     * Antallet i et filter, højst COUNT_CAP + 1 (F007: den inaktive fanes tal = det, et klik på fanen giver).
+     *
+     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string, kilde?: string, status?: string} $f
+     */
+    public static function count(array $f): int
+    {
+        [$w, $p] = self::where($f);
+        return (int) DB::scalar('SELECT COUNT(*) FROM (SELECT 1 FROM calls c WHERE ' . $w . ' LIMIT ' . (self::COUNT_CAP + 1) . ') n', $p);
+    }
+
+    /**
+     * Som search(), men med loftet COUNT_CAP på antallet og dermed på siderne (F007).
+     *
+     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string, kilde?: string, status?: string} $f
+     * @return array{rows: list<array<string, mixed>>, total: int, side: int}  total = COUNT_CAP + 1 betyder "flere end COUNT_CAP"
+     */
+    public static function searchCapped(array $f): array
+    {
+        [$w, $p] = self::where($f);
+        $total = self::count($f);
+        $side = max(1, min($f['side'], (int) ceil(min($total, self::COUNT_CAP) / self::PAGE_SIZE)));
+        $rows = $total === 0 ? [] : DB::all('SELECT c.* FROM calls c WHERE ' . $w . ' ORDER BY c.started_at DESC, c.id DESC LIMIT '
+            . self::PAGE_SIZE . ' OFFSET ' . (($side - 1) * self::PAGE_SIZE), $p);
+        return ['rows' => $rows, 'total' => $total, 'side' => $side];
+    }
+
+    /**
      * Et udsnit af samme liste som search() (samme WHERE og rækkefølge) med frit offset og højst PAGE_SIZE rækker —
      * til MCP (F003), hvor klienten vælger limit. Et offset ud over listen giver ingen rækker og ingen dyr OFFSET-query.
      *
-     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string} $f
+     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string, kilde?: string, status?: string} $f
      * @return array{rows: list<array<string, mixed>>, total: int}
      */
     public static function range(array $f, int $offset, int $limit): array
@@ -193,7 +272,7 @@ final class Calls
      * Id'erne på de færdige transcripts i filtret til zip (nyeste først, højst ZIP_MAX). Teksterne læses bagefter i
      * batches med zipRows(), så hukommelsen ikke vokser med antallet (QA F-4).
      *
-     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string} $f
+     * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string, kilde?: string, status?: string} $f
      * @return list<int>
      */
     public static function zipIds(array $f): array
@@ -286,11 +365,87 @@ final class Calls
         return '[' . self::stamp((float) $segment['start']) . '] ' . ($label !== null ? $label . ': ' : '') . (string) $segment['text'];
     }
 
-    /** @return list<string> */
-    public static function agents(): array
+    /**
+     * @param string $source  F007: kun den aktive fanes agenter ('zendesk'|'adversus'); '' = alle
+     * @return list<string>
+     */
+    public static function agents(string $source = ''): array
     {
-        $rows = DB::all("SELECT DISTINCT c.agent_name FROM calls c WHERE c.agent_name <> '' AND " . self::sourceSql('alle') . ' ORDER BY c.agent_name');
+        $only = in_array($source, ['zendesk', 'adversus'], true) ? " AND c.`source` = '" . $source . "'" : '';
+        $rows = DB::all("SELECT DISTINCT c.agent_name FROM calls c WHERE c.agent_name <> '' AND " . self::sourceSql('alle') . $only
+            . ' ORDER BY c.agent_name');
         return array_map(static fn(array $r): string => (string) $r['agent_name'], $rows);
+    }
+
+    /**
+     * "I kø" (H012, F007): præcis de opkald, kø-tælleren i status() tæller — lyden er hentet, og opkaldet transcriberes nu
+     * eller venter og tages af køens regler.
+     *
+     * @return array{0: string, 1: list<int|string>}
+     */
+    public static function queueSql(?QueueRules $rules = null, ?int $now = null): array
+    {
+        [$rule, $params] = ($rules ?? QueueRules::fromConfig())->eligibleSql($now ?? time(), 'c');
+        // IN først, så indekset (source, transcript_status, started_at) kan bruges som interval
+        return ["(c.transcript_status IN ('transcriberer', 'ventende') AND c.audio_status = 'hentet' AND (c.transcript_status = 'transcriberer' OR "
+            . $rule . '))', $params];
+    }
+
+    /** F007: står et opkald i "transcriberer" lige nu? (indekset calls_transcript_status, LIMIT 1) */
+    public static function transcribingNow(): bool
+    {
+        return DB::scalar("SELECT 1 FROM calls WHERE transcript_status = 'transcriberer' LIMIT 1") !== false;
+    }
+
+    public const EXCERPT_JSON = 3000;
+    public const EXCERPT_TEXT = 260;
+
+    /**
+     * Begyndelsen af hvert transcript til kortenes uddrag (F007): højst EXCERPT_JSON tegn af segmenterne og EXCERPT_TEXT
+     * af teksten, skåret i SQL, så hele transcripts aldrig når PHP. Kun for én side (højst PAGE_SIZE id'er).
+     *
+     * @param list<int> $ids
+     * @return array<int, array{segments: list<array{start: float, end: float, text: string, speaker?: int, role?: string}>, text: string, cut: bool}>
+     */
+    public static function excerpts(array $ids): array
+    {
+        $ids = array_slice(array_values(array_unique(array_map('intval', $ids))), 0, self::PAGE_SIZE);
+        if ($ids === []) {
+            return [];
+        }
+        $rows = DB::all('SELECT call_id, LEFT(segments_json, ' . self::EXCERPT_JSON . ') AS seg, LEFT(`text`, ' . self::EXCERPT_TEXT . ') AS txt, '
+            . 'CHAR_LENGTH(`text`) > ' . self::EXCERPT_TEXT . ' AS cut FROM transcripts WHERE call_id IN ('
+            . implode(',', array_fill(0, count($ids), '?')) . ')', $ids);
+        $out = [];
+        foreach ($rows as $r) {
+            $out[(int) $r['call_id']] = ['segments' => self::segments(self::closeJson((string) $r['seg'])), 'text' => (string) $r['txt'],
+                'cut' => (int) $r['cut'] === 1];
+        }
+        return $out;
+    }
+
+    /**
+     * En afkortet JSON-liste af flade segment-objekter gøres gyldig ved at skære efter et helt objekt og lukke listen.
+     * Kan det ikke lade sig gøre (fx "}" inde i en tekst flere gange), gives '[]', og kortet viser teksten i stedet.
+     */
+    public static function closeJson(string $json): string
+    {
+        if (json_decode($json) !== null) {
+            return $json;
+        }
+        $end = strlen($json);
+        for ($i = 0; $i < 8; $i++) {
+            $pos = strrpos(substr($json, 0, $end), '}');
+            if ($pos === false) {
+                break;
+            }
+            $try = substr($json, 0, $pos + 1) . ']';
+            if (json_decode($try) !== null) {
+                return $try;
+            }
+            $end = $pos;
+        }
+        return '[]';
     }
 
     /** @return array{last_ok_at: ?string, last_error: ?string, waiting: int, audio_waiting: int} */
@@ -333,6 +488,10 @@ final class Calls
         $at = $s[0]['last_run_at'] ?? null;
         $text = $s[0]['last_error'] ?? null;
         if (!is_string($at) || !is_string($text) || $now - (int) strtotime($at . ' UTC') > Adversus\Sync::WARN_TTL) {
+            return null;
+        }
+        // F007: en advarsel fra før H009-genopretningen nævner id'er, som genopretningen henter igen
+        if (UiV2::on() && Adversus\Sync::beforeRecovery($at)) {
             return null;
         }
         return $text;

@@ -199,7 +199,8 @@ final class Sync
         // En advarsel, der ikke er udløbet, forlænges med de nye id'er i stedet for at blive overskrevet (QA N-3)
         $prev = DB::all('SELECT last_run_at, last_error FROM sync_state WHERE `source` = ?', [self::WARN])[0] ?? null;
         if ($prev !== null && is_string($prev['last_error']) && is_string($prev['last_run_at'])
-            && $this->ts() - (int) strtotime($prev['last_run_at'] . ' UTC') <= self::WARN_TTL) {
+            && $this->ts() - (int) strtotime($prev['last_run_at'] . ' UTC') <= self::WARN_TTL
+            && !(\Whisper\UiV2::on() && self::beforeRecovery($prev['last_run_at']))) {   // F007: ikke de gamle id'er fra før H009
             $text = $prev['last_error'] . ' | ' . $this->now() . ' ' . implode('; ', $parts);
         }
         if (mb_strlen($text) > 250) {
@@ -241,6 +242,16 @@ final class Sync
     // ---------------------------------------------------------------- genopretning (H009)
 
     /**
+     * F007: er en advarsel skrevet før (eller samtidig med) H009-genopretningen? Så nævner den id'er, som genopretningen
+     * henter igen, og den er forældet. Uden genopretning (markøren findes ikke) er intet forældet.
+     */
+    public static function beforeRecovery(string $warnAt): bool
+    {
+        $done = DB::scalar('SELECT last_run_at FROM sync_state WHERE `source` = ?', [self::RECOVERY]);
+        return is_string($done) && strtotime($warnAt . ' UTC') <= strtotime($done . ' UTC');
+    }
+
+    /**
      * Én gang efter H009: indtil da lå alle tidsfiltre 1 t forkert (Adversus læser filtercifre som lokal væg-tid), så
      * næsten ingen optagelser blev matchet, og de blev forkastet eller ligger på ventelisten. Optagelses-cursoren sættes
      * tilbage til sync_since, og ventelisten tømmes (den er afledt: de samme optagelser findes igen i vinduerne). Gemte
@@ -260,6 +271,9 @@ final class Sync
             $this->saveRecCursor($this->cfg->syncSince, self::WINDOW_MAX);
             DB::exec('INSERT INTO sync_state (`source`, cursor_value, last_run_at) VALUES (?, ?, ?)',
                 [self::RECOVERY, 'done', $this->now()]);
+            if (\Whisper\UiV2::on()) {
+                DB::exec('DELETE FROM sync_state WHERE `source` = ?', [self::WARN]);   // F007: advarslens id'er hentes igen nu
+            }
             $pdo->commit();
         } catch (Throwable $e) {
             $pdo->rollBack();

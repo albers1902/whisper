@@ -182,7 +182,9 @@ final class CallView
     {
         // vis (F004) er kun sat, når flaget er tændt og "Alle opkald" er valgt, så den gamle query er uændret ellers
         $q = array_filter(['fra' => $f['fra'], 'til' => $f['til'], 'retning' => $f['retning'], 'agent' => $f['agent'], 'q' => $f['q'],
-            'vis' => $f['vis'] ?? ''], static fn(string $v): bool => $v !== '');
+            'vis' => $f['vis'] ?? '',
+            // F007 (kun med flaget sat): fanen — standarden Zendesk skrives aldrig — og statusfiltret
+            'kilde' => ($f['kilde'] ?? '') === 'adversus' ? 'adversus' : '', 'status' => $f['status'] ?? ''], static fn(string $v): bool => $v !== '');
         if ($side > 1) {
             $q['side'] = (string) $side;
         }
