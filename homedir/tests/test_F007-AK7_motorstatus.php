@@ -31,7 +31,11 @@ F007Check::that('AK7', S::read(3, false, $now, $log)['state'] === S::MISSING, 'u
 touch($marker);
 F007Check::that('AK7', !is_file(Paths::varDir() . '/whisper/venv/bin/python') && S::read(0, false, $now, $log)['state'] === S::READY,
     'markør uden synlig python: klar (den falske besked er væk)');
-F007Check::that('AK7', S::read(5, true, $now, $log)['state'] === S::BUSY, 'et opkald transcriberes: transcriberer nu');
+touch($log, $now - 60);
+F007Check::that('AK7', S::read(5, true, $now, $log)['state'] === S::BUSY, 'et opkald transcriberes og loggen er frisk: transcriberer nu');
+touch($log, $now - 3 * 3600);
+F007Check::that('AK7', S::read(5, true, $now, $log)['state'] === S::STALLED,
+    'et opkald står i "transcriberer", men loggen er 3 t gammel (dræbt proces): ingen fremdrift (QA F-8)');
 touch($log, $now - 600);
 F007Check::that('AK7', S::read(5, false, $now, $log)['state'] === S::BUSY, 'kø og aktivitet for 10 min. siden: transcriberer nu');
 touch($log, $now - 45 * 60);

@@ -9,6 +9,8 @@ require_once __DIR__ . '/f007_lib.php';
 
 use Whisper\Calls;
 use Whisper\DB;
+use Whisper\Paths;
+use Whisper\UiV2;
 
 f007_setup();
 $c = f002_login();
@@ -73,9 +75,14 @@ F007Check::that('AK2', $bad->status === 200 && str_contains($bad->body, 'aria-cu
 // Transcribér-redirecten bevarer fanen (ctx renses gennem uiFilter)
 $sel = f004_insert(5999, false, 'ikke_valgt', '2026-11-12 12:00:00');
 $c->get('/');
+UiV2::reset();
+f002_get($c, '/');   // kø-kortet caches
+$cacheFile = Paths::varDir() . '/cache/f007-queue.json';
+$cached = is_file($cacheFile);
 $p = $c->post('/opkald/' . $sel . '/transcriber', ['ctx' => 'kilde=adversus&vis=alle&q=hej&evil=1']);
 F007Check::that('AK2', $p->status === 303 && ($p->headers['Location'] ?? '') === '/opkald/' . $sel . '?q=hej&vis=alle&kilde=adversus',
     'Transcribér: redirect med fane og visning, intet andet (' . ($p->headers['Location'] ?? '') . ')');
+F007Check::that('AK2', $cached && !is_file($cacheFile), 'Transcribér nulstiller kø-kortets cache (QA F-7)');
 
 // Loftet: over COUNT_CAP står "10.000+", og siderne stopper ved loftet
 // 55 succes + det netop valgte (manuelt valgt hører til "Succes og valgte")

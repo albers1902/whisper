@@ -88,19 +88,23 @@ final class UiV2
         $now ??= time();
         try {
             ['status' => $status, 'engine' => $engine] = self::queue($now);
+            $n = (int) $status['waiting'];
         } catch (Throwable) {
+            // Databasen svarer ikke: ingen tal, aldrig "Ingen i kø" på et gæt (QA F-2)
             $status = ['waiting' => 0, 'audio_waiting' => 0];
             $engine = ['state' => EngineStatus::UNKNOWN, 'since' => null];
+            $n = null;
         }
-        $n = (int) $status['waiting'];
         [$dot, $text, $sr] = self::engineLine($engine, $admin, $now);
-        $count = $n > 0 ? '<p class="q-count"><span class="q-num">' . self::num($n) . '</span> i kø</p>' : '<p class="q-none">Ingen i kø</p>';
-        $audio = $n > 0 && (int) $status['audio_waiting'] > 0 ? '<p class="q-audio">' . self::num((int) $status['audio_waiting']) . ' venter på lyd</p>' : '';
+        $count = $n === null ? '<p class="q-none">Kø: ukendt</p>'
+            : ($n > 0 ? '<p class="q-count"><span class="q-num">' . self::num($n) . '</span> i kø</p>' : '<p class="q-none">Ingen i kø</p>');
+        $audio = $n !== null && $n > 0 && (int) $status['audio_waiting'] > 0
+            ? '<p class="q-audio">' . self::num((int) $status['audio_waiting']) . ' venter på lyd</p>' : '';
         $card = '<section class="q-card" aria-labelledby="ko-h"><h2 id="ko-h">Transcription</h2>' . $count
             . '<p class="q-engine"><span class="dot dot-' . $dot . '" aria-hidden="true"></span>' . Ui::e($text) . '</p>' . $audio . '</section>';
         $ok = $dot === 'ok';
         $compact = '<p class="top-queue">' . (!$ok ? '<span class="dot dot-' . $dot . '" aria-hidden="true"></span><span class="sr-only">'
-            . Ui::e($sr) . ', </span>' : '') . ($n > 0 ? self::num($n) . ' i kø' : 'Ingen i kø') . '</p>';
+            . Ui::e($sr) . ', </span>' : '') . ($n === null ? 'Kø: ukendt' : ($n > 0 ? self::num($n) . ' i kø' : 'Ingen i kø')) . '</p>';
         return [$card, $compact];
     }
 
@@ -122,15 +126,23 @@ final class UiV2
     }
 
     public const QUEUE_TTL = 60;
+    /** Tal over dette i cachefilen er ikke troværdige og tælles igen (security S3) */
+    public const QUEUE_SANE = 10000000;
 
     /** @return array{last_ok_at: ?string, last_error: ?string, waiting: int, audio_waiting: int} */
     private static function cachedStatus(int $now): array
     {
-        $file = Paths::dir('cache') . '/f007-queue.json';
+        // En cache, der ikke kan læses eller skrives (fx uskrivbar var/cache), betyder bare en direkte tælling (QA F-2)
+        try {
+            $file = Paths::dir('cache') . '/f007-queue.json';
+        } catch (Throwable) {
+            return Calls::status();
+        }
         $mtime = is_file($file) ? @filemtime($file) : false;
         if ($mtime !== false && $now - $mtime < self::QUEUE_TTL && $now >= $mtime) {
             $d = json_decode((string) @file_get_contents($file), true);
-            if (is_array($d) && is_int($d['waiting'] ?? null) && is_int($d['audio_waiting'] ?? null)) {
+            $ok = static fn(mixed $v): bool => is_int($v) && $v >= 0 && $v <= self::QUEUE_SANE;   // security S3
+            if (is_array($d) && $ok($d['waiting'] ?? null) && $ok($d['audio_waiting'] ?? null)) {
                 return ['last_ok_at' => is_string($d['last_ok_at'] ?? null) ? $d['last_ok_at'] : null,
                     'last_error' => is_string($d['last_error'] ?? null) ? $d['last_error'] : null,
                     'waiting' => $d['waiting'], 'audio_waiting' => $d['audio_waiting']];

@@ -8,6 +8,8 @@ require_once __DIR__ . '/f007_lib.php';
 
 use Whisper\Adversus\Sync as AdversusSync;
 use Whisper\DB;
+use Whisper\Paths;
+use Whisper\UiV2;
 
 f007_setup();
 $c = f005_admin();
@@ -44,6 +46,20 @@ $u->login('bruger@f007.test', F001_PW);
 $ur = f007_get($u, '/', ['kilde' => 'adversus']);
 F007Check::that('AK4', !str_contains($ur->body, 'Nogle opkald kunne ikke hentes') && !str_contains($ur->body, 'Teknisk besked'),
     'bruger: ingen advarsel og ingen teknisk besked');
+
+// Cachemappen kan ikke oprettes (en fil står i vejen): direkte tælling, aldrig "Ingen i kø" (QA F-2)
+@unlink(Paths::varDir() . '/cache/f007-queue.json');
+@rmdir(Paths::varDir() . '/cache');
+file_put_contents(Paths::varDir() . '/cache', 'ikke en mappe');
+$nc = f007_get($c, '/');
+F007Check::that('AK4', str_contains($nc->body, '<p class="q-count"><span class="q-num">1</span> i kø</p>') && !str_contains($nc->body, 'Ingen i kø'),
+    'uskrivbar cache: kortet tæller direkte (1 i kø)');
+unlink(Paths::varDir() . '/cache');
+// Ugyldig cache (urimeligt tal): tælles igen (security S3)
+UiV2::reset();
+Paths::writePrivate(Paths::dir('cache') . '/f007-queue.json', '{"last_ok_at":null,"last_error":null,"waiting":99999999999,"audio_waiting":-4}');
+UiV2::reset(false);
+F007Check::that('AK4', UiV2::queue()['status']['waiting'] === 1, 'cache med urimelige tal ignoreres');
 
 // H009: advarslen fra før genopretningen er forældet
 DB::exec('UPDATE sync_state SET last_run_at = ? WHERE `source` = ?', [gmdate('Y-m-d H:i:s', time() + 60), AdversusSync::RECOVERY]);

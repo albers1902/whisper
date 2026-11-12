@@ -43,6 +43,22 @@ foreach ($fonts as $f) {
         && str_contains($css, '/assets/fonts/' . $f);
 }
 F007Check::that('AK9', $ok, 'fem woff2-fonte findes og bruges');
+// security S1: præcis filerne fra @fontsource/inter og @fontsource/inter-tight 5.3.0 (npm, sha512-integrity verificeret)
+$sha = ['inter-latin-400-normal.woff2' => '8909904ab6c872eb994093482a88a28eca2cd95912d7b6fecd72103b0dc07edc',
+    'inter-latin-500-normal.woff2' => 'f3779f1efccc4bdcdf9c0a02ab95bf6bd092ed09c48c08cedc725889edd1d19f',
+    'inter-latin-600-normal.woff2' => 'f9a06e79cd3a2a20951c0f0e28f66dd0e6d3fda73911d640a2125c8fcb78f21a',
+    'inter-latin-700-normal.woff2' => '6f56409fd3d64bb85f7d070bce20749db2d66b6d63cec586cc22d1c761be2491',
+    'inter-tight-latin-700-normal.woff2' => '9c4f02f38678f2628292d66c4f7a1a6a06af7ffac4d279359b09074e7d0f1fe0',
+    'OFL-Inter.txt' => '3b0a5fca3d17942cde889069889dedbbbd075e9b599968c82a95f4d944e9b345',
+    'OFL-Inter-Tight.txt' => '1e1c8b3dc6dfcbd5498a33f17fcc68ff2d39c599f6e8195fbf14601261dbef6a'];
+$bad = [];
+foreach ($sha as $file => $hash) {
+    if (hash_file('sha256', $assets . 'fonts/' . $file) !== $hash) {
+        $bad[] = $file;
+    }
+}
+$extra = array_diff(array_map('basename', glob($assets . 'fonts/*') ?: []), array_keys($sha));
+F007Check::that('AK9', $bad === [] && $extra === [], 'fontfilerne har de verificerede sha256 og der er ingen andre (' . implode(', ', $bad + $extra) . ')');
 F007Check::that('AK9', str_contains((string) file_get_contents($assets . 'fonts/OFL-Inter.txt'), 'SIL Open Font License')
     && str_contains((string) file_get_contents($assets . 'fonts/OFL-Inter-Tight.txt'), 'SIL Open Font License'), 'OFL-licensfiler');
 F007Check::that('AK9', str_contains((string) file_get_contents(__DIR__ . '/../public_html/.htaccess'), 'AddType font/woff2 .woff2'), 'woff2 sendes som font/woff2');

@@ -66,6 +66,13 @@ F007Check::that('AK10', $card !== [] && str_contains($card[0], 'status=faerdig')
 $d = f007_get($c, '/opkald/' . $done, ['status' => 'faerdig']);
 F007Check::that('AK10', str_contains($d->body, '<p class="back"><a href="/?status=faerdig">'), 'Tilbage bærer statusfiltret');
 F007Check::that('AK10', str_contains($fq->body, '<input type="hidden" name="status" value="faerdig">'), 'søgeformularen bærer statusfiltret');
+F007Check::that('AK10', !str_contains(f007_get($c, '/', ['status' => 'koe'])->body, '/opkald/download'), 'I kø: ingen zip-knap (QA F-5)');
+$e = f007_get($c, '/', ['kilde' => 'adversus', 'vis' => 'alle', 'status' => 'koe', 'retning' => 'inbound']);
+F007Check::that('AK10', str_contains($e->body, 'Ingen opkald matcher'), 'I kø + andet filter uden træf: "Ingen opkald matcher"');
+DB::exec("UPDATE calls SET transcript_status = 'faerdig' WHERE transcript_status IN ('ventende', 'transcriberer')");
+$empty = f007_get($c, '/', ['status' => 'koe']);
+F007Check::that('AK10', str_contains($empty->body, 'Ingen opkald i kø lige nu') && !str_contains($empty->body, 'Prøv en længere periode'),
+    'tom kø: "Ingen opkald i kø lige nu" (QA F-5)');
 $bad = f007_get($c, '/', ['status' => "x' OR 1=1"]);
 F007Check::that('AK10', $bad->status === 200 && count(f007_ids($bad)) >= 5, 'ugyldig status ignoreres (Alle)');
 F007Check::done();

@@ -331,6 +331,9 @@ final class CallPages
         }
         if ($n === 1) {
             AccessLog::write((int) $user['id'], 'transcriber', ['opkald' => $id]);
+            if (UiV2::on()) {
+                UiV2::reset();   // kø-kortet viser det valgte opkald med det samme (QA F-7)
+            }
             return [0, $url, $kind];
         }
         return [0, $url, 'koe'];

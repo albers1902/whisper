@@ -50,13 +50,11 @@ final class EngineStatus
             if (!is_file($var . '/whisper/ready-' . $model)) {
                 return ['state' => $transcribing || $age < self::SETUP_FRESH ? self::SETUP : self::MISSING, 'since' => $since];
             }
-            if ($transcribing) {
-                return ['state' => self::BUSY, 'since' => $since];
+            // Et opkald i "transcriberer" tæller kun med frisk aktivitet: en dræbt proces efterlader det i op til 2 t (QA F-8)
+            if ($age < self::ACTIVE) {
+                return ['state' => $queue > 0 || $transcribing ? self::BUSY : self::READY, 'since' => $since];
             }
-            if ($queue === 0) {
-                return ['state' => self::READY, 'since' => $since];
-            }
-            return ['state' => $age < self::ACTIVE ? self::BUSY : self::STALLED, 'since' => $since];
+            return ['state' => $queue === 0 && !$transcribing ? self::READY : self::STALLED, 'since' => $since];
         } catch (Throwable) {
             return ['state' => self::UNKNOWN, 'since' => null];
         }

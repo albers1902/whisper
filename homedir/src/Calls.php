@@ -91,7 +91,19 @@ final class Calls
     {
         $sql = ['1 = 1'];
         $p = [];
-        $sql[] = self::sourceSql($f['vis'] ?? '');
+        $kilde = $f['kilde'] ?? '';
+        if ($kilde === 'zendesk' || $kilde === 'adversus') {
+            // F007: én fane; kilden som bundet parameter (security S2). Adversus' "Succes og valgte" er samme regel som
+            // sourceSql(''), men med IN i stedet for <>, så indekserne (source, is_success, …) og (source, transcript_status, …)
+            // kan bruges (Adversus har langt flest "ikke valgt", især efter H013)
+            $sql[] = 'c.`source` = ?';
+            $p[] = $kilde;
+            if ($kilde === 'adversus' && ($f['vis'] ?? '') !== 'alle') {
+                $sql[] = "(c.is_success = 1 OR c.transcript_status IN ('ventende', 'transcriberer', 'faerdig', 'fejlet'))";
+            }
+        } else {
+            $sql[] = self::sourceSql($f['vis'] ?? '');
+        }
         if ($f['fra'] !== '') {
             $sql[] = 'c.started_at >= ?';
             $p[] = self::utcDayStart($f['fra'], 0);
@@ -121,11 +133,7 @@ final class Calls
         if ($onlyDone) {
             $sql[] = "c.transcript_status = 'faerdig'";
         }
-        // F007: fanen og statusfiltret, kun når de er sat (MCP sætter dem aldrig)
-        $kilde = $f['kilde'] ?? '';
-        if ($kilde === 'zendesk' || $kilde === 'adversus') {
-            $sql[] = "c.`source` = '" . $kilde . "'";
-        }
+        // F007: statusfiltret, kun når det er sat (MCP sætter det aldrig)
         $status = $f['status'] ?? '';
         if ($status === self::STATUS_DONE) {
             $sql[] = "c.transcript_status = 'faerdig'";
@@ -245,8 +253,19 @@ final class Calls
         [$w, $p] = self::where($f);
         $total = self::count($f);
         $side = max(1, min($f['side'], (int) ceil(min($total, self::COUNT_CAP) / self::PAGE_SIZE)));
-        $rows = $total === 0 ? [] : DB::all('SELECT c.* FROM calls c WHERE ' . $w . ' ORDER BY c.started_at DESC, c.id DESC LIMIT '
-            . self::PAGE_SIZE . ' OFFSET ' . (($side - 1) * self::PAGE_SIZE), $p);
+        $page = ' LIMIT ' . self::PAGE_SIZE . ' OFFSET ' . (($side - 1) * self::PAGE_SIZE);
+        if ($total === 0) {
+            $rows = [];
+        } elseif ($total <= self::COUNT_CAP) {
+            // Få eller middel mange træf (QA F-1): id'erne hentes uden ORDER BY — med det mest selektive indeks, som
+            // tællingen — og sorteres bagefter (højst COUNT_CAP små rækker). Med ORDER BY ville optimizeren gå baglæns i
+            // tidsindekset og læse hele tabellen, når kun få rækker matcher (fx "I kø" med 5).
+            $rows = DB::all('SELECT c.* FROM calls c JOIN (SELECT c.id, c.started_at FROM calls c WHERE ' . $w . ' LIMIT ' . (self::COUNT_CAP + 1)
+                . ') x ON x.id = c.id ORDER BY x.started_at DESC, x.id DESC' . $page, $p);
+        } else {
+            // Mange træf: tidsindekset (source, started_at, id, …) leverer rækkefølgen og stopper efter siden
+            $rows = DB::all('SELECT c.* FROM calls c WHERE ' . $w . ' ORDER BY c.started_at DESC, c.id DESC' . $page, $p);
+        }
         return ['rows' => $rows, 'total' => $total, 'side' => $side];
     }
 
@@ -378,9 +397,9 @@ final class Calls
             return array_values(array_filter(array_map(static fn(array $r): string => (string) $r['agent_name'], $rows),
                 static fn(string $a): bool => $a !== ''));
         }
-        $only = $source === 'zendesk' ? " AND c.`source` = 'zendesk'" : '';
+        $only = $source === 'zendesk' ? ' AND c.`source` = ?' : '';
         $rows = DB::all("SELECT DISTINCT c.agent_name FROM calls c WHERE c.agent_name <> '' AND " . self::sourceSql('alle') . $only
-            . ' ORDER BY c.agent_name');
+            . ' ORDER BY c.agent_name', $only !== '' ? [$source] : []);
         return array_map(static fn(array $r): string => (string) $r['agent_name'], $rows);
     }
 

@@ -146,6 +146,7 @@
     };
   } else if (card) {
     d.querySelectorAll('.pl-controls').forEach(function (el) { el.hidden = true; });
+    d.querySelectorAll('#transcript.playable').forEach(function (t) { t.classList.remove('playable'); });   /* intet at spole til */
   }
 
   /* 4. Kopiér: et felt eller transcriptet i .txt-format ("[00:12] Agent: tekst"). */
@@ -219,9 +220,10 @@
       hits[active].scrollIntoView({ block: 'center' });
       findStatus.textContent = (active + 1) + ' af ' + hits.length;
     };
+    var lower = function (s) { return s.toLocaleLowerCase('da'); };
     var run = function () {
       clear();
-      var q = findInput.value.trim().toLowerCase();
+      var q = lower(findInput.value.trim());
       if (q === '') { findStatus.textContent = ''; return; }
       var nodes = [];
       var walker = d.createTreeWalker(conv, NodeFilter.SHOW_TEXT, {
@@ -229,7 +231,10 @@
       });
       while (walker.nextNode()) { nodes.push(walker.currentNode); }
       nodes.forEach(function (node) {
-        var text = node.nodeValue, lower = text.toLowerCase(), at = lower.indexOf(q);
+        var text = node.nodeValue, low = lower(text);
+        /* Ændrer små bogstaver længden (fx İ), passer positionerne ikke til teksten: spring tekstnoden over */
+        if (low.length !== text.length) { return; }
+        var at = low.indexOf(q);
         while (at !== -1) {
           var match = node.splitText(at);
           node = match.splitText(q.length);
@@ -238,21 +243,26 @@
           m.textContent = match.nodeValue;
           match.parentNode.replaceChild(m, match);
           hits.push(m);
-          lower = node.nodeValue.toLowerCase();
-          at = lower.indexOf(q);
+          low = lower(node.nodeValue);
+          at = low.indexOf(q);
         }
       });
       if (hits.length) { show(0); } else { findStatus.textContent = 'Ingen træf'; }
     };
     var timer = null;
-    findInput.addEventListener('input', function () { clearTimeout(timer); timer = setTimeout(run, 150); });
+    findInput.addEventListener('input', function () {
+      clearTimeout(timer);
+      timer = setTimeout(function () { timer = null; run(); }, 150);
+    });
     findInput.addEventListener('keydown', function (ev) {
       if (ev.key === 'Enter' || ev.key === 'ArrowDown') {
         ev.preventDefault();
-        if (timer) { clearTimeout(timer); timer = null; if (!hits.length) { run(); return; } }
+        /* Venter der stadig input, søges der først på det nye ord, og første træf vises (QA F-3) */
+        if (timer) { clearTimeout(timer); timer = null; run(); return; }
         show(ev.shiftKey ? active - 1 : active + 1);
       } else if (ev.key === 'ArrowUp') {
         ev.preventDefault();
+        if (timer) { clearTimeout(timer); timer = null; run(); return; }
         show(active - 1);
       } else if (ev.key === 'Escape') {
         findInput.value = '';

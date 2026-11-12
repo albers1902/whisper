@@ -87,7 +87,8 @@ final class UiCallsV2
 
         $q = CallView::query($f);
         $zipNote = $total > Calls::ZIP_MAX;
-        $zip = $total > 0 ? '<a class="button secondary zip" href="/opkald/download' . ($q !== '' ? '?' . $e($q) : '') . '" aria-describedby="zip-hjaelp">'
+        // Ingen zip ved "I kø": zip tager kun færdige transcripts (QA F-5)
+        $zip = $total > 0 && ($f['status'] ?? '') !== Calls::STATUS_QUEUE ? '<a class="button secondary zip" href="/opkald/download' . ($q !== '' ? '?' . $e($q) : '') . '" aria-describedby="zip-hjaelp">'
             . Ui::icon('download') . '<span class="wide-only">Download transcripts (.zip)</span><span class="narrow-only">Download .zip</span></a>' : '';
         $head = '<div class="page-head"><div><h1>Opkald</h1>' . $line . '</div>' . $zip . '</div>';
 
@@ -122,12 +123,15 @@ final class UiCallsV2
         $words = Calls::searchWords($f['q']);
         $tip = $words !== [] && mb_strlen($words[0]) < 3 ? '<p class="hint">Tip: Ord på 1–2 bogstaver giver ofte for mange eller ingen træf.</p>' : '';
 
+        // Ved loftet: ældre opkald nås kun ved at indsnævre (QA F-6)
+        $capHint = $total > Calls::COUNT_CAP && $f['side'] >= (int) (Calls::COUNT_CAP / Calls::PAGE_SIZE)
+            ? '<p class="hint cap-hint">Kun de nyeste ' . UiV2::num(Calls::COUNT_CAP) . ' opkald kan bladres. Indsnævr med periode, agent eller søgning for at se ældre opkald.</p>' : '';
         $list = $rows === [] ? self::emptyState($f, $adv, $adversus !== null, $other)
             : self::cards($rows, $f, $subdomain, $snippets, $excerpts, $now);
 
         return Ui::layout('Opkald · ' . $name, '<div class="list-page">' . $head . Ui::message(null, $flash) . self::searchCard($f, $agents, $now)
             . '<div class="tab-row">' . $tabs . '<div class="tab-tools">' . $tools . '</div></div>' . $notes
-            . $summary . $tip . $list . self::pager($f, $total) . '</div>', $user, $csrf, 'opkald');
+            . $summary . $tip . $list . self::pager($f, $total) . $capHint . '</div>', $user, $csrf, 'opkald');
     }
 
     /** @param Filter $f */
@@ -235,6 +239,9 @@ final class UiCallsV2
     {
         $e = Ui::e(...);
         $all = ($f['vis'] ?? '') === 'alle';
+        if (($f['status'] ?? '') === Calls::STATUS_QUEUE && !self::filtered(['status' => ''] + $f)) {
+            return self::empty('Ingen opkald i kø lige nu', 'Nye opkald transcriberes, så snart lyden er hentet.', '');   // QA F-5
+        }
         if (self::filtered($f)) {
             $actions = '<a class="button secondary" href="' . $e(self::resetUrl($f)) . '">Nulstil filtre</a>';
             if ($adv && !$all) {
