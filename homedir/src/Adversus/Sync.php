@@ -589,9 +589,9 @@ final class Sync
         $origin = $call['origin'] ?? null;
         if (!in_array($origin, ['inbound', 'outbound'], true)) {
             // Swagger kender kun inbound/outbound; noget andet tælles i advarslen i stedet for at gætte
-            $this->stats['skipped']++;
-            if (!in_array($id, $this->skippedIds, true)) {
+            if (!in_array($id, $this->skippedIds, true)) {   // tælles én gang pr. kørsel, også når en kontrol ser det igen
                 $this->skippedIds[] = $id;
+                $this->stats['skipped']++;
             }
             return;
         }
