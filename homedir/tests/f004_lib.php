@@ -169,6 +169,10 @@ final class FakeAdversus implements HttpTransport
     public bool $leadsError = false;
     /** Kaldes ved hver hentning fra lydværten (fx for at flytte testens ur) */
     public ?Closure $onAudio = null;
+    /** @var array<string, list<string>> filter-egenskaber pr. sti, der svarer 400 som hos Adversus (fx ['/v1/calls' => ['leadId']]) */
+    public array $rejectFilters = [];
+    /** Sekunder, som et tidsstempel i et filter flyttes, før det sammenlignes (H009: Adversus tolker filtertid anderledes) */
+    public int $filterShift = 0;
 
     public function request(string $method, string $url, array $headers = [], ?string $body = null, ?string $saveTo = null): HttpResult
     {
@@ -211,6 +215,12 @@ final class FakeAdversus implements HttpTransport
         }
         [$key, $items] = $lists[$path];
         $filters = is_string($q['filters'] ?? null) ? json_decode($q['filters'], true) : [];
+        foreach (array_keys(is_array($filters) ? $filters : []) as $field) {
+            if (in_array($field, $this->rejectFilters[$path] ?? [], true)) {
+                return new HttpResult(400, ['content-type' => 'application/json'],
+                    (string) json_encode(['code' => 400, 'message' => 'Invalid filter property: ' . $field]));
+            }
+        }
         $items = array_values(array_filter($items, fn(array $it): bool => $this->matches($it, is_array($filters) ? $filters : [])));
         if (is_string($q['sortProperty'] ?? null)) {
             $prop = $q['sortProperty'];
@@ -234,10 +244,12 @@ final class FakeAdversus implements HttpTransport
         foreach ($filters as $field => $ops) {
             $v = $it[$field] ?? null;
             foreach (is_array($ops) ? $ops : [] as $op => $want) {
+                $isTime = is_string($want) && preg_match('/^[0-9]{4}-[0-9]{2}-[0-9]{2}/', $want) === 1;
+                $w = $isTime ? $this->num($want) + $this->filterShift : $this->num($want);
                 $ok = match ($op) {
-                    '$eq'  => $v === $want,
-                    '$gt'  => $this->num($v) > $this->num($want),
-                    '$lt'  => $this->num($v) < $this->num($want),
+                    '$eq'  => $isTime ? $this->num($v) === $w : $v === $want,
+                    '$gt'  => $this->num($v) > $w,
+                    '$lt'  => $this->num($v) < $w,
                     default => false,
                 };
                 if (!$ok) {
