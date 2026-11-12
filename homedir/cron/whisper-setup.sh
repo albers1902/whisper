@@ -40,6 +40,7 @@ pyver() { "$1" -c 'import sys; print("%d.%d" % sys.version_info[:2])' 2>/dev/nul
 
 mkdir -p var/whisper/models var/whisper/hf
 rm -f "var/whisper/ready-$model"   # en afbrudt kørsel må ikke efterlade en gammel markør
+rm -f var/whisper/ready-diarization   # H011: cron/diarize.php må ikke starte på et venv, der er ved at blive ændret
 
 # Pakkerne som "navn==version", navne normaliseret som pip freeze (små bogstaver, - i stedet for _ og .)
 want=$(awk '/^[A-Za-z0-9]/ { split($1, a, "=="); n = tolower(a[1]); gsub(/[_.]/, "-", n); print n "==" a[2] }' "$LOCK" | sort)
@@ -47,8 +48,10 @@ have() {
   "$VENV/bin/python" -m pip freeze --disable-pip-version-check 2>/dev/null \
     | awk -F'==' '{ n = tolower($1); gsub(/[_.]/, "-", n); print n "==" $2 }' | sort
 }
-# Et venv med andre pakker eller en anden Python (fx fra før H003) bygges forfra, så intet ulåst bliver liggende
-if [ -x "$VENV/bin/python" ] && { [ "$(pyver "$VENV/bin/python")" != "$PYV" ] || [ "$(have)" != "$want" ]; }; then
+# Et venv med andre pakker eller en anden Python (fx fra før H003) bygges forfra, så intet ulåst bliver liggende. Mangler
+# der kun pakker (låsen har fået nye, fx H011), installeres de oveni: en kørende transcription bruger venv'et imens
+extra() { comm -23 <(have) <(printf '%s\n' "$want"); }
+if [ -x "$VENV/bin/python" ] && { [ "$(pyver "$VENV/bin/python")" != "$PYV" ] || [ -n "$(extra)" ]; }; then
   echo "… var/whisper/venv passer ikke til $LOCK — bygges forfra"
   rm -rf "$VENV"
 fi
@@ -110,9 +113,9 @@ PY
 # H011: diarization-modellerne til cron/diarize.py (låst revision og sha256) og en selvtest med samme kald som i drift.
 # En fejl her stopper ikke transcription: markøren ready-diarization skrives kun, når alt lykkes, og uden den gør
 # cron/diarize.php intet. Ny model eller revision = nyt H-ID.
-rm -f var/whisper/ready-diarization
 mkdir -p var/whisper/diarization
-if HF_HOME="$H/var/whisper/hf" "$VENV/bin/python" - "$H/var/whisper/diarization" "$H/cron/diarize.py" <<'PY'
+derr=var/whisper/diarize-setup.log
+if HF_HOME="$H/var/whisper/hf" "$VENV/bin/python" - "$H/var/whisper/diarization" "$H/cron/diarize.py" 2>"$derr" <<'PY'
 import hashlib
 import importlib.util
 import math
@@ -178,7 +181,9 @@ then
   date -u +%Y-%m-%dT%H:%M:%SZ > var/whisper/ready-diarization
   echo "DIARIZATION: KLAR"
 else
-  echo "DIARIZATION: FEJL — transcription kører videre uden talere (detaljen står ovenfor)"
+  # Hele fejlen, og den sidste linje (selve fejlen) igen til sidst, så ejeren kan sende netop den
+  cat "$derr"
+  echo "DIARIZATION: FEJL — transcription kører videre uden talere. Fejlen: $(grep -v '^[[:space:]]*$' "$derr" | tail -n 1)"
 fi
 # Markøren til sidst: transcribe.php tager først opkald, når setup er kørt helt færdig for netop denne model (QA F-3)
 date -u +%Y-%m-%dT%H:%M:%SZ > "var/whisper/ready-$model"
