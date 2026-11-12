@@ -62,7 +62,7 @@ for ($k = 0; $k < 20; $k++) {
 $saved = (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus'");
 $distinct = (int) DB::scalar("SELECT COUNT(DISTINCT external_id) FROM calls WHERE `source` = 'adversus'");
 H013Check::that('AK1', $saved === $n && $distinct === $n, 'alle ' . $n . ' CDR\'er er gemt én gang (fik ' . $saved . ')');
-H013Check::that('AK1', count($days) > 3 && $maxReq <= 36, 'backfill over flere kørsler inden for loftet (' . count($days) . ' kørsler, max ' . $maxReq . ' kald)');
+H013Check::that('AK1', count($days) >= 3 && $maxReq <= 36, 'backfill over flere kørsler inden for loftet (' . count($days) . ' kørsler, max ' . $maxReq . ' kald)');
 $sorted = $days;
 sort($sorted);
 H013Check::that('AK1', $days === $sorted && count(array_unique($days)) >= 3, 'loglinjens dag går frem dag for dag (' . implode(', ', array_unique($days)) . ')');

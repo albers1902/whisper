@@ -84,7 +84,7 @@ $ids = array_column(DB::all("SELECT external_id FROM calls WHERE `source` = 'adv
 $missing = array_diff(array_map('strval', array_keys($want)), $ids);
 F004Check::that('AK4', $missing === [], 'ingen huller: alle CDR\'er er gemt (' . count($missing) . ' mangler: ' . implode(',', array_slice($missing, 0, 5)) . ')');
 F004Check::that('AK4', count($ids) === count(array_unique($ids)) && count($ids) === count($want), 'ingen dubletter og intet ekstra');
-F004Check::that('AK4', (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus' AND external_id LIKE '2000%'") === 150,
+F004Check::that('AK4', (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus' AND CAST(external_id AS UNSIGNED) BETWEEN 200000 AND 200149") === 150,
     '150 opkald i samme sekund er alle med');
 F004Check::that('AK4', (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus' AND disposition = 'no-answer'") === 1000,
     'ubesvarede opkald er også gemt (med disposition)');
