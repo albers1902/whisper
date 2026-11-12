@@ -39,13 +39,25 @@ if ($lock === null) {
 }
 \Whisper\Paths::heartbeat('transcribe');
 
+// Advarsler om ugyldige [whisper]-værdier skrives først sammen med kørslens første opkald, så en tom kø ikke giver
+// en linje hvert minut
+$warnings = [];
 try {
-    $engine = \Whisper\Transcription\ProcessEngine::fromConfig();
+    $engine = \Whisper\Transcription\ProcessEngine::fromConfig(static function (string $w) use (&$warnings): void {
+        $warnings[] = $w;
+    });
 } catch (\Whisper\Transcription\EngineError $e) {
     $log('transcribe: ' . $e->getMessage());
     exit(1);
 }
-$t = new \Whisper\Transcription\Transcriber($engine, null, $log);
+$jobLog = static function (string $line) use (&$warnings, $log): void {
+    foreach ($warnings as $w) {
+        $log($w);
+    }
+    $warnings = [];
+    $log($line);
+};
+$t = new \Whisper\Transcription\Transcriber($engine, null, $jobLog);
 $reset = $t->resetStale();
 if ($reset > 0) {
     $log('transcribe: ' . $reset . ' hængende opkald sat tilbage');

@@ -8,9 +8,11 @@ use Whisper\Paths;
 
 /**
  * faster-whisper i var/whisper/venv (lagt af cron/whisper-setup.sh), kørt som
- *   nice -n 19 [ionice -c3] var/whisper/venv/bin/python cron/transcribe.py --model <m> --models var/whisper/models <fil>
+ *   nice -n 19 [ionice -c3] var/whisper/venv/bin/python cron/transcribe.py --model <m> --models var/whisper/models
+ *     --threads N --beam N --vad 0|1 <fil>
  * med proc_open og et argv-array: ingen shell, og intet argument kommer fra brugeren eller Zendesk (filstien bygges af
- * appen ud fra opkaldets id, modellen fra en fast liste). ionice bruges kun, hvis den findes.
+ * appen ud fra opkaldets id, modellen fra en fast liste, threads/beam/vad fra config.ini som validerede heltal,
+ * se WhisperSettings). ionice bruges kun, hvis den findes.
  *
  * Klar betyder, at whisper-setup.sh er kørt færdig for netop den konfigurerede model (markøren
  * var/whisper/ready-<model>), ikke bare at venv'et findes (QA F-3).
@@ -23,18 +25,36 @@ final class ProcessEngine implements Engine
     public const DEFAULT_MODEL = 'turbo';
     public const MIN_TIMEOUT = 7200;
 
-    /** @param int|null $timeout fast tidsgrænse i sekunder (kun tests); null = max(2 t, 4 × varighed) */
-    public function __construct(private readonly string $model, private readonly ?int $timeout = null)
+    private readonly WhisperSettings $settings;
+
+    /**
+     * @param int|null $timeout fast tidsgrænse i sekunder (kun tests); null = max(2 t, 4 × varighed)
+     * @param WhisperSettings|null $settings null = standarderne (kerner − 1, beam 1, vad on)
+     */
+    public function __construct(private readonly string $model, private readonly ?int $timeout = null, ?WhisperSettings $settings = null)
     {
         if (!in_array($model, self::MODELS, true)) {
             throw new EngineError('[whisper] model skal være turbo eller large-v3');
         }
+        $this->settings = $settings ?? WhisperSettings::fromSection([], WhisperSettings::cores());
     }
 
-    public static function fromConfig(): self
+    /** @param (\Closure(string): void)|null $warn får én linje pr. ugyldig værdi i [whisper] */
+    public static function fromConfig(?\Closure $warn = null): self
     {
         $m = trim(Config::string('whisper', 'model', self::DEFAULT_MODEL));
-        return new self($m === '' ? self::DEFAULT_MODEL : $m);
+        return new self($m === '' ? self::DEFAULT_MODEL : $m, null,
+            WhisperSettings::fromSection(Config::section('whisper'), WhisperSettings::cores(), $warn));
+    }
+
+    public function settings(): WhisperSettings
+    {
+        return $this->settings;
+    }
+
+    public function label(): string
+    {
+        return $this->settings->label();
     }
 
     public static function python(): string
@@ -75,7 +95,7 @@ final class ProcessEngine implements Engine
             $argv = array_merge($argv, ['/usr/bin/ionice', '-c3']);
         }
         $argv = array_merge($argv, [self::python(), self::script(), '--model', $this->model,
-            '--models', Paths::dir('whisper/models'), $audioFile]);
+            '--models', Paths::dir('whisper/models')], $this->settings->argv(), [$audioFile]);
 
         $out = (string) tempnam(Paths::dir('whisper'), 'out');
         // Motorens stderr kan indeholde stier; den gemmes privat (0600) til fejlsøgning og vises aldrig
