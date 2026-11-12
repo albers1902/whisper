@@ -1,9 +1,8 @@
 <?php
 declare(strict_types=1);
 
-// H013-AK5: skalering til flere hundrede tusinde opkald: migration 0009 giver indeks til listen "Alle opkald"
-// (source + started_at), lydkøen (source, transcript_status, audio_status) og lead-status, og lydkøens forespørgsel kan
-// bruge sit indeks. Med 5000 ikke-valgte opkald henter en kørsel ingen lyd og laver ingen kald efter lyd.
+// H013-AK5: skalering til flere hundrede tusinde opkald: migration 0009 giver indeks til lydkøen (source,
+// transcript_status, audio_status) og lead-status, og lydkøens forespørgsel kan bruge sit indeks (listens indeks er F007's). Med 5000 ikke-valgte opkald henter en kørsel ingen lyd og laver ingen kald efter lyd.
 
 require_once __DIR__ . '/f004_lib.php';
 require_once __DIR__ . '/h013_lib.php';
@@ -14,8 +13,7 @@ f004_setup();
 $keys = static function (string $table): array {
     return array_values(array_unique(array_column(DB::all('SHOW INDEX FROM ' . $table), 'Key_name')));
 };
-H013Check::that('AK5', in_array('calls_source_started', $keys('calls'), true) && in_array('calls_audio_queue', $keys('calls'), true),
-    'calls har calls_source_started og calls_audio_queue');
+H013Check::that('AK5', in_array('calls_audio_queue', $keys('calls'), true), 'calls har calls_audio_queue');
 H013Check::that('AK5', in_array('adversus_leads_status', $keys('adversus_leads'), true), 'adversus_leads har indeks på status');
 $cols = array_column(DB::all('SHOW COLUMNS FROM calls'), 'Field');
 H013Check::that('AK5', in_array('disposition', $cols, true), 'calls har disposition');
