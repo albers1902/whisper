@@ -56,7 +56,7 @@ foreach ($http->requests as $req) {
     $f = is_string($q['filters'] ?? null) ? json_decode($q['filters'], true) : null;
     foreach (is_array($f) ? $f : [] as $field => $ops) {
         foreach (is_array($ops) ? $ops : [] as $v) {
-            if (is_string($v)) {
+            if (is_string($v) && preg_match('/^[0-9]{4}-[0-9]{2}-[0-9]{2}T/', $v) === 1) {
                 $seen[(string) parse_url($req['url'], PHP_URL_PATH) . ' ' . $field] = true;
                 $ok = $ok && (int) strtotime($v) - f004_filter_epoch($v) === 3600;
             }

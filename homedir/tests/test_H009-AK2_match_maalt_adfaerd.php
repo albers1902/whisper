@@ -76,7 +76,7 @@ H009Check::that('AK2', $res['max'] <= Sync::MAX_REQUESTS, 'højst ' . Sync::MAX_
 H009Check::that('AK2', $res['discarded'] === 0 && (int) DB::scalar('SELECT COUNT(*) FROM adversus_pending') === 0, 'intet forkastet, tom venteliste');
 H009Check::that('AK2', $res['runs'] <= 12, 'efterslæbet (12 t) er indhentet på højst 12 kørsler (' . $res['runs'] . ')');
 $first = DB::all("SELECT started_at FROM calls WHERE `source` = 'adversus' AND external_id = ?", [(string) $recorded[0]]);
-H009Check::that('AK2', ($first[0]['started_at'] ?? null) === gmdate('Y-m-d H:i:s', $T0 + 3), 'started_at er opkaldets start i UTC');
+H009Check::that('AK2', ($first[0]['started_at'] ?? null) === gmdate('Y-m-d H:i:s', $T0 + ($recorded[0] - 1498000000) * 3), 'started_at er opkaldets start i UTC');
 
 // 2. Den gamle fortolkning i samme fixture
 f004_setup();

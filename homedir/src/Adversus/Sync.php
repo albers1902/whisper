@@ -44,7 +44,7 @@ final class Sync
     public const CURSOR_USERS = 'adversus-users';
     public const WARN = 'adversus-warn';
     /** Markør for H009's engangs-genopretning (findes den, er den sket) */
-    public const RECOVERY = 'adversus-h009';
+    public const RECOVERY = 'h009-adversus';
     public const MAX_REQUESTS = 100;
     public const RESERVE = 30;
     /** Standard for [adversus] lag_minutes (se AdversusConfig) */
