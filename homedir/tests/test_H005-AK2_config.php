@@ -24,7 +24,7 @@ H005Check::that('AK2', $s->threads === 3 && $s->beam === 5 && $s->vad === false 
 $s = WhisperSettings::fromSection(['threads' => ' 32 ', 'beam_size' => '10', 'vad' => 'ON'], 6, $collect($w));
 H005Check::that('AK2', $s->threads === 32 && $s->beam === 10 && $s->vad === true && $w === [], 'grænserne 32 og 10, ON med store bogstaver');
 $s = WhisperSettings::fromSection(['threads' => '4', 'beam_size' => '5', 'vad' => 'off'], 6, $collect($w));
-H005Check::that('AK2', $s->argv() === ['--threads', '4', '--beam', '5', '--vad', '0'] && $s->label() === 'threads 4, beam 5, vad off',
+H005Check::that('AK2', $s->argv() === ['--threads', '4', '--beam', '5', '--vad', '0'] && $s->label() === 'threads 4, beam 5, vad off, mode sequential',
     'den gamle adfærd kan sættes i config (rollback uden deploy)');
 $s = WhisperSettings::fromSection(['threads' => '', 'beam_size' => '', 'vad' => '', 'workers' => '1'], 6, $collect($w));
 H005Check::that('AK2', $s->threads === 5 && $s->beam === 1 && $s->vad === true && $w === [], 'tomme nøgler = standarden uden advarsel');

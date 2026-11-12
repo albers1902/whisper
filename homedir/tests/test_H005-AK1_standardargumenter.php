@@ -31,7 +31,7 @@ $s = $engine->settings();
 H005Check::that('AK1', $s->threads === $want && $s->beam === 1 && $s->vad === true && $warnings === [],
     'fromConfig uden nøgler: threads ' . $s->threads . ', beam ' . $s->beam . ', vad ' . ($s->vad ? 'on' : 'off') . ', ingen advarsel');
 H005Check::that('AK1', $s->argv() === ['--threads', (string) $want, '--beam', '1', '--vad', '1'], 'argv-elementerne');
-H005Check::that('AK1', $engine->label() === 'threads ' . $want . ', beam 1, vad on', 'label til loglinjen');
+H005Check::that('AK1', $engine->label() === 'threads ' . $want . ', beam 1, vad on, mode sequential', 'label til loglinjen (mode fra H010)');
 
 if (DIRECTORY_SEPARATOR === '/') {
     $argvFile = $var . '/argv.txt';

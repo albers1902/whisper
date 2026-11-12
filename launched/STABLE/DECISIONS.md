@@ -335,3 +335,35 @@ Udløber: 2027-02-10
 H009-S4 · Accepteret risiko (LOW, security-critic H009_v1): diagnosen har ingen lås eller meddelelse ved
 `logs/deploying` og ingen kvote på tværs af kørsler. Rettes i H009 PR 2 (meddelelse ved deploying).
 Udløber: 2027-02-10
+
+## #55 — 2026-11-12 — H010-F1: batched_size kan give OOM ved høj config
+H010-F1 · Accepteret risiko (LOW, security-critic H010_v1): `[whisper] batched_size` kan sættes op til 32. Med 2 workers
+kan det estimerede forbrug nå ca. 21 GB, mod ca. 4,7 GB ledig på DEV. Værdien styres af admin, standarden 4 er sikker,
+og rollback er `engine_mode = sequential`. Smoke-testen tjekker `free -m`. Grænsen sænkes, eller der kommer en advarsel,
+hvis målingen viser behov.
+Udløber: 2027-02-10
+
+## #56 — 2026-11-12 — H010-F2: batched-indhold kan afvige fra sequential
+H010-F2 · Accepteret risiko (LOW, security-critic H010_v1): batched giver samme JSON-form, men tekst og segmentgrænser
+kan afvige, fordi der ikke er kontekst mellem VAD-stykkerne. Det accepteres under målingen. Ejeren sammenligner
+kvaliteten (smoke trin 7) og vælger derefter tilstand.
+Udløber: 2027-02-10
+
+## #57 — 2026-11-12 — H009-F1: /leads-filtrets tidszone er ikke målt
+H009-F1 · Accepteret risiko (MEDIUM, security-critic H009_v2): kun /recordings og indirekte /calls start er målt mod
+Adversus. /leads lastUpdatedTime antages også at læse cifrene som væg-tid. Er det forkert, mistes leads uden advarsel.
+Smoke-testen tjekker, at et nyt succes-lead hentes inden for to kørsler efter udrulningen.
+Udløber: 2027-02-10
+
+## #58 — 2026-11-12 — H009-F2: sommertidens begyndelse (2027-03-28) er ikke målt
+H009-F2 · Accepteret risiko (MEDIUM, security-critic H009_v2): Adversus' filtertolkning er kun målt i vintertid
+(UTC+1). Følger Adversus ikke sommertid, ligger filtrene 1 t forkert fra 2027-03-28, og optagelser kan tabes.
+Diagnosen køres 2027-03-29 (står i SPRINT.md). Nødvejen er `[adversus] filter_tz = +01:00`. Før udløbet forsøges en
+måling mod en sommerdato. Ellers genvurderes beslutningen.
+Udløber: 2027-02-10
+
+## #59 — 2026-11-12 — H009-F3: den gentagne time ved sommertidens slutning
+H009-F3 · Accepteret risiko (LOW, security-critic H009_v2): et optagelsesvindue med endepunkter i den gentagne lokale
+time 02:00–03:00 kan give et omvendt filter. Resultatet er højst en stand på op til en time. Der mistes ingen
+optagelser, og vinduerne er sammenhængende.
+Udløber: 2027-02-10
