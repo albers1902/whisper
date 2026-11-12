@@ -62,10 +62,11 @@ final class View
         return $out;
     }
 
-    public static function login(string $csrf, ?string $error, string $email): string
+    /** @param ?string $context  F006: teksten om en ventende forbindelse (kun det nye UI; OAuth kræver F005) */
+    public static function login(string $csrf, ?string $error, string $email, ?string $context = null): string
     {
         if (Ui::modern()) {
-            return UiPages::login($csrf, $error, $email);
+            return UiPages::login($csrf, $error, $email, $context);
         }
         return self::layout('Log ind', '<section class="card narrow"><h1>Log ind</h1>' . self::message($error)
             . '<form method="post" action="/login">' . self::csrfField($csrf)
@@ -86,7 +87,7 @@ final class View
     /**
      * @param array<string, mixed> $user
      * @param array{tokens: list<array<string, mixed>>, origin: string, new: array{token: string, name: string}|null,
-     *     error: ?string, name: string}|null $mcp  F003; null = skjult
+     *     error: ?string, name: string, apps: list<array<string, mixed>>|null, resume?: bool}|null $mcp  F003; null = skjult
      */
     public static function account(array $user, string $csrf, ?string $error, ?string $ok, ?array $mcp = null): string
     {
@@ -135,7 +136,7 @@ final class View
      * et readonly-felt og konfigurationen i en <pre>, som brugeren selv markerer. Intet inline script eller style (CSP).
      *
      * @param array{tokens: list<array<string, mixed>>, origin: string, new: array{token: string, name: string}|null,
-     *     error: ?string, name: string} $mcp
+     *     error: ?string, name: string, apps: list<array<string, mixed>>|null, resume?: bool} $mcp
      */
     private static function mcpSection(string $csrf, array $mcp): string
     {
