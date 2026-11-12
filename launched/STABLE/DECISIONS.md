@@ -152,6 +152,18 @@ og QA H004_v1). En dialektforskel giver en SQL-fejl, ikke datatab. Testen H004-A
 TEST og STABLE, før de tages i brug.
 Udløber: 2027-02-10
 
+## #29 — 2026-11-12 — H005: VAD og beam 1 som standard kan give ufuldstændige transcripts
+H005 · Accepteret risiko: med `vad = on` og `beam_size = 1` kan svag eller overlappende tale udelades uden fejl (LOW,
+security-critic H005_v1). Det er et bevidst valg for at gøre transcription hurtigere (målt ca. 8 min. pr. opkald før
+H005). Ejeren stikprøvekontrollerer opkald efter deploy (PROJEKTVIDEN.md), og rollback sker i config
+(`beam_size = 5`, `vad = off`).
+Udløber: 2027-02-10
+
+## #30 — 2026-11-12 — H005: advarsler om ugyldig whisper-config vises først ved næste job
+H005 · Accepteret risiko: en ugyldig værdi i `[whisper]` giver standarden og én advarsel, som først logges ved næste
+opkald i køen (LOW, security-critic H005_v1). Funktionelt sikkert.
+Udløber: 2027-02-10
+
 ## #5 — 2026-11-11 — H001: /health uden rate limit eller cache
 H001 · Accepteret risiko: `/health` er offentlig og laver en DB-skriveprøve ved hvert kald uden rate limit eller cache.
 Samtidige kald kan give falsk `degraded` (LOW, security-critic H001_v1 og v2). Kun driftsforstyrrelse, og der er ingen
