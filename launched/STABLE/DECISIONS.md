@@ -441,3 +441,32 @@ Udløber: 2027-02-10
 ## #73 — 2026-11-12 — H011-R3: længdegrænsen på 60 min bygger på duration_sec fra udbyderen
 H011-R3 · Accepteret risiko: `Diarizer::MAX_AUDIO` tjekker `calls.duration_sec` (udbyderens metadata, default 0), ikke filens egentlige længde. Et opkald uden eller med forkert varighed kan få en meget lang fil afkodet til hukommelsen (LOW, security-critic H011_v2 R3). Motoren kører med `nice`/`ionice` og tidsgrænse, og en motorfejl giver blot pause. Filstørrelsestjek eller måling i `diarize.py` laves i et opfølgende H-nummer.
 Udløber: 2027-02-10
+
+## #74 — 2026-11-12 — H012-S1: loftet på 50 manuelt valgte opkald deles af alle brugere
+Accepteret risiko. Fund S1 (LOW) i security-critic/H012_v1.md. En bruger kan optage hele loftet (MANUAL_MAX = 50) og blokere
+andres valg, indtil opkald er færdige; check og UPDATE er ikke atomiske (1–2 over loftet). Samme afvejning som F004-S1. Den
+automatiske kø påvirkes ikke, fordi manuelle valg kommer efter de automatiske. Afbødning: loftet; AccessLog viser, hvem der valgte.
+Udløber: 2027-02-10
+
+## #75 — 2026-11-12 — F007: Zendesk og Adversus behandles hver for sig, og UI'et får det godkendte redesign
+Ejerens beslutning. Ejeren 2026-11-12: "Du er nødt til at behandle adversus og Zendesk forskelligt" og valgte alle fire:
+hver sin fane, egne statuslinjer, succes kun for Adversus og forskellige felter. Senere samme dag bad ejeren om et redesign
+("det føles som 1999") og godkendte canvas'et "v2 — moderne" ("design er fint"). Spec: product-ai/F007_v1.md og F007_v2.md.
+
+## #76 — 2026-11-12 — H012: kø-regler for transcription (nyeste først, under 15 s og ældre end 30 dage springes over)
+Ejerens beslutning. Ejeren 2026-11-12 om en kø på ca. 1009: nyeste først, opkald under 15 s og ældre end 30 dage
+transcriberes ikke automatisk (kan vælges manuelt). Desuden en indstilling `[whisper] source_priority` (equal|zendesk|adversus):
+"kan vi lave en setting der vælger om de skal være ens eller om den ene og anden skal have fortrin ?". Spec: product-ai/H012_v1.md
+og H012_v2.md. Reglerne slås fra i config (`min_seconds = 0`, `max_age_days = 0`).
+
+## #77 — 2026-11-12 — H012-S2: manuelt valgte lange opkald kan optage slots, når den automatiske kø er tom
+Accepteret risiko. Fund S2 (LOW) i security-critic/H012_v1.md. Kørende opkald afbrydes ikke af nye automatiske opkald; op til 50
+valgte lange opkald (nu også Zendesk og gamle opkald) kan holde slots i timer. Afbødning: loftet på 50, manuelle efter automatiske
+ved claim, lange opkald kører alene. Overvåges via transcriberer-varighed i loggen.
+Udløber: 2027-02-10
+
+## #78 — 2026-11-12 — H012-S3: down-migration 0008 sletter manual_at, og koden læser kolonnen
+Accepteret risiko. Fund S3 (LOW) i security-critic/H012_v1.md. Køres down/0008 mens H012-koden kører, fejler claim, tæller og
+sider på manual_at. Rækkefølgen ved rollback er kode først (Revert-H), derefter down; valgte, ikke færdige opkald skal vælges
+igen. Beskrevet i down-filen og changes/H012.md.
+Udløber: 2027-02-10
