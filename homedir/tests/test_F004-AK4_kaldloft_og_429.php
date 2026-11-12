@@ -139,6 +139,61 @@ for ($k = 1; $k <= Sync::RETRY_RUNS + 1; $k++) {
 F004Check::that('AK4', (int) DB::scalar('SELECT COUNT(*) FROM adversus_pending') === 0, 'ventelisten er tom efter ' . Sync::RETRY_RUNS . ' kørsler');
 $warn = (string) Calls::adversusWarning($t0 + (Sync::RETRY_RUNS + 1) * 600);
 F004Check::that('AK4', str_contains($warn, '1 optagelser uden opkald') && str_contains($warn, '400002'), 'den aldrig fundne er forkastet med synlig advarsel');
+F004Check::that('AK4', str_contains($warn, '400003') && str_contains($warn, ' | '), 'den nye advarsel er lagt til den tidligere (ukendt retning) i stedet for at overskrive (QA N-3)');
 F004Check::that('AK4', Calls::adversusWarning($t0 + 3 * 86400) === null, 'advarslen forsvinder efter et døgn');
 F004Check::that('AK4', str_contains(Sync::logLine(['discarded' => 1, 'skipped' => 1]), '1 forkastet, 1 ukendt retning'), 'loglinjen tæller forkastede');
+
+// 4. Mange umatchede (QA N-2, security N1): ventelisten bruger højst RETRY_REQUESTS kald, og et nyt vindue bliver færdigt
+f004_setup();
+DB::exec('DELETE FROM adversus_pending');
+$http = new FakeAdversus();
+$T = $S + 2 * 86400;
+$vals = [];
+$params = [];
+for ($g = 0; $g < 40; $g++) {   // 40 grupper med tid (3 t imellem) …
+    $vals[] = '(?, ?, 0, ?)';
+    array_push($params, 500000 + $g, gmdate('Y-m-d H:i:s', $S + $g * 3 * 3600), gmdate('Y-m-d H:i:s', $T));
+}
+for ($n = 0; $n < 50; $n++) {   // … og 50 uden cdr.timestamp
+    $vals[] = '(?, NULL, 0, ?)';
+    array_push($params, 600000 + $n, gmdate('Y-m-d H:i:s', $T));
+}
+DB::exec('INSERT INTO adversus_pending (cdr_id, cdr_at, tries, first_seen) VALUES ' . implode(', ', $vals), $params);
+DB::exec('INSERT INTO sync_state (`source`, cursor_value) VALUES (?, ?)', ['adversus-rec', (string) json_encode(['t' => $T, 'w' => 3600])]);
+f004_recorded($http, 410001, 91001, $T + 600, 60);
+$desc = static fn(): int => count(array_filter($http->requests, static fn(array $r): bool => str_contains(urldecode($r['url']), 'sortDirection=DESC')));
+['sync' => $p1] = f004_sync(f004_cfg(), $http, $T + 3 * 3600);
+$p1->run();
+F004Check::that('AK4', $desc() === Sync::RETRY_REQUESTS, 'ventelisten brugte højst ' . Sync::RETRY_REQUESTS . ' kald (fik ' . $desc() . ')');
+F004Check::that('AK4', DB::scalar("SELECT id FROM calls WHERE external_id = '410001'") !== false, 'det nye vindue blev alligevel færdigt (opkaldet er gemt)');
+$rec = json_decode((string) DB::scalar('SELECT cursor_value FROM sync_state WHERE `source` = ?', ['adversus-rec']), true);
+F004Check::that('AK4', is_array($rec) && $rec['t'] === $T + 3 * 3600 - Sync::LAG, 'optagelses-cursoren nåede op til nu − LAG');
+$before = $desc();
+['sync' => $p2] = f004_sync(f004_cfg(), $http, $T + 3 * 3600 + 600);
+$p2->run();
+F004Check::that('AK4', $desc() - $before <= Sync::RETRY_REQUESTS, 'anden kørsel: igen højst ' . Sync::RETRY_REQUESTS . ' kald');
+$nullTries = array_map('intval', array_column(DB::all('SELECT tries FROM adversus_pending WHERE cdr_at IS NULL'), 'tries'));
+F004Check::that('AK4', count($nullTries) === 50 && array_unique($nullTries) === [1], 'de 50 uden cdr.timestamp blev søgt som én gruppe (alle ét forsøg)');
+F004Check::that('AK4', (int) DB::scalar('SELECT MIN(tries) FROM adversus_pending WHERE cdr_at IS NOT NULL') === 1, 'færrest forsøg først: alle 40 grupper er nået i to kørsler');
+
+// 5. Fuld venteliste (security N1): ingen tavs vækst, men forkastet med advarsel
+f004_setup();
+DB::exec('DELETE FROM adversus_pending');
+$http = new FakeAdversus();
+for ($chunk = 0; $chunk < Sync::PENDING_MAX; $chunk += 500) {
+    $vals = [];
+    $params = [];
+    for ($n = $chunk; $n < min(Sync::PENDING_MAX, $chunk + 500); $n++) {
+        $vals[] = '(?, NULL, 0, ?)';
+        array_push($params, 700000 + $n, gmdate('Y-m-d H:i:s', $T));
+    }
+    DB::exec('INSERT INTO adversus_pending (cdr_id, cdr_at, tries, first_seen) VALUES ' . implode(', ', $vals), $params);
+}
+DB::exec('INSERT INTO sync_state (`source`, cursor_value) VALUES (?, ?)', ['adversus-rec', (string) json_encode(['t' => $T, 'w' => 3600])]);
+f004_recording($http, 420001, $T + 600, $T + 700);   // opkaldet findes ikke
+['sync' => $f1] = f004_sync(f004_cfg(), $http, $T + 3 * 3600);
+$rf = $f1->run();
+F004Check::that('AK4', (int) DB::scalar('SELECT COUNT(*) FROM adversus_pending') <= Sync::PENDING_MAX, 'ventelisten vokser ikke over ' . Sync::PENDING_MAX);
+F004Check::that('AK4', $rf['discarded'] >= 1 && str_contains((string) Calls::adversusWarning($T + 3 * 3600), 'ventelisten er fuld')
+    && str_contains((string) Calls::adversusWarning($T + 3 * 3600), '420001'), 'fuld venteliste: forkastet med synlig advarsel');
 F004Check::done();

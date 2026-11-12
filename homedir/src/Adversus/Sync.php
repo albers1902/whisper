@@ -57,6 +57,10 @@ final class Sync
     public const WIDE_PAGES = 10;
     /** Kørsler, en optagelse uden opkald prøves igen, før den forkastes (6 × 10 min ≈ 1 t) */
     public const RETRY_RUNS = 6;
+    /** Ventelisten bruger højst så mange kald pr. kørsel, så nye vinduer altid har budget */
+    public const RETRY_REQUESTS = 30;
+    /** Ventelisten vokser ikke over dette; flere umatchede forkastes med advarsel */
+    public const PENDING_MAX = 2000;
     public const PAGE = 100;
     public const LEAD_REQUESTS = 5;
     public const USER_PAGES = 3;
@@ -84,7 +88,11 @@ final class Sync
     /** @var list<int> optagelser forkastet i denne kørsel */
     private array $discardedIds = [];
     private int $reserve = 0;
+    /** Fasens øvre grænse for Client::$requests (kun ventelisten), null = ingen */
+    private ?int $ceiling = null;
     private int $startedAt = 0;
+    /** @var list<int> optagelser, der ikke kom på ventelisten, fordi den var fuld */
+    private array $overflowIds = [];
 
     /**
      * @param (Closure(): int)|null $clock
@@ -172,6 +180,10 @@ final class Sync
             $parts[] = count($this->discardedIds) . ' optagelser uden opkald i /calls efter ' . self::RETRY_RUNS . ' kørsler (id '
                 . self::idList($this->discardedIds) . ')';
         }
+        if ($this->overflowIds !== []) {
+            $parts[] = count($this->overflowIds) . ' optagelser forkastet, fordi ventelisten er fuld (' . self::PENDING_MAX . ') (id '
+                . self::idList($this->overflowIds) . ')';
+        }
         if ($this->skippedIds !== []) {
             $parts[] = count($this->skippedIds) . ' opkald med ukendt retning (id ' . self::idList($this->skippedIds) . ')';
         }
@@ -179,10 +191,19 @@ final class Sync
             return;
         }
         $text = self::WARN_PREFIX . ': ' . implode('; ', $parts) . ' — ikke gemt';
+        ($this->log)('adversus-sync: ' . $text);
+        // En advarsel, der ikke er udløbet, forlænges med de nye id'er i stedet for at blive overskrevet (QA N-3)
+        $prev = DB::all('SELECT last_run_at, last_error FROM sync_state WHERE `source` = ?', [self::WARN])[0] ?? null;
+        if ($prev !== null && is_string($prev['last_error']) && is_string($prev['last_run_at'])
+            && $this->ts() - (int) strtotime($prev['last_run_at'] . ' UTC') <= self::WARN_TTL) {
+            $text = $prev['last_error'] . ' | ' . $this->now() . ' ' . implode('; ', $parts);
+        }
+        if (mb_strlen($text) > 250) {
+            $text = mb_substr($text, 0, 249) . '…';   // resten står i loggen
+        }
         DB::exec('INSERT INTO sync_state (`source`, last_run_at, last_error) VALUES (?, ?, ?) '
             . 'ON DUPLICATE KEY UPDATE last_run_at = VALUES(last_run_at), last_error = VALUES(last_error)',
-            [self::WARN, $this->now(), mb_substr($text, 0, 250)]);
-        ($this->log)('adversus-sync: ' . $text);
+            [self::WARN, $this->now(), $text]);
     }
 
     /** @param list<int> $ids */
@@ -315,17 +336,32 @@ final class Sync
     public function retryPending(): void
     {
         $this->reserve = self::RESERVE;
+        // Eget loft (QA N-2, security N1): ventelisten må aldrig tage budgettet fra nye vinduer
+        $this->ceiling = $this->client->requests + self::RETRY_REQUESTS;
         try {
-            $rows = DB::all('SELECT cdr_id, cdr_at, tries FROM adversus_pending ORDER BY cdr_at IS NULL, cdr_at ASC, cdr_id ASC LIMIT 500');
+            $rows = DB::all('SELECT cdr_id, cdr_at, tries FROM adversus_pending ORDER BY tries ASC, cdr_at IS NULL, cdr_at ASC, cdr_id ASC LIMIT 500');
+            // Færrest forsøg først (så de samme grupper ikke tager loftet hver kørsel), inden for det i tidsorden.
+            // Grupper dannes pr. antal forsøg; rækker uden cdr.timestamp er én gruppe pr. antal forsøg (QA N-2).
+            /** @var array<string, array{first: ?int, last: ?int, want: array<int, ?int>}> $groups */
             $groups = [];
+            $open = [];   // antal forsøg → nøglen på den åbne gruppe med tid
             foreach ($rows as $r) {
                 $t = is_string($r['cdr_at']) ? (int) strtotime($r['cdr_at'] . ' UTC') : null;
-                $last = $groups === [] ? null : $groups[count($groups) - 1];
-                if ($last !== null && $t !== null && $last['first'] !== null && $t - $last['first'] <= self::MARGIN_WIDE) {
-                    $groups[count($groups) - 1]['want'][(int) $r['cdr_id']] = $t;
-                    $groups[count($groups) - 1]['last'] = $t;
+                $tries = (int) $r['tries'];
+                if ($t === null) {
+                    $key = 'null-' . $tries;
+                    $groups[$key] ??= ['first' => null, 'last' => null, 'want' => []];
+                    $groups[$key]['want'][(int) $r['cdr_id']] = null;
+                    continue;
+                }
+                $key = $open[$tries] ?? null;
+                if ($key !== null && $t - (int) $groups[$key]['first'] <= self::MARGIN_WIDE) {
+                    $groups[$key]['want'][(int) $r['cdr_id']] = $t;
+                    $groups[$key]['last'] = $t;
                 } else {
-                    $groups[] = ['first' => $t, 'last' => $t, 'want' => [(int) $r['cdr_id'] => $t]];
+                    $key = 't-' . $tries . '-' . $t . '-' . (int) $r['cdr_id'];
+                    $groups[$key] = ['first' => $t, 'last' => $t, 'want' => [(int) $r['cdr_id'] => $t]];
+                    $open[$tries] = $key;
                 }
             }
             foreach ($groups as $g) {
@@ -352,6 +388,7 @@ final class Sync
             // resten prøves ved næste kørsel; en gruppe, der ikke blev søgt helt, har ikke brugt et forsøg
         } finally {
             $this->reserve = 0;
+            $this->ceiling = null;
         }
     }
 
@@ -447,8 +484,15 @@ final class Sync
                 $top = $mk === [] ? $lo : max($mk);
                 $missing = $this->lookup($top - self::MARGIN_WIDE, $top + 1, $missing, self::WIDE_PAGES, 'DESC');
             }
+            $room = self::PENDING_MAX - (int) DB::scalar('SELECT COUNT(*) FROM adversus_pending');
             foreach ($missing as $id => $t) {
-                DB::exec('INSERT IGNORE INTO adversus_pending (cdr_id, cdr_at, tries, first_seen) VALUES (?, ?, 0, ?)',
+                if ($room <= 0) {
+                    // Fuld venteliste (security N1): ingen tavs vækst — forkastet med advarsel
+                    $this->overflowIds[] = $id;
+                    $this->stats['discarded']++;
+                    continue;
+                }
+                $room -= DB::exec('INSERT IGNORE INTO adversus_pending (cdr_id, cdr_at, tries, first_seen) VALUES (?, ?, 0, ?)',
                     [$id, $t === null ? null : gmdate('Y-m-d H:i:s', $t), $this->now()]);
             }
             if ($missing !== []) {
@@ -628,7 +672,8 @@ final class Sync
     /** @throws OutOfBudget hvis $n kald mere ville gå ind i reserven */
     private function need(int $n): void
     {
-        if ($this->client->remaining() - $n < $this->reserve) {
+        if ($this->client->remaining() - $n < $this->reserve
+            || ($this->ceiling !== null && $this->client->requests + $n > $this->ceiling)) {
             throw new OutOfBudget();
         }
     }
