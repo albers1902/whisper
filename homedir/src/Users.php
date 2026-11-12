@@ -7,6 +7,7 @@ use PDOException;
 use Throwable;
 use Whisper\Mcp\Tokens;
 use Whisper\OAuth\Grants;
+use Whisper\OAuth\OAuth;
 
 /**
  * Tabellen users (migration 0002). Al validering, der kan nå brugeren, kaster UserError med en dansk besked.
@@ -140,8 +141,11 @@ final class Users
                 'UPDATE users SET password_hash = ?, must_change_password = ?, updated_at = ? WHERE id = ?',
                 [$hash, $mustChange ? 1 : 0, self::ts($now), $id]
             );
-            // F006: også forbundne apps (OAuth-bevillinger) — uanset flaget, så en tændt OAuth aldrig arver en gammel kæde
-            $revoked = Tokens::revokeAll($id, $now) + Grants::revokeAll($id, $now);
+            // F006: også forbundne apps (OAuth-bevillinger) — uanset flaget, så en tændt OAuth aldrig arver en gammel kæde.
+            // Antallet, der returneres (til beskeden), er det, brugeren kan se: apps med OAuth tændt, ellers nøgler.
+            $keys = Tokens::revokeAll($id, $now);
+            $apps = Grants::revokeAll($id, $now);
+            $revoked = OAuth::enabled() ? $apps : $keys;
             $pdo->commit();
         } catch (Throwable $e) {
             if ($pdo->inTransaction()) {

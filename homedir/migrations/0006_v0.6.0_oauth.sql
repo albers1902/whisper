@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS oauth_grants (
     client_pk    INT UNSIGNED NOT NULL,
     user_id      INT UNSIGNED NOT NULL,
     resource     VARCHAR(255) NOT NULL,
+    redirect_uri VARCHAR(500) NOT NULL,
     created_at   DATETIME     NOT NULL,
     last_used_at DATETIME     NULL,
     revoked_at   DATETIME     NULL,
@@ -63,4 +64,14 @@ CREATE TABLE IF NOT EXISTS oauth_rate (
     PRIMARY KEY (grant_id, window_start),
     INDEX oauth_rate_window (window_start),
     CONSTRAINT oauth_rate_grant_fk FOREIGN KEY (grant_id) REFERENCES oauth_grants (id) ON DELETE CASCADE
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Grov rate limit pr. IP (IPv6 pr. /64) på /oauth/token og /oauth/authorize. scope: 'token' eller 'authorize'.
+CREATE TABLE IF NOT EXISTS oauth_ip_rate (
+    ip_key       VARCHAR(45)  NOT NULL,
+    scope        VARCHAR(16)  NOT NULL,
+    window_start INT UNSIGNED NOT NULL,
+    `count`      INT UNSIGNED NOT NULL DEFAULT 0,
+    PRIMARY KEY (ip_key, scope, window_start),
+    INDEX oauth_ip_rate_window (window_start)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;

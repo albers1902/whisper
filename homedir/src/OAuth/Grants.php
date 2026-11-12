@@ -13,10 +13,16 @@ use Whisper\Users;
  */
 final class Grants
 {
-    public static function create(int $clientPk, int $userId, string $resource, int $now): int
+    /**
+     * Ny bevilling. En tidligere aktiv bevilling for samme bruger og samme redirect_uri tilbagekaldes (QA F6a): fjerner
+     * man connectoren i Claude og tilføjer den igen, står der ikke to "Claude"-rækker på Konto.
+     */
+    public static function create(int $clientPk, int $userId, string $resource, string $redirectUri, int $now): int
     {
-        DB::exec('INSERT INTO oauth_grants (client_pk, user_id, resource, created_at) VALUES (?, ?, ?, ?)',
-            [$clientPk, $userId, $resource, Users::ts($now)]);
+        DB::exec('UPDATE oauth_grants SET revoked_at = ? WHERE user_id = ? AND redirect_uri = ? AND revoked_at IS NULL',
+            [Users::ts($now), $userId, $redirectUri]);
+        DB::exec('INSERT INTO oauth_grants (client_pk, user_id, resource, redirect_uri, created_at) VALUES (?, ?, ?, ?, ?)',
+            [$clientPk, $userId, $resource, $redirectUri, Users::ts($now)]);
         return (int) DB::pdo()->lastInsertId();
     }
 

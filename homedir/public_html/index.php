@@ -14,6 +14,7 @@ use Whisper\Config;
 use Whisper\Flags;
 use Whisper\Mcp\Server;
 use Whisper\NativeSessionDriver;
+use Whisper\OAuth\Authorize;
 use Whisper\OAuth\Endpoints;
 use Whisper\OAuth\OAuth;
 use Whisper\Request;
@@ -41,8 +42,10 @@ try {
         // Maskin-endpoints uden session og uden cookie, som /mcp
         $response = (new Endpoints())->handle($request);
     } elseif (NativeSessionDriver::hasCookie() || rtrim($request->path, '/') === '/login'
-        || (rtrim($request->path, '/') === Endpoints::AUTHORIZE && OAuth::enabled())) {
-        // F006: /oauth/authorize skal gemme den ventende anmodning hen over login, også for en anonym besøgende
+        || (rtrim($request->path, '/') === Endpoints::AUTHORIZE && OAuth::enabled() && $request->method === 'GET'
+            && Authorize::validate($request->query, OAuth::site($request), time())['kind'] === 'ok')) {
+        // F006: /oauth/authorize skal gemme den ventende anmodning hen over login, også for en anonym besøgende — men
+        // kun en gyldig anmodning får en session (security S5); fejlsider og fejl-redirects laves uden sessionsfil
         $driver = NativeSessionDriver::start(Config::baseDir());
         $session = new Session($driver, $driver->load());
         $response = (new App())->handle($request, $session);

@@ -128,13 +128,15 @@ final class Server
         }
 
         $now = ($this->clock)();
-        $auth = $this->authenticate($req->header('authorization'), $site, $oauth, $now);
+        // F006: ressourcen og metadata-adressen følger [app] public_url, når den er sat (security S4)
+        $public = $oauth ? OAuth::site($req) : $site;
+        $auth = $this->authenticate($req->header('authorization'), $public, $oauth, $now);
         if ($auth === null) {
             // Ingen data og ingen forskel på manglende, forkert, tilbagekaldt nøgle eller deaktiveret bruger
-            if ($oauth && $site !== '') {
+            if ($oauth && $public !== '') {
                 // RFC 9728 §5.1: herfra finder Claude metadata og starter login (claude.com/docs/connectors/building/authentication)
                 return self::plain(401, "Forbind Whisper som connector i Claude, og log ind.\n", ['WWW-Authenticate' => 'Bearer realm="whisper", '
-                    . 'resource_metadata="' . $site . OAuth::PRM_PATH . self::PATH . '"']);
+                    . 'resource_metadata="' . $public . OAuth::PRM_PATH . self::PATH . '"']);
             }
             return self::plain(401, "Mangler eller ugyldig nøgle. Opret en ny under Konto i Whisper.\n",
                 ['WWW-Authenticate' => 'Bearer realm="whisper"']);

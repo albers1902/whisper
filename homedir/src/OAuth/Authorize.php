@@ -34,7 +34,8 @@ final class Authorize
         if (!OAuth::redirectMatches($redirect, $client['redirect_uris']) || !OAuth::redirectAllowed($redirect)) {
             return ['kind' => 'page', 'code' => 'invalid_redirect_uri'];
         }
-        if (OAuth::canonicalResource($s('resource')) !== OAuth::resource($site)) {
+        // Der er kun én ressource: mangler parameteren, menes /mcp (QA F5). Kun en forkert værdi afvises.
+        if ($s('resource') !== '' && OAuth::canonicalResource($s('resource')) !== OAuth::resource($site)) {
             return ['kind' => 'page', 'code' => 'invalid_resource'];
         }
         // Herfra er redirect_uri bevist: fejl går tilbage til klienten med state og iss (RFC 9207)

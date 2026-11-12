@@ -8,17 +8,22 @@ use Whisper\Users;
 
 /**
  * Dynamisk klientregistrering (RFC 7591), kun public clients. Registreringen er åben for alle (Claude registrerer en
- * ny klient ved hver ny forbindelse), så værnet er allowlisten på redirect-værter, et loft pr. IP og i alt, og
- * oprydning af klienter, der aldrig fik en bevilling.
+ * ny klient ved hver ny forbindelse), så værnet er allowlisten på redirect-URI'er, et loft pr. IP (IPv6 pr. /64), og
+ * at klienter uden bevilling ryddes efter 24 timer. Det samlede loft afviser aldrig: det fortrænger de ældste ubrugte
+ * klienter, så ingen kan blokere registreringen for andre (QA F1, security S1).
  */
 final class Clients
 {
     /** Pr. IP i timen. Rummelig: al Claude-trafik kommer fra Anthropics 160.79.104.0/21. */
     public const PER_IP_HOUR = 30;
-    /** Klienter uden bevilling i alt (efter oprydning). */
+    /** Klienter uden bevilling i alt; den ældste fortrænges, når loftet nås. */
     public const MAX_UNUSED = 500;
-    public const UNUSED_DAYS = 30;
+    /** En legitim klient får sin bevilling inden for minutter efter registreringen. */
+    public const UNUSED_HOURS = 24;
+    /** Bevillinger uden levende tokens slettes så længe efter oprettelsen. */
+    public const GRANT_KEEP_DAYS = 30;
     public const MAX_REDIRECTS = 5;
+    private const COUNT_UNUSED = 'SELECT COUNT(*) FROM oauth_clients c WHERE NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_pk = c.id)';
     public const UNNAMED = 'Ukendt app';
 
     /**
@@ -64,15 +69,37 @@ final class Clients
         return ['ok' => false, 'error' => $error, 'description' => $description];
     }
 
-    /** true, når IP'en eller det samlede antal ubrugte klienter er over loftet. */
+    /** true, når IP'en (IPv6: dens /64) har registreret PER_IP_HOUR klienter den seneste time. */
     public static function limited(string $ip, int $now): bool
     {
-        $perIp = (int) DB::scalar('SELECT COUNT(*) FROM oauth_clients WHERE created_ip = ? AND created_at >= ?', [$ip, Users::ts($now - 3600)]);
-        if ($perIp >= self::PER_IP_HOUR) {
-            return true;
+        $n = (int) DB::scalar('SELECT COUNT(*) FROM oauth_clients WHERE created_ip = ? AND created_at >= ?', [OAuth::ipKey($ip), Users::ts($now - 3600)]);
+        return $n >= self::PER_IP_HOUR;
+    }
+
+    /**
+     * Gør plads til én ny klient: ryd op, og er der stadig MAX_UNUSED klienter uden bevilling, slettes de ældste af dem.
+     * En klient med en bevilling røres aldrig. Returnerer antallet af fortrængte klienter.
+     */
+    public static function makeRoom(int $now): int
+    {
+        $count = (int) DB::scalar(self::COUNT_UNUSED);
+        if ($count < self::MAX_UNUSED) {
+            return 0;
         }
-        $unused = (int) DB::scalar('SELECT COUNT(*) FROM oauth_clients c WHERE NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_pk = c.id)');
-        return $unused >= self::MAX_UNUSED;
+        self::purge($now);   // altid, når loftet rammes (QA F1): måske er der allerede plads
+        $evicted = 0;
+        $count = (int) DB::scalar(self::COUNT_UNUSED);
+        while ($count - $evicted >= self::MAX_UNUSED && $evicted < 100) {
+            $id = DB::scalar('SELECT c.id FROM oauth_clients c WHERE NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_pk = c.id) '
+                . 'ORDER BY c.created_at, c.id LIMIT 1');
+            if ($id === false) {
+                break;
+            }
+            DB::exec('DELETE FROM oauth_clients WHERE id = ? AND NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_pk = oauth_clients.id)',
+                [(int) $id]);
+            $evicted++;
+        }
+        return $evicted;
     }
 
     /**
@@ -83,7 +110,7 @@ final class Clients
     {
         $clientId = OAuth::random('wci_', 16);
         DB::exec('INSERT INTO oauth_clients (client_id, client_name, redirect_uris, created_at, created_ip) VALUES (?, ?, ?, ?, ?)',
-            [$clientId, $name, (string) json_encode($redirectUris, JSON_UNESCAPED_SLASHES), Users::ts($now), substr($ip, 0, 45)]);
+            [$clientId, $name, (string) json_encode($redirectUris, JSON_UNESCAPED_SLASHES), Users::ts($now), OAuth::ipKey($ip)]);
         return ['id' => (int) DB::pdo()->lastInsertId(), 'client_id' => $clientId];
     }
 
@@ -117,17 +144,17 @@ final class Clients
 
     /**
      * Oprydning (kaldes af og til fra /oauth/register og /oauth/token, ingen cron): udløbne koder og tokens,
-     * bevillinger uden levende tokens efter 30 dage og klienter, der aldrig fik en bevilling.
+     * bevillinger uden levende tokens efter 30 dage og klienter, der ikke har fået en bevilling inden for 24 timer.
      */
     public static function purge(int $now): void
     {
-        $cut = Users::ts($now - self::UNUSED_DAYS * 86400);
+        $grantCut = Users::ts($now - self::GRANT_KEEP_DAYS * 86400);
         DB::exec('DELETE FROM oauth_codes WHERE expires_at < ?', [Users::ts($now - 3600)]);
         DB::exec('DELETE FROM oauth_tokens WHERE expires_at < ?', [Users::ts($now - 86400)]);
         DB::exec('DELETE FROM oauth_grants WHERE created_at < ? AND NOT EXISTS '
-            . '(SELECT 1 FROM oauth_tokens t WHERE t.grant_id = oauth_grants.id AND t.expires_at > ?)', [$cut, Users::ts($now)]);
+            . '(SELECT 1 FROM oauth_tokens t WHERE t.grant_id = oauth_grants.id AND t.expires_at > ?)', [$grantCut, Users::ts($now)]);
         DB::exec('DELETE FROM oauth_clients WHERE created_at < ? AND NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_pk = oauth_clients.id)',
-            [$cut]);
+            [Users::ts($now - self::UNUSED_HOURS * 3600)]);
         DB::exec('DELETE FROM oauth_rate WHERE window_start < ?', [$now - 3600]);
     }
 }

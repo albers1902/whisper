@@ -47,7 +47,7 @@ final class Endpoints
     private function dispatch(Request $req, int $now): Response
     {
         $path = rtrim($req->path, '/');
-        $site = Server::siteOrigin($req);
+        $site = OAuth::site($req);   // [app] public_url, ellers Host (security S4)
         if ($site === '') {
             return self::json(400, ['error' => 'invalid_request', 'error_description' => 'Ugyldig Host.']);
         }
@@ -58,7 +58,7 @@ final class Endpoints
             }
             // Offentlige dokumenter: må læses af browserbaserede klienter (fx MCP Inspector)
             return self::json(200, $path === OAuth::AS_PATH ? self::asMetadata($site) : self::prMetadata($site),
-                ['Access-Control-Allow-Origin' => '*', 'Cache-Control' => 'public, max-age=3600']);
+                ['Access-Control-Allow-Origin' => '*']);   // no-store: ingen delt cache kan gemme et Host-afledt svar
         }
         if ($method !== 'POST') {
             return self::json(405, ['error' => 'invalid_request'], ['Allow' => 'POST']);
@@ -119,6 +119,7 @@ final class Endpoints
             return self::json(429, ['error' => 'invalid_request', 'error_description' => 'For mange registreringer. Prøv igen senere.'],
                 ['Retry-After' => '3600']);
         }
+        Clients::makeRoom($now);   // fortrænger de ældste ubrugte i stedet for at afvise alle (QA F1)
         $c = Clients::create($v['name'], $v['redirect_uris'], $req->ip, $now);
         AccessLog::write(0, 'oauth_registrer', ['klient' => $c['id']]);
         return self::json(201, [
@@ -134,6 +135,10 @@ final class Endpoints
 
     private function token(Request $req, string $site, int $now): Response
     {
+        $retry = OAuth::ipLimited($req->ip, 'token', $now);
+        if ($retry > 0) {
+            return self::json(429, ['error' => 'slow_down', 'error_description' => 'For mange forespørgsler.'], ['Retry-After' => (string) $retry]);
+        }
         $grantType = $req->str('grant_type');
         if (!in_array($grantType, ['authorization_code', 'refresh_token'], true)) {
             return self::json(400, ['error' => $grantType === '' ? 'invalid_request' : 'unsupported_grant_type']);

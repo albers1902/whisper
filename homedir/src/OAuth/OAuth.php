@@ -4,8 +4,10 @@ declare(strict_types=1);
 namespace Whisper\OAuth;
 
 use Whisper\Config;
+use Whisper\DB;
 use Whisper\Flags;
 use Whisper\Mcp\Server;
+use Whisper\Request;
 use Whisper\Ui;
 
 /**
@@ -16,11 +18,19 @@ use Whisper\Ui;
 final class OAuth
 {
     public const FLAG = 'F006_oauth';
-    /** Claude's callback-værter (claude.com/docs/connectors/building/authentication). Kan overskrives i config.ini [oauth]. */
-    public const DEFAULT_HOSTS = 'claude.ai, claude.com';
+    /**
+     * Claude's callback-URI'er (claude.com/docs/connectors/building/authentication: "register exactly this redirect URI"
+     * https://claude.ai/api/mcp/auth_callback; claude.com er varslet af Anthropic). Fulde URI'er, ikke værter, så en kode
+     * aldrig kan sendes til en anden sti på de to domæner. Overstyres af config.ini [oauth] redirect_uris (kommasepareret).
+     */
+    public const DEFAULT_REDIRECT_URIS = 'https://claude.ai/api/mcp/auth_callback, https://claude.com/api/mcp/auth_callback';
     public const CODE_SECONDS = 60;
     public const ACCESS_SECONDS = 3600;
     public const REFRESH_SECONDS = 30 * 86400;
+    /** Absolut levetid for en bevilling, uanset rotation (security S3). */
+    public const GRANT_MAX_SECONDS = 180 * 86400;
+    /** Grov rate limit pr. IP (IPv6 pr. /64) og minut på /oauth/token og /oauth/authorize (security S5). */
+    public const IP_PER_MINUTE = 60;
     public const PRM_PATH = '/.well-known/oauth-protected-resource';
     public const AS_PATH = '/.well-known/oauth-authorization-server';
 
@@ -30,18 +40,63 @@ final class OAuth
         return Server::enabled() && Flags::enabled(Ui::FLAG) && Flags::enabled(self::FLAG);
     }
 
-    /** @return list<string> tilladte redirect-værter, små bogstaver */
-    public static function redirectHosts(): array
+    /** @return list<string> tilladte https-redirect-URI'er (præcist match) */
+    public static function redirectUris(): array
     {
-        $raw = Config::string('oauth', 'redirect_hosts', self::DEFAULT_HOSTS);
-        $hosts = [];
-        foreach (explode(',', strtolower($raw)) as $h) {
-            $h = trim($h);
-            if (preg_match('/^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?$/', $h) === 1) {
-                $hosts[] = $h;
+        $raw = Config::string('oauth', 'redirect_uris', self::DEFAULT_REDIRECT_URIS);
+        $uris = [];
+        foreach (explode(',', $raw) as $u) {
+            $u = trim($u);
+            if (str_starts_with($u, 'https://') && preg_match('/^[\x21-\x7E]{9,500}$/', $u) === 1 && !str_contains($u, '#')) {
+                $uris[] = $u;
             }
         }
-        return $hosts;
+        return $uris;
+    }
+
+    /**
+     * Sitets offentlige origin: config.ini [app] public_url, når den er sat (security S4, uafhængig af Host), ellers
+     * https:// + Host som i F003. '' ved ugyldig Host.
+     */
+    public static function site(Request $req): string
+    {
+        $url = rtrim(strtolower(Config::string('app', 'public_url')), '/');
+        if ($url !== '') {
+            return preg_match('#^https://[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?(:[0-9]{1,5})?$#', $url) === 1 ? $url : '';
+        }
+        return Server::siteOrigin($req);
+    }
+
+    /** IP-nøglen til rate limits: IPv4 som den er, IPv6 som sit /64-præfiks (en angriber har typisk et helt /64). */
+    public static function ipKey(string $ip): string
+    {
+        $bin = @inet_pton($ip);
+        if ($bin === false) {
+            return substr($ip, 0, 45);
+        }
+        if (strlen($bin) === 16) {
+            $p = inet_ntop(substr($bin, 0, 8) . str_repeat("\0", 8));
+            return ($p !== false ? $p : $ip) . '/64';
+        }
+        return $ip;
+    }
+
+    /**
+     * Tæller et kald fra IP'en i dette minut og returnerer sekunder til næste minut, hvis loftet er overskredet; ellers 0.
+     *
+     * @param 'token'|'authorize' $scope
+     */
+    public static function ipLimited(string $ip, string $scope, int $now): int
+    {
+        $key = self::ipKey($ip);
+        $window = $now - $now % 60;
+        DB::exec('INSERT INTO oauth_ip_rate (ip_key, scope, window_start, `count`) VALUES (?, ?, ?, 1) '
+            . 'ON DUPLICATE KEY UPDATE `count` = `count` + 1', [$key, $scope, $window]);
+        $count = (int) DB::scalar('SELECT `count` FROM oauth_ip_rate WHERE ip_key = ? AND scope = ? AND window_start = ?', [$key, $scope, $window]);
+        if (random_int(1, 50) === 1) {
+            DB::exec('DELETE FROM oauth_ip_rate WHERE window_start < ?', [$window - 3600]);
+        }
+        return $count > self::IP_PER_MINUTE ? max(1, $window + 60 - $now) : 0;
     }
 
     public static function resource(string $site): string
@@ -99,8 +154,8 @@ final class OAuth
     }
 
     /**
-     * Må en redirect_uri registreres og bruges? https med en vært på allowlisten, uden port, userinfo og fragment.
-     * Kun på DEV (env = dev): http-loopback på localhost/127.0.0.1 med vilkårlig port (Claude Code, RFC 8252).
+     * Må en redirect_uri registreres og bruges? https: præcis en af redirectUris() (security S2). Kun på DEV
+     * (env = dev): http-loopback på localhost/127.0.0.1 med vilkårlig port (Claude Code, RFC 8252).
      */
     public static function redirectAllowed(string $uri): bool
     {
@@ -112,7 +167,7 @@ final class OAuth
             return false;
         }
         if ($p['scheme'] === 'https') {
-            return !isset($p['port']) && in_array($p['host'], self::redirectHosts(), true);
+            return in_array($uri, self::redirectUris(), true);
         }
         return $p['scheme'] === 'http' && Flags::env() === 'dev' && in_array($p['host'], ['localhost', '127.0.0.1'], true);
     }
