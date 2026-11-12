@@ -21,7 +21,14 @@ F006Check::that('AK6', str_contains($konto, 'Forbind Claude') && str_contains($k
 F006Check::that('AK6', !str_contains($konto, 'mcp-remote') && !str_contains($konto, 'Opret nøgle') && !str_contains($konto, '/konto/mcp-noegle'),
     'ingen nøgler og ingen mcp-remote med OAuth tændt');
 F006Check::that('AK6', str_contains($konto, 'Customize → Connectors') && str_contains($konto, 'Add custom connector'), 'Claude\'s menunavne');
-$grant = (int) DB::scalar('SELECT id FROM oauth_grants WHERE user_id = ?', [$s['uid']]);
+// v2 (QA F6a): en ny forbindelse til samme callback erstatter den gamle i stedet for at stå ved siden af
+$again = f006_code($c, $s['client']);
+$t2 = f006_json(f006_token($s['client'], $again['code'], $again['verifier']));
+F006Check::that('AK6', str_contains($c->get('/konto')->body, 'Forbundne apps (1)'), 'ny forbindelse: stadig én række');
+F006Check::that('AK6', !f006_mcp_ok($s['access']) && f006_mcp_ok((string) ($t2['access_token'] ?? '')), 'den gamle bevilling er tilbagekaldt');
+$s['access'] = (string) ($t2['access_token'] ?? '');
+$s['refresh'] = (string) ($t2['refresh_token'] ?? '');
+$grant = (int) DB::scalar('SELECT id FROM oauth_grants WHERE user_id = ? AND revoked_at IS NULL', [$s['uid']]);
 
 // En anden bruger kan ikke tilbagekalde den
 f001_user('anden@f006.test', 'user');
@@ -50,6 +57,14 @@ F006Check::that('AK6', !f006_mcp_ok($s['access']), 'skift af adgangskode: access
 F006Check::that('AK6', f006_refresh($s['client'], $s['refresh'])->status === 400, 'skift af adgangskode: refresh afvist');
 F006Check::that('AK6', str_contains($c->get('/konto')->body, App::APP_ALREADY_REVOKED) === false
     && str_contains($c->get('/konto')->body, 'Forbundne apps (0)'), 'ingen forbundne apps bagefter');
+
+// v2 (UX 2): med flaget tændt nævner beskeden kun forbundne apps, og kun når nogen faktisk blev tilbagekaldt
+[$c3, $uid3] = f003_login();
+f003_token($uid3);   // kun en gammel F003-nøgle, som er usynlig med flaget tændt
+$c3->post('/konto', ['current' => F001_PW, 'new' => 'en-helt-ny-adgangskode', 'confirm' => 'en-helt-ny-adgangskode']);
+$page = $c3->get('/konto')->body;
+F006Check::that('AK6', str_contains($page, 'Adgangskoden er skiftet.') && !str_contains($page, App::APPS_REVOKED_SELF)
+    && !str_contains($page, App::KEYS_REVOKED_SELF), 'kun en gammel nøgle: ingen tekst om tilbagekaldte apps');
 
 // Nulstilling af en administrator
 $s = f006_connected();

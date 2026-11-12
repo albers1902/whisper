@@ -7,7 +7,9 @@ declare(strict_types=1);
 
 require_once __DIR__ . '/f006_lib.php';
 
+use Whisper\App;
 use Whisper\DB;
+use Whisper\OAuth\OAuth;
 
 f006_setup();
 DB::exec('DELETE FROM login_attempts');
@@ -84,13 +86,20 @@ $pages = [
     'ikke-registreret redirect' => [f006_query($client, $ch, ['redirect_uri' => 'https://claude.ai/evil']), 'invalid_redirect_uri'],
     'fremmed redirect'       => [f006_query($client, $ch, ['redirect_uri' => 'https://evil.example/cb']), 'invalid_redirect_uri'],
     'forkert resource'       => [f006_query($client, $ch, ['resource' => 'https://andet.example/mcp']), 'invalid_resource'],
-    'manglende resource'     => [f006_query($client, $ch, ['resource' => '']), 'invalid_resource'],
 ];
 foreach ($pages as $case => [$query, $codeName]) {
     $r = f006_authorize($c, $query);
     F006Check::that('AK3', $r->status === 400 && $r->header('Location') === null && str_contains($r->body, 'Forbindelsen kan ikke oprettes')
         && str_contains($r->body, $codeName) && !str_contains($r->body, 'evil.example'), "$case: side 400 uden redirect ($codeName)");
 }
+
+// v2 (QA F5): mangler resource, menes /mcp — den eneste ressource
+$noRes = f006_authorize($c, f006_query($client, $ch, ['resource' => '']));
+F006Check::that('AK3', $noRes->status === 200 && str_contains($noRes->body, 'Giv adgang til Whisper'), 'uden resource: godkendelsessiden vises');
+[$v2, $ch2] = f006_pkce();
+$loc = f006_location(f006_decide($c, f006_rid(f006_authorize($c, f006_query($client, $ch2, ['resource' => '']))), 'godkend'));
+$t = f006_token($client, $loc['code'] ?? '', $v2, ['resource' => '']);
+F006Check::that('AK3', $t->status === 200 && f006_mcp_ok((string) (f006_json($t)['access_token'] ?? '')), 'uden resource på authorize og token: virker');
 
 // PKCE-downgrade og forkert response_type: redirect med fejl til den beviste redirect_uri
 $redirects = [
@@ -119,6 +128,34 @@ $rid = f006_rid($page);
 f006_decide($c, $rid, 'godkend');
 $r = f006_decide($c, $rid, 'godkend');
 F006Check::that('AK3', $r->status === 400 && str_contains($r->body, 'Forbindelsen er udløbet'), 'dobbeltklik på Godkend: udløbet (engangs)');
+
+// v2 (QA F4): "Ikke dig? Log ud" beholder den ventende anmodning; efter ny login fortsætter den
+$page = f006_authorize($c, f006_query($client, $ch));
+F006Check::that('AK3', str_contains($page->body, 'action="/logout"'), 'godkendelsessiden har Log ud');
+$r = $c->post('/logout');
+F006Check::that('AK3', $r->status === 303 && $r->header('Location') === '/login', 'Log ud: til login');
+F006Check::that('AK3', str_contains($c->get('/login')->body, 'Log ind for at forbinde Claude til Whisper'), 'login efter Log ud viser konteksten');
+$r = $c->post('/login', ['email' => 'bruger@f002.test', 'password' => F001_PW]);
+F006Check::that('AK3', $r->header('Location') === '/oauth/authorize' && f006_authorize($c, [])->status === 200, 'efter ny login: tilbage til godkendelsen');
+
+// v2 (QA F7): udløbet-teksten nævner et nyere vindue
+F006Check::that('AK3', str_contains(App::OAUTH_EXPIRED_TEXT, 'en nyere forbindelse er startet i et andet vindue'), 'E4 nævner et nyere vindue');
+
+// v2 (security S5): grov rate limit pr. IP på token og authorize
+$last = null;
+for ($i = 0; $i <= OAuth::IP_PER_MINUTE; $i++) {
+    $last = f006_ep('POST', '/oauth/token', ['grant_type' => 'refresh_token', 'refresh_token' => 'x', 'client_id' => $client], '',
+        ['content-type' => 'application/x-www-form-urlencoded'], F003_NOW + 120, '192.0.2.77');
+}
+F006Check::that('AK3', $last !== null && $last->status === 429 && $last->header('Retry-After') !== null, 'token: over ' . OAuth::IP_PER_MINUTE . ' i minuttet fra én IP giver 429');
+$other = new F001Client('192.0.2.78');
+$c->now = F003_NOW + 180;
+$other->now = F003_NOW + 180;
+for ($i = 0; $i <= OAuth::IP_PER_MINUTE; $i++) {
+    $last = $other->app->handle(new Whisper\Request('GET', '/oauth/authorize', [], $other->ip, f006_query($client, $ch), ['host' => F003_HOST]),
+        $other->session);
+}
+F006Check::that('AK3', $last !== null && $last->status === 429, 'authorize: over ' . OAuth::IP_PER_MINUTE . ' i minuttet fra én IP giver 429');
 
 // Klientens state kommer ikke i loggen; ingen koder eller tokens i adgangsloggen
 $log = (string) @file_get_contents(\Whisper\AccessLog::file());

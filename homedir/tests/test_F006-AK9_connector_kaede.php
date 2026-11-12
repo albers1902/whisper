@@ -51,7 +51,9 @@ F006Check::that('AK9', str_contains($c->get('/konto')->body, 'fortsætter du med
 $r = $c->post('/konto', ['current' => F001_PW, 'new' => 'en-helt-ny-adgangskode', 'confirm' => 'en-helt-ny-adgangskode']);
 F006Check::that('AK9', $r->status === 303 && $r->header('Location') === '/oauth/authorize', 'efter skiftet: videre til godkendelsen');
 $page = f006_authorize($c, []);
-$loc = f006_location(f006_decide($c, f006_rid($page), 'godkend'));
+F006Check::that('AK9', str_contains($page->body, 'Adgangskoden er skiftet.'), 'godkendelsessiden bekræfter skiftet (v2, QA F6b)');
+F006Check::that('AK9', !str_contains($c->get('/konto')->body, 'Adgangskoden er skiftet.'), 'beskeden er forbrugt og dukker ikke op senere');
+$loc =f006_location(f006_decide($c, f006_rid($page), 'godkend'));
 F006Check::that('AK9', ($loc['state'] ?? '') === $q['state'] && ($loc['iss'] ?? '') === $issuer, 'callback med state og iss = issuer');
 
 // 5. Token (form-urlencoded) og /mcp som Claude

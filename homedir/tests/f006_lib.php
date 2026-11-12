@@ -49,6 +49,7 @@ function f006_setup(bool $oauth = true): string
     Flags::override(Ui::FLAG, true);
     Flags::override(OAuth::FLAG, $oauth);
     DB::exec('DELETE FROM oauth_rate');
+    DB::exec('DELETE FROM oauth_ip_rate');
     DB::exec('DELETE FROM oauth_tokens');
     DB::exec('DELETE FROM oauth_codes');
     DB::exec('DELETE FROM oauth_grants');

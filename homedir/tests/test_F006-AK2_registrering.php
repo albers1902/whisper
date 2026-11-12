@@ -1,13 +1,17 @@
 <?php
 declare(strict_types=1);
 
-// F006-AK2: dynamisk registrering accepterer en https-redirect på allowlisten og afviser andre værter, http (også
-// loopback uden for DEV) og manglende felter. Kun public clients; navnet renses; loftet pr. IP.
+// F006-AK2: dynamisk registrering accepterer en https-redirect på allowlisten (fulde URI'er, v2: security S2) og
+// afviser andre værter og stier, http (også loopback uden for DEV) og manglende felter. Kun public clients; navnet
+// renses; loftet pr. IP (IPv6 pr. /64); ubrugte klienter ryddes efter 24 timer, og det samlede loft fortrænger de
+// ældste i stedet for at afvise (v2: QA F1, security S1).
 
 require_once __DIR__ . '/f006_lib.php';
 
 use Whisper\DB;
 use Whisper\OAuth\Clients;
+use Whisper\OAuth\OAuth;
+use Whisper\Users;
 
 f006_setup();
 
@@ -23,6 +27,9 @@ F006Check::that('AK2', f006_register_raw(['redirect_uris' => ['https://claude.co
 $bad = [
     'anden vært'               => ['redirect_uris' => ['https://evil.example/api/mcp/auth_callback']],
     'underdomæne-snyd'         => ['redirect_uris' => ['https://claude.ai.evil.example/cb']],
+    'anden sti på claude.ai'   => ['redirect_uris' => ['https://claude.ai/chat/x']],
+    'callback med query'       => ['redirect_uris' => [F006_CALLBACK . '?x=1']],
+    'callback med / til sidst' => ['redirect_uris' => [F006_CALLBACK . '/']],
     'http'                     => ['redirect_uris' => ['http://claude.ai/api/mcp/auth_callback']],
     'loopback uden for DEV'    => ['redirect_uris' => ['http://localhost:3118/callback']],
     'port'                     => ['redirect_uris' => ['https://claude.ai:8443/cb']],
@@ -59,5 +66,37 @@ for ($i = 0; $i <= Clients::PER_IP_HOUR; $i++) {
 }
 F006Check::that('AK2', $status === 429, 'over ' . Clients::PER_IP_HOUR . ' registreringer i timen fra én IP: 429');
 F006Check::that('AK2', f006_register_raw(['redirect_uris' => [F006_CALLBACK]], '203.0.113.8')->status === 201, 'anden IP: stadig 201');
+
+// IPv6: hele /64 deler loftet
+DB::exec('DELETE FROM oauth_clients');
+for ($i = 1; $i <= Clients::PER_IP_HOUR; $i++) {
+    f006_register_raw(['redirect_uris' => [F006_CALLBACK]], '2001:db8:1:2::' . dechex($i));
+}
+F006Check::that('AK2', f006_register_raw(['redirect_uris' => [F006_CALLBACK]], '2001:db8:1:2:ffff::1')->status === 429, 'IPv6: samme /64 deler loftet');
+F006Check::that('AK2', f006_register_raw(['redirect_uris' => [F006_CALLBACK]], '2001:db8:1:3::1')->status === 201, 'IPv6: et andet /64 er fri');
+
+// Det samlede loft afviser aldrig: de ældste ubrugte klienter fortrænges, og en klient med bevilling røres ikke
+DB::exec('DELETE FROM oauth_clients');
+[$c] = f003_login();
+$kept = f006_register();
+f006_code($c, $kept);   // giver bevilling: må ikke fortrænges
+$ins = DB::pdo()->prepare('INSERT INTO oauth_clients (client_id, client_name, redirect_uris, created_at, created_ip) VALUES (?, ?, ?, ?, ?)');
+for ($i = 0; $i < Clients::MAX_UNUSED; $i++) {
+    // Spredt over de sidste 23 timer (ingen er gamle nok til 24-timers-oprydningen), fra mange IP'er
+    $ins->execute([OAuth::random('wci_', 16), 'Fyld', '["' . F006_CALLBACK . '"]', Users::ts(F003_NOW - 23 * 3600 + $i * 60),
+        '198.51.100.' . ($i % 250)]);
+}
+$oldest = (string) DB::scalar('SELECT client_id FROM oauth_clients WHERE client_name = ? ORDER BY created_at, id LIMIT 1', ['Fyld']);
+$r = f006_register_raw(['redirect_uris' => [F006_CALLBACK]], '192.0.2.50');
+$unused = (int) DB::scalar('SELECT COUNT(*) FROM oauth_clients c WHERE NOT EXISTS (SELECT 1 FROM oauth_grants g WHERE g.client_pk = c.id)');
+F006Check::that('AK2', $r->status === 201, 'loftet på ' . Clients::MAX_UNUSED . ' ubrugte: registreringen lykkes stadig (ingen DoS)');
+F006Check::that('AK2', $unused === Clients::MAX_UNUSED, 'antallet af ubrugte klienter holder sig på loftet');
+F006Check::that('AK2', Clients::find($oldest) === null, 'den ældste ubrugte klient er fortrængt');
+F006Check::that('AK2', Clients::find($kept) !== null, 'en klient med bevilling røres ikke');
+
+// 24 timer: ubrugte klienter ryddes; en klient med bevilling bliver
+Clients::purge(F003_NOW + 24 * 3600 + 60);
+$left = (int) DB::scalar('SELECT COUNT(*) FROM oauth_clients');
+F006Check::that('AK2', Clients::find($kept) !== null && $left === 1, 'efter 24 timer: kun klienten med bevilling er tilbage');
 
 F006Check::done();

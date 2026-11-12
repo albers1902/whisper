@@ -14,6 +14,7 @@ foreach (['/.well-known/oauth-protected-resource', '/.well-known/oauth-protected
     F006Check::that('AK1', $r->status === 200 && str_starts_with((string) $r->header('Content-Type'), 'application/json'), "$path: 200 JSON");
     F006Check::that('AK1', ($j['resource'] ?? null) === F006_RESOURCE, "$path: resource = https://<vært>/mcp");
     F006Check::that('AK1', ($j['authorization_servers'] ?? null) === [F006_SITE], "$path: authorization_servers = [issuer] (samme vært)");
+    F006Check::that('AK1', $r->header('Cache-Control') === 'no-store', "$path: no-store (ingen delt cache af et Host-afledt svar)");
 }
 
 $r = f006_ep('GET', '/.well-known/oauth-authorization-server');
