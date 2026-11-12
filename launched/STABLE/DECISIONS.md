@@ -283,3 +283,9 @@ F004 · Accepteret risiko (LOW, qa-critic F004_v3, N-5 og N-7):
 - Under afkølingen på 1 time får brugeren først efter klik at vide, at lyden blev prøvet for nylig.
 Begge rettes i et senere H-nummer, hvis de ses på DEV.
 Udløber: 2027-02-10
+
+## #47 — 2026-11-12 — F006: Whisper tilføjes i Claude som custom connector via OAuth
+Ejeren (2026-11-12): MCP skal kunne tilføjes i Claude som custom connector med kun URL'en. Verifikationen sker ved
+login i browseren, uden nøgle at kopiere, uden Node.js og uden genstart. Det bygges som OAuth 2.1 med PKCE og dynamisk
+klientregistrering på `/mcp` efter MCP-specifikationen (F006), bag flaget `F006_oauth`. F003-nøglerne med `mcp-remote`
+bliver som en avanceret mulighed. Ingen ny modtager: transcripts går til Anthropic som efter #20.
