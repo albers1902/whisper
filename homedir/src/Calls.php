@@ -7,6 +7,7 @@ use DateTimeImmutable;
 use DateTimeZone;
 use Whisper\Adversus\Feature;
 use Whisper\Transcription\Diarization;
+use Whisper\Transcription\DiarizationSettings;
 
 /**
  * Opkald og transcripts til siderne (F002). Tider gemmes i UTC og vises i dansk tid; filtrenes datoer er danske.
@@ -245,7 +246,8 @@ final class Calls
 
     /**
      * Segmenterne med taleren, når diarization (H011) har lagt den på: "speaker" (0, 1, …) og evt. "role" (agent|kunde).
-     * Ugyldige taler-nøgler udelades, så segmentet vises som før H011.
+     * Ugyldige taler-nøgler udelades, så segmentet vises som før H011. Med flaget H011_diarization slukket udelades de
+     * altid: så er al visning (UI, .txt, zip, MCP) som før H011, også for transcripts, der allerede har talere.
      *
      * @return list<array{start: float, end: float, text: string, speaker?: int, role?: string}>
      */
@@ -253,10 +255,14 @@ final class Calls
     {
         $out = [];
         $data = json_decode($json, true);
+        $speakers = null;
         foreach (is_array($data) ? $data : [] as $s) {
             if (is_array($s) && is_numeric($s['start'] ?? null) && is_string($s['text'] ?? null)) {
                 $seg = ['start' => (float) $s['start'], 'end' => (float) ($s['end'] ?? $s['start']), 'text' => $s['text']];
-                if (is_int($s['speaker'] ?? null) && $s['speaker'] >= 0 && $s['speaker'] < Diarization::MAX_SPEAKERS) {
+                if (isset($s['speaker'])) {
+                    $speakers ??= Flags::enabled(DiarizationSettings::FLAG);   // features.ini læses kun, hvis der er talere
+                }
+                if ($speakers === true && is_int($s['speaker'] ?? null) && $s['speaker'] >= 0 && $s['speaker'] < Diarization::MAX_SPEAKERS) {
                     $seg['speaker'] = $s['speaker'];
                     if (in_array($s['role'] ?? null, ['agent', 'kunde'], true)) {
                         $seg['role'] = (string) $s['role'];
