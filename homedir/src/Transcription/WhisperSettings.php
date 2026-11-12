@@ -11,6 +11,8 @@ use Closure;
  *   beam_size = 1–10   (standard 1)
  *   vad       = on|off (standard on)
  *   batch     = 1–50   (standard 10: opkald pr. motorkald, så modellen indlæses én gang pr. batch; 1 = ét pr. kald)
+ *   workers   = 1–4    (standard 2: samtidige transcribe-kørsler, hver med sin egen motor; 1 = én ad gangen)
+ * Uden threads deles kernerne mellem workers: max(1, kerner / workers) ved workers > 1, ellers kerner − 1.
  * Ugyldige værdier giver standarden og én advarsel pr. nøgle, så en tastefejl i config ikke stopper køen.
  * Værdierne ender som argv-elementer til transcribe.py, så konstruktøren afviser alt uden for intervallerne.
  */
@@ -22,22 +24,25 @@ final class WhisperSettings
     public const FALLBACK_THREADS = 4;
     public const MAX_BATCH = 50;
     public const DEFAULT_BATCH = 10;
+    public const MAX_WORKERS = Slots::MAX;
+    public const DEFAULT_WORKERS = 2;
 
     public function __construct(public readonly int $threads, public readonly int $beam, public readonly bool $vad,
-        public readonly int $batch = self::DEFAULT_BATCH)
+        public readonly int $batch = self::DEFAULT_BATCH, public readonly int $workers = 1)
     {
         if ($threads < 1 || $threads > self::MAX_THREADS || $beam < 1 || $beam > self::MAX_BEAM
-            || $batch < 1 || $batch > self::MAX_BATCH) {
-            throw new EngineError('[whisper] threads skal være 1–32, beam_size 1–10 og batch 1–50');
+            || $batch < 1 || $batch > self::MAX_BATCH || $workers < 1 || $workers > self::MAX_WORKERS) {
+            throw new EngineError('[whisper] threads skal være 1–32, beam_size 1–10, batch 1–50 og workers 1–4');
         }
     }
 
-    public static function defaultThreads(?int $cores): int
+    public static function defaultThreads(?int $cores, int $workers = 1): int
     {
         if ($cores === null || $cores < 1) {
             return self::FALLBACK_THREADS;
         }
-        return min(self::MAX_THREADS, max(1, $cores - 1));
+        // Flere processer: hver får sin andel af kernerne (greedy decoding udnytter ikke flere tråde i én proces)
+        return min(self::MAX_THREADS, max(1, $workers > 1 ? intdiv($cores, $workers) : $cores - 1));
     }
 
     /**
@@ -48,7 +53,8 @@ final class WhisperSettings
     {
         $warn ??= static function (string $line): void {
         };
-        $threads = self::intOr($section, 'threads', 1, self::MAX_THREADS, self::defaultThreads($cores), $warn);
+        $workers = self::intOr($section, 'workers', 1, self::MAX_WORKERS, self::DEFAULT_WORKERS, $warn);
+        $threads = self::intOr($section, 'threads', 1, self::MAX_THREADS, self::defaultThreads($cores, $workers), $warn);
         $beam = self::intOr($section, 'beam_size', 1, self::MAX_BEAM, self::DEFAULT_BEAM, $warn);
         $vad = true;
         $raw = self::raw($section, 'vad');
@@ -63,7 +69,7 @@ final class WhisperSettings
             }
         }
         $batch = self::intOr($section, 'batch', 1, self::MAX_BATCH, self::DEFAULT_BATCH, $warn);
-        return new self($threads, $beam, $vad, $batch);
+        return new self($threads, $beam, $vad, $batch, $workers);
     }
 
     /** Antal kerner uden shell: /proc/cpuinfo, ellers /sys/devices/system/cpu/online. null = ukendt. */

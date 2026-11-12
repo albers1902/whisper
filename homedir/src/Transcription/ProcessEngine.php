@@ -33,9 +33,11 @@ final class ProcessEngine implements BatchEngine
 
     /**
      * @param int|null $timeout fast tidsgrænse i sekunder (kun tests); null = max(2 t, 4 × varighed)
-     * @param WhisperSettings|null $settings null = standarderne (kerner − 1, beam 1, vad on, batch 10)
+     * @param WhisperSettings|null $settings null = standarderne (kernerne delt mellem workers, beam 1, vad on, batch 10)
+     * @param int $slot transcribe-slottet (Slots), der kører motoren: bestemmer filen til motorens stderr
      */
-    public function __construct(private readonly string $model, private readonly ?int $timeout = null, ?WhisperSettings $settings = null)
+    public function __construct(private readonly string $model, private readonly ?int $timeout = null, ?WhisperSettings $settings = null,
+        private readonly int $slot = 1)
     {
         if (!in_array($model, self::MODELS, true)) {
             throw new EngineError('[whisper] model skal være turbo eller large-v3');
@@ -46,9 +48,19 @@ final class ProcessEngine implements BatchEngine
     /** @param (\Closure(string): void)|null $warn får én linje pr. ugyldig værdi i [whisper] */
     public static function fromConfig(?\Closure $warn = null): self
     {
+        return self::fromSettings(WhisperSettings::fromSection(Config::section('whisper'), WhisperSettings::cores(), $warn));
+    }
+
+    /** Modellen fra config.ini, indstillingerne allerede læst (cron/transcribe.php skal kende workers før slotvalget) */
+    public static function fromSettings(WhisperSettings $settings, int $slot = 1): self
+    {
         $m = trim(Config::string('whisper', 'model', self::DEFAULT_MODEL));
-        return new self($m === '' ? self::DEFAULT_MODEL : $m, null,
-            WhisperSettings::fromSection(Config::section('whisper'), WhisperSettings::cores(), $warn));
+        return new self($m === '' ? self::DEFAULT_MODEL : $m, null, $settings, $slot);
+    }
+
+    public function errorFile(): string
+    {
+        return Slots::errorFile($this->slot);
     }
 
     public function settings(): WhisperSettings
@@ -186,8 +198,9 @@ final class ProcessEngine implements BatchEngine
             '--models', Paths::dir('whisper/models')], $this->settings->argv(), $args);
 
         $out = (string) tempnam(Paths::dir('whisper'), 'out');
-        // Motorens stderr kan indeholde stier; den gemmes privat (0600) til fejlsøgning og vises aldrig
-        $err = Paths::dir('whisper') . '/sidste-fejl.log';
+        // Motorens stderr kan indeholde stier; den gemmes privat (0600) til fejlsøgning og vises aldrig. Én fil pr. slot,
+        // så to samtidige motorer ikke trunkerer hinandens
+        $err = $this->errorFile();
         $old = umask(077);
         $timedOut = false;
         $code = -1;
