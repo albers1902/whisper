@@ -113,10 +113,16 @@ final class Calls
         if ($ids === [] || $words === []) {
             return [];
         }
-        $from = 'GREATEST(1, LOCATE(?, `text`) - ' . self::SNIPPET_LEAD . ')';
+        // Første ORDSTART, der matcher (som FULLTEXT's +ord* og fremhævningen), ikke første delstreng: LOCATE('tal') finder
+        // "totalt" (QA F-1). REGEXP_INSTR tæller i tegn som SUBSTRING. \b er ASCII-baseret i PCRE uden UCP, så ordgrænsen
+        // er et lookbehind på bogstav/ciffer. Ordet er kun [\p{L}\p{N}]+ (searchWords), så det har ingen regex-tegn.
+        // Uden regex-fund (fx en accentvariant, som unicode_ci og FULLTEXT matcher) bruges LOCATE som før.
+        $at = 'COALESCE(NULLIF(REGEXP_INSTR(`text`, ?), 0), LOCATE(?, `text`))';
+        $from = 'GREATEST(1, ' . $at . ' - ' . self::SNIPPET_LEAD . ')';
+        $regex = '(?i)(?<![\p{L}\p{N}])' . $words[0];
         $rows = DB::all('SELECT call_id, ' . $from . ' AS off, SUBSTRING(`text`, ' . $from . ', ' . self::SNIPPET_WINDOW . ') AS win, '
             . 'CHAR_LENGTH(`text`) AS len FROM transcripts WHERE call_id IN (' . implode(',', array_fill(0, count($ids), '?')) . ')',
-            array_merge([$words[0], $words[0]], $ids));
+            array_merge([$regex, $words[0], $regex, $words[0]], $ids));
         $out = [];
         foreach ($rows as $r) {
             $off = (int) $r['off'];

@@ -5,6 +5,7 @@ namespace Whisper;
 
 use PDOException;
 use Throwable;
+use Whisper\Mcp\Tokens;
 
 /**
  * Tabellen users (migration 0002). Al validering, der kan nå brugeren, kaster UserError med en dansk besked.
@@ -102,24 +103,47 @@ final class Users
         });
     }
 
-    /** Ny engangskode (vises én gang af kalderen). Ændret hash logger også brugerens åbne sessioner ud (App). */
-    public static function resetPassword(int $id, int $now): string
+    /**
+     * Ny engangskode (vises én gang af kalderen). Ændret hash logger også brugerens åbne sessioner ud (App), og
+     * setPassword tilbagekalder MCP-nøglerne.
+     *
+     * @return array{password: string, revoked: int}
+     */
+    public static function resetPassword(int $id, int $now): array
     {
         $password = Password::generate();
-        self::setPassword($id, $password, true, $now);
-        return $password;
+        $revoked = self::setPassword($id, $password, true, $now);
+        return ['password' => $password, 'revoked' => $revoked];
     }
 
-    public static function setPassword(int $id, string $password, bool $mustChange, int $now): void
+    /**
+     * Ny adgangskode og tilbagekald af alle brugerens aktive MCP-nøgler i samme transaktion (DECISIONS #24): en nøgle
+     * må ikke overleve, at adgangskoden er skiftet, fordi kontoen kan have været kompromitteret. Returnerer antallet af
+     * tilbagekaldte nøgler.
+     */
+    public static function setPassword(int $id, string $password, bool $mustChange, int $now): int
     {
         $problem = Password::problem($password);
         if ($problem !== null) {
             throw new UserError($problem);
         }
-        DB::exec(
-            'UPDATE users SET password_hash = ?, must_change_password = ?, updated_at = ? WHERE id = ?',
-            [Password::hash($password), $mustChange ? 1 : 0, self::ts($now), $id]
-        );
+        $hash = Password::hash($password);
+        $pdo = DB::pdo();
+        $pdo->beginTransaction();
+        try {
+            DB::exec(
+                'UPDATE users SET password_hash = ?, must_change_password = ?, updated_at = ? WHERE id = ?',
+                [$hash, $mustChange ? 1 : 0, self::ts($now), $id]
+            );
+            $revoked = Tokens::revokeAll($id, $now);
+            $pdo->commit();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) {
+                $pdo->rollBack();
+            }
+            throw $e;
+        }
+        return $revoked;
     }
 
     /** Ved login: sidste login og evt. en ny hash, når PASSWORD_DEFAULT eller dens cost er ændret. */

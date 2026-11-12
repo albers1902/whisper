@@ -26,6 +26,9 @@ final class App
     private const BAD_LOGIN = 'Forkert e-mail eller adgangskode.';
     private const LOCKED = 'For mange forsøg — prøv igen om lidt.';
     private const SELF_RESET = 'Skift din adgangskode under Konto.';
+    public const ALREADY_REVOKED = 'Nøglen er allerede tilbagekaldt.';
+    public const KEYS_REVOKED_SELF = 'Dine MCP-nøgler til Claude Desktop er tilbagekaldt. Opret en ny nøgle her, hvis du stadig skal bruge den.';
+    public const KEYS_REVOKED_RESET = 'Brugerens MCP-nøgler til Claude Desktop er tilbagekaldt. Brugeren kan oprette nye under Konto.';
 
     /** @var Closure(): int */
     private Closure $clock;
@@ -271,12 +274,12 @@ final class App
         }
 
         $wasForced = (int) $user['must_change_password'] === 1;
-        Users::setPassword((int) $user['id'], $new, false, $now);
+        $revoked = Users::setPassword((int) $user['id'], $new, false, $now);
         $fresh = Users::find((int) $user['id']) ?? $user;
         // Nyt fingeraftryk: denne session fortsætter, alle andre for brugeren afvises ved næste request
         $s->regenerate();
         $s->set('pwfp', Users::fingerprint($fresh));
-        $s->set('flash', 'Adgangskoden er skiftet.');
+        $s->set('flash', 'Adgangskoden er skiftet.' . ($revoked > 0 ? ' ' . self::KEYS_REVOKED_SELF : ''));
         return Response::redirect($wasForced ? '/' : '/konto');
     }
 
@@ -351,8 +354,9 @@ final class App
                     if ($self) {
                         throw new UserError(self::SELF_RESET);
                     }
-                    $password = Users::resetPassword($id, $now);
-                    return Response::html(View::oneTimePassword($admin, Csrf::token($s), $target, $password, 'Adgangskode nulstillet'));
+                    $reset = Users::resetPassword($id, $now);
+                    return Response::html(View::oneTimePassword($admin, Csrf::token($s), $target, $reset['password'],
+                        'Adgangskode nulstillet', $reset['revoked'] > 0 ? self::KEYS_REVOKED_RESET : null));
                 case 'deactivate':
                     Users::setActive($id, false, (int) $admin['id'], $now);
                     $msg = 'Brugeren er deaktiveret.';
@@ -410,8 +414,9 @@ final class App
     {
         $name = Tokens::revoke((int) $user['id'], $id, $now);
         if ($name === null) {
-            // Også en andens nøgle: samme svar, så id'er ikke kan afprøves
-            return Response::html(View::error(404, 'Nøglen findes ikke eller er allerede tilbagekaldt.', Csrf::token($s), $user), 404);
+            // Dobbeltklik, en andens nøgle og et ukendt id får samme svar, så id'er ikke kan afprøves (QA F-4)
+            $s->set('flash', self::ALREADY_REVOKED);
+            return Response::redirect('/konto');
         }
         $s->set('flash', 'Nøglen «' . $name . '» er tilbagekaldt. Claude Desktop med den nøgle har ikke længere adgang.');
         return Response::redirect('/konto');

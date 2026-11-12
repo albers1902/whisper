@@ -34,7 +34,7 @@ F003Check::that('AK4', !str_contains($text, 'recordings/') && $structured === nu
 $plain = f002_insert(['started_at' => '2026-10-06 08:00:00']);
 f002_transcript($plain, 'Kun ren tekst her.', [['start' => 'x', 'text' => 1]]);
 [, $pt] = f003_result($m->tool('get_transcript', ['call_id' => $plain]));
-F003Check::that('AK4', str_contains($pt, "\n\nKun ren tekst her.\n"), 'ugyldige segmenter: den rene tekst');
+F003Check::that('AK4', str_contains($pt, "\n\n" . \Whisper\Mcp\Tools::FRAME_START . "\nKun ren tekst her.\n"), 'ugyldige segmenter: den rene tekst');
 
 // Over loftet: segmenter og ren tekst
 $long = f002_insert(['started_at' => '2026-10-07 08:00:00']);
@@ -46,6 +46,9 @@ f002_transcript($long, str_repeat('ø', 300000), $segs);
 [$le, $lt] = f003_result($m->tool('get_transcript', ['call_id' => $long]));
 $body = substr($lt, (int) strpos($lt, "\n\n") + 2);
 $body = substr($body, 0, (int) strpos($body, "\n[… AFKORTET"));
+// H004: loftet gælder kundetalen; rammens to faste linjer tæller ikke med
+$body = substr($body, strlen(Tools::FRAME_START . "\n"));
+$body = substr($body, 0, (int) strrpos($body, "\n" . Tools::FRAME_END));
 F003Check::that('AK4', !$le && str_contains($lt, '[… AFKORTET: transcriptet er længere end 200.000 tegn'), 'afkortning markeres');
 F003Check::that('AK4', mb_strlen($body, 'UTF-8') <= Tools::MAX_CHARS + 1, 'teksten er højst 200 000 tegn');
 F003Check::that('AK4', mb_check_encoding($lt, 'UTF-8'), 'afkortet midt i et tegn giver stadig gyldig UTF-8');

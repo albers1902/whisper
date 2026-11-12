@@ -117,12 +117,14 @@ final class UiPages
                 . '<label>Navn på nøglen<input type="text" name="name" maxlength="80" value="' . $e($mcp['name']) . '"'
                 . ($invalid ? ' aria-invalid="true" aria-describedby="mcp-navn-fejl mcp-navn-hjaelp"' : ' aria-describedby="mcp-navn-hjaelp"') . '>'
                 . '<span class="hint" id="mcp-navn-hjaelp">Fx navnet på computeren, så du kan kende nøglen igen.</span></label>'
-                . '<button type="submit">' . Ui::icon('key-round') . 'Opret nøgle</button></form>';
+                . '<button type="submit">' . Ui::icon('key-round') . 'Opret nøgle</button></form>'
+                . '<p class="hint">' . $e(View::MCP_RELOAD) . '</p>';
         }
         return '<section class="mcp" aria-labelledby="mcp-overskrift"><h2 id="mcp-overskrift">Claude Desktop (MCP)</h2>'
             . $new
             . '<p>Forbind Claude Desktop til Whisper, så Claude kan søge i og læse transcripts.</p>'
             . '<p>Claude får kun læseadgang. Nøglen er personlig – del den ikke.</p>'
+            . Ui::msg('warn', '<p>' . $e(View::MCP_WARNING) . '</p>')
             . '<h3>Dine nøgler (' . $count . ' af ' . Tokens::MAX_ACTIVE . ')</h3>' . $list . $form
             . '<p class="hint">Har din Claude-konto "Request headers" under custom connectors, kan du i stedet tilføje <code>'
             . $e($origin) . '/mcp</code> med headeren <code>authorization</code> = <code>Bearer &lt;nøgle&gt;</code>.</p></section>';
@@ -172,13 +174,15 @@ final class UiPages
      * @param array<string, mixed> $user
      * @param array<string, mixed> $target
      */
-    public static function oneTimePassword(array $user, string $csrf, array $target, string $password, string $heading): string
+    public static function oneTimePassword(array $user, string $csrf, array $target, string $password, string $heading,
+        ?string $note = null): string
     {
         return Ui::layout($heading, '<section class="card narrow"><h1>' . Ui::e($heading) . '</h1>'
             . '<p>Engangsadgangskode til <strong>' . Ui::e((string) $target['email']) . '</strong>:</p>'
             . '<div class="secret"><input class="otp" id="engangskode" type="text" readonly value="' . Ui::e($password) . '" aria-label="Engangsadgangskode">'
             . Ui::copyButton('engangskode', 'Kopiér') . '</div>'
-            . Ui::msg('info', '<p>Kopiér den nu. Den vises kun denne ene gang, og brugeren skal skifte den ved første login.</p>')
+            . Ui::msg('info', '<p>Kopiér den nu. Den vises kun denne ene gang, og brugeren skal skifte den ved første login.</p>'
+                . ($note !== null ? '<p>' . Ui::e($note) . '</p>' : ''))
             . '<div class="actions"><a class="button" href="/brugere/' . (int) $target['id'] . '">Færdig – til brugeren</a>'
             . '<a class="button secondary" href="/brugere">Til listen</a></div></section>', $user, $csrf, 'brugere');
     }

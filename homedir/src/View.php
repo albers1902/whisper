@@ -108,6 +108,11 @@ final class View
             . ($mcp !== null ? self::mcpSection($csrf, $mcp) : ''), $user, $csrf);
     }
 
+    /** Prompt-injection (DECISIONS #22): transcripts er kundetale, og Claude kan have andre værktøjer i samme samtale. */
+    public const MCP_WARNING = 'Kombinér ikke Whisper-nøglen med værktøjer, der kan sende mails eller ændre data, i samme Claude-samtale.';
+    /** Svaret på "Opret nøgle" er bevidst ikke en redirect (nøglen vises kun der), så en genindlæsning sender igen. */
+    public const MCP_RELOAD = 'Genindlæs ikke siden, når nøglen er oprettet. Det opretter endnu en nøgle.';
+
     /** Version af mcp-remote i konfigurationsblokken: låst, og ældre end et par uger (F003 v0 §4c). */
     public const MCP_REMOTE = 'mcp-remote@0.15.2';
 
@@ -182,12 +187,14 @@ final class View
                 . '<label>Navn på nøglen<input type="text" name="name" maxlength="80" value="' . self::e($mcp['name']) . '"'
                 . ($invalid ? ' aria-invalid="true" aria-describedby="mcp-navn-fejl mcp-navn-hjaelp"' : ' aria-describedby="mcp-navn-hjaelp"') . '>'
                 . '<span class="hint" id="mcp-navn-hjaelp">Fx navnet på computeren, så du kan kende nøglen igen.</span></label>'
-                . '<button type="submit">Opret nøgle</button></form>';
+                . '<button type="submit">Opret nøgle</button></form>'
+                . '<p class="hint">' . self::e(self::MCP_RELOAD) . '</p>';
         }
         return '<section class="card narrow mcp" aria-labelledby="mcp-overskrift"><h2 id="mcp-overskrift">Claude Desktop (MCP)</h2>'
             . $new
             . '<p>Forbind Claude Desktop til Whisper, så Claude kan søge i og læse transcripts.</p>'
             . '<p>Claude får kun læseadgang. Nøglen er personlig – del den ikke.</p>'
+            . '<p class="msg info">' . self::e(self::MCP_WARNING) . '</p>'
             . '<h3>Dine nøgler (' . $count . ' af ' . Tokens::MAX_ACTIVE . ')</h3>' . $list . $form
             . '<p class="muted">Har din Claude-konto "Request headers" under custom connectors, kan du i stedet tilføje <code>'
             . self::e($origin) . '/mcp</code> med headeren <code>authorization</code> = <code>Bearer &lt;nøgle&gt;</code>.</p></section>';
@@ -239,15 +246,17 @@ final class View
      * @param array<string, mixed> $user
      * @param array<string, mixed> $target
      */
-    public static function oneTimePassword(array $user, string $csrf, array $target, string $password, string $heading): string
+    public static function oneTimePassword(array $user, string $csrf, array $target, string $password, string $heading,
+        ?string $note = null): string
     {
         if (Ui::modern()) {
-            return UiPages::oneTimePassword($user, $csrf, $target, $password, $heading);
+            return UiPages::oneTimePassword($user, $csrf, $target, $password, $heading, $note);
         }
         return self::layout($heading, '<section class="card narrow"><h1>' . self::e($heading) . '</h1>'
             . '<p>Engangsadgangskode til <strong>' . self::e((string) $target['email']) . '</strong>:</p>'
             . '<p><input class="otp" id="engangskode" type="text" readonly value="' . self::e($password) . '" aria-label="Engangsadgangskode"></p>'
             . '<p class="msg info">Kopiér den nu. Den vises kun denne ene gang, og brugeren skal skifte den ved første login.</p>'
+            . ($note !== null ? '<p class="msg info">' . self::e($note) . '</p>' : '')
             . '<p><a href="/brugere/' . (int) $target['id'] . '">Til brugeren</a> · <a href="/brugere">Til listen</a></p></section>',
             $user, $csrf);
     }

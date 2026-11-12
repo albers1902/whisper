@@ -91,6 +91,13 @@ final class Tokens
             [Users::ts($now), $tokenId, $userId]);
         return $n === 1 ? $name : null;
     }
+
+    /** Tilbagekalder alle brugerens aktive nøgler (skift eller nulstilling af adgangskode) og returnerer antallet. */
+    public static function revokeAll(int $userId, int $now): int
+    {
+        return DB::exec('UPDATE mcp_tokens SET revoked_at = ? WHERE user_id = ? AND revoked_at IS NULL', [Users::ts($now), $userId]);
+    }
+
     /** @return list<array<string, mixed>> brugerens aktive nøgler (uden hash), nyeste først */
     public static function active(int $userId): array
     {

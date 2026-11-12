@@ -15,6 +15,7 @@ final class UiCalls
 {
     /** Opkald, der er hentet for under så mange sekunder siden, giver grøn statusprik. */
     private const FRESH = 30 * 60;
+    public const TRANSCRIPT_MISSING = 'Transcriptet findes ikke i databasen. En administrator kan sende opkaldet tilbage i køen.';
 
     /**
      * @param array<string, mixed> $user
@@ -335,6 +336,9 @@ final class UiCalls
                         : '<p class="hits">Ingen fund for «' . $e($f['q']) . '» i dette transcript.</p>';
                 }
             }
+        } elseif ($tStatus === 'faerdig') {
+            // Status siger færdig, men rækken mangler: "på vej" ville være forkert (QA F-4)
+            $body = Ui::msg('info', '<p>' . $e(self::TRANSCRIPT_MISSING) . '</p>');
         } elseif ($tStatus === 'fejlet') {
             $body = Ui::msg('error', '<p>Transcriptet kunne ikke laves.</p>'
                 . ((string) ($call['transcript_error'] ?? '') !== '' ? '<details><summary>Teknisk besked</summary><p>'
