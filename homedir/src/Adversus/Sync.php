@@ -5,6 +5,7 @@ namespace Whisper\Adversus;
 
 use Closure;
 use DateTimeImmutable;
+use DateTimeZone;
 use Throwable;
 use Whisper\DB;
 use Whisper\Paths;
@@ -13,20 +14,25 @@ use Whisper\Zendesk\ZendeskError;
 
 /**
  * Henter Adversus-opkald med optagelse (cron/adversus-sync.php hvert 10. minut, F004; algoritmen er beskrevet i
- * fullstack-ai/F004_v0.md §3–4). Én kørsel:
+ * fullstack-ai/F004_v0.md §3–4 og F004_v2.md). Én kørsel:
  *
  * a) Succes-leads: keyset på lastUpdatedTime (filtrerbar og sorterbar) → adversus_success_leads.
  * b) Agentnavne: /users højst én gang i døgnet (én gang i timen, hvis et opkald har en ukendt agent) → adversus_users.
- * c) Optagelser i lukkede vinduer [R, B) på /recordings.timestamp (upload-tid; kan IKKE sorteres, så side-numre bruges kun
- *    inden for et vindue, der ligger mindst LAG i fortiden). Opkaldenes metadata slås op i /calls med start-filter omkring
- *    cdr.timestamp og kobles på id = cdr.id. Kun opkald med optagelse gemmes. R flyttes først, når hele vinduet er gemt.
- * d) Succes begge veje: én JOIN-UPDATE markerer opkald på succes-leads og flytter "ikke valgt" til kø.
- * e) Lyd for opkald i kø via /calls/{id}/recording (redirect kun til recording_hosts). Den signerede URL gemmes aldrig.
+ * c) Ventende optagelser (adversus_pending), hvis opkald ikke blev fundet i /calls: søges igen nærmest-først (DESC) i
+ *    RETRY_RUNS kørsler; derefter forkastes de med en synlig advarsel (sync_state 'adversus-warn').
+ * d) Optagelser i lukkede vinduer [R, B) på /recordings.timestamp (upload-tid; kan IKKE sorteres, så side-numre bruges kun
+ *    inden for et vindue, der ligger mindst lag i fortiden). Opkaldenes metadata slås op i /calls med start-filter omkring
+ *    cdr.timestamp og kobles på id = cdr.id. Kun opkald med optagelse gemmes. R flyttes først, når hele vinduet er
+ *    behandlet: gemt, eller lagt i adversus_pending, så intet tabes lydløst (QA F-1).
+ * e) Succes begge veje: én JOIN-UPDATE markerer opkald på succes-leads og flytter "ikke valgt" til kø.
+ * f) Lyd for opkald i kø via /calls/{id}/recording (redirect kun til recording_hosts), succes og Zendesk før manuelle
+ *    valg, og ingen nye downloads efter DOWNLOAD_DEADLINE (security S1, S2). Den signerede URL gemmes aldrig.
  *
  * Adversus har ingen $gte: alle nedre grænser er "$gt t − 1 s". Overlappet på ét sekund fjernes af UNIQUE (source,
  * external_id) og lead_id-nøglen, så databasen hverken får huller eller dubletter.
- * Højst MAX_REQUESTS kald pr. kørsel (Client tæller hvert HTTP-kald); fase c stopper med RESERVE kald tilbage til lyd.
- * Log-linjer nævner kun id'er og tal — aldrig URL'er, telefonnumre, navne eller hemmeligheder.
+ * Højst MAX_REQUESTS kald pr. kørsel (Client tæller hvert HTTP-kald); fase c–d stopper med RESERVE kald tilbage til lyd.
+ * Log-linjer og last_error nævner kun id'er, tal og HTTP-status — aldrig URL'er, telefonnumre, navne, Adversus' fritekst
+ * eller hemmeligheder (security S5).
  */
 final class Sync
 {
@@ -34,16 +40,23 @@ final class Sync
     public const CURSOR_REC = 'adversus-rec';
     public const CURSOR_LEADS = 'adversus-leads';
     public const CURSOR_USERS = 'adversus-users';
+    public const WARN = 'adversus-warn';
     public const MAX_REQUESTS = 100;
     public const RESERVE = 30;
-    public const LAG = 600;
+    /** Standard for [adversus] lag_minutes (se AdversusConfig) */
+    public const LAG = AdversusConfig::LAG_DEFAULT;
     public const WINDOW_MAX = 3600;
     public const WINDOW_MIN = 60;
     /** Har et vindue flere optagelser end dette (over 3 sider), halveres det, før resten hentes */
     public const WINDOW_SPLIT = 300;
     public const MARGIN = 300;
+    /** Det brede opslag for umatchede går så langt tilbage fra cdr.timestamp (lange opkald, cdr.timestamp = sluttid) */
     public const MARGIN_WIDE = 7200;
+    /** Ventende optagelser søges så langt tilbage (opkald over 2 t) */
+    public const RETRY_BACK = 43200;
     public const WIDE_PAGES = 10;
+    /** Kørsler, en optagelse uden opkald prøves igen, før den forkastes (6 × 10 min ≈ 1 t) */
+    public const RETRY_RUNS = 6;
     public const PAGE = 100;
     public const LEAD_REQUESTS = 5;
     public const USER_PAGES = 3;
@@ -51,7 +64,12 @@ final class Sync
     public const USER_RETRY = 3600;
     public const MAX_AUDIO_ATTEMPTS = 5;
     public const MAX_DOWNLOADS = 25;
+    /** Ingen nye downloads efter så mange sekunder af kørslen (cron hvert 10. min) */
+    public const DOWNLOAD_DEADLINE = 480;
     public const RATE_LIMIT_PREFIX = 'rate limit';
+    public const WARN_PREFIX = 'advarsel';
+    /** En advarsel vises så længe på siden */
+    public const WARN_TTL = 86400;
     public const UNKNOWN_AGENT = 'Adversus-bruger ';
 
     /** @var Closure(): int */
@@ -59,9 +77,14 @@ final class Sync
     /** @var Closure(string): void */
     private Closure $log;
 
-    /** @var array{recordings: int, new: int, success: int, queued: int, unmatched: int, skipped: int} */
-    private array $stats = ['recordings' => 0, 'new' => 0, 'success' => 0, 'queued' => 0, 'unmatched' => 0, 'skipped' => 0];
+    /** @var array{recordings: int, new: int, success: int, queued: int, unmatched: int, skipped: int, discarded: int} */
+    private array $stats = ['recordings' => 0, 'new' => 0, 'success' => 0, 'queued' => 0, 'unmatched' => 0, 'skipped' => 0, 'discarded' => 0];
+    /** @var list<int> opkald med ukendt retning i denne kørsel */
+    private array $skippedIds = [];
+    /** @var list<int> optagelser forkastet i denne kørsel */
+    private array $discardedIds = [];
     private int $reserve = 0;
+    private int $startedAt = 0;
 
     /**
      * @param (Closure(): int)|null $clock
@@ -83,14 +106,15 @@ final class Sync
      * Hele kørslen. Fejl står i sync_state.last_error (rate limit med præfikset "rate limit", som siden viser som
      * information). Lyd hentes også, når en tidligere fase stoppede.
      *
-     * @return array{recordings: int, new: int, success: int, queued: int, unmatched: int, skipped: int, requests: int, error: ?string}
+     * @return array{recordings: int, new: int, success: int, queued: int, unmatched: int, skipped: int, discarded: int, requests: int, error: ?string}
      */
     public function run(): array
     {
+        $this->startedAt = $this->ts();
         DB::exec('INSERT INTO sync_state (`source`, last_run_at) VALUES (?, ?) ON DUPLICATE KEY UPDATE last_run_at = VALUES(last_run_at)',
             [self::SOURCE, $this->now()]);
         $error = null;
-        foreach ([fn() => $this->leads(), fn() => $this->users(), fn() => $this->recordings()] as $phase) {
+        foreach ([fn() => $this->leads(), fn() => $this->users(), fn() => $this->retryPending(), fn() => $this->recordings()] as $phase) {
             try {
                 $phase();
             } catch (Throwable $e) {
@@ -114,20 +138,57 @@ final class Sync
             DB::exec('UPDATE sync_state SET last_error = ? WHERE `source` = ?', [mb_substr($error, 0, 250), self::SOURCE]);
             ($this->log)('adversus-sync: stoppet: ' . $error);
         }
+        $this->warn();
         return $this->stats + ['requests' => $this->client->requests, 'error' => $error];
     }
 
     /**
-     * "adversus-sync: N optagelser, M nye opkald, S succes, K kø, U umatchede · kald X/100"
+     * "adversus-sync: N optagelser, M nye opkald, S succes, K kø, U umatchede · kald X/100" (+ forkastede og ukendt retning)
      *
      * @param array<string, mixed> $r  run()'s resultat
      */
     public static function logLine(array $r): string
     {
+        $extra = '';
+        if ((int) ($r['discarded'] ?? 0) > 0) {
+            $extra .= ', ' . (int) $r['discarded'] . ' forkastet';
+        }
+        if ((int) ($r['skipped'] ?? 0) > 0) {
+            $extra .= ', ' . (int) $r['skipped'] . ' ukendt retning';
+        }
         return sprintf('adversus-sync: %d optagelser, %d nye opkald, %d succes, %d kø, %d umatchede%s · kald %d/%d',
             (int) ($r['recordings'] ?? 0), (int) ($r['new'] ?? 0), (int) ($r['success'] ?? 0), (int) ($r['queued'] ?? 0),
-            (int) ($r['unmatched'] ?? 0), (int) ($r['skipped'] ?? 0) > 0 ? ', ' . (int) $r['skipped'] . ' ukendt retning' : '',
-            (int) ($r['requests'] ?? 0), self::MAX_REQUESTS);
+            (int) ($r['unmatched'] ?? 0), $extra, (int) ($r['requests'] ?? 0), self::MAX_REQUESTS);
+    }
+
+    /**
+     * Forkastede optagelser og opkald med ukendt retning skrives som advarsel i sync_state 'adversus-warn' (last_error),
+     * som siden viser i WARN_TTL — ikke kun i loggen (QA F-1).
+     */
+    private function warn(): void
+    {
+        $parts = [];
+        if ($this->discardedIds !== []) {
+            $parts[] = count($this->discardedIds) . ' optagelser uden opkald i /calls efter ' . self::RETRY_RUNS . ' kørsler (id '
+                . self::idList($this->discardedIds) . ')';
+        }
+        if ($this->skippedIds !== []) {
+            $parts[] = count($this->skippedIds) . ' opkald med ukendt retning (id ' . self::idList($this->skippedIds) . ')';
+        }
+        if ($parts === []) {
+            return;
+        }
+        $text = self::WARN_PREFIX . ': ' . implode('; ', $parts) . ' — ikke gemt';
+        DB::exec('INSERT INTO sync_state (`source`, last_run_at, last_error) VALUES (?, ?, ?) '
+            . 'ON DUPLICATE KEY UPDATE last_run_at = VALUES(last_run_at), last_error = VALUES(last_error)',
+            [self::WARN, $this->now(), mb_substr($text, 0, 250)]);
+        ($this->log)('adversus-sync: ' . $text);
+    }
+
+    /** @param list<int> $ids */
+    private static function idList(array $ids): string
+    {
+        return implode(', ', array_slice($ids, 0, 10)) . (count($ids) > 10 ? ', …' : '');
     }
 
     private function describe(Throwable $e): string
@@ -137,7 +198,19 @@ final class Sync
                 ? self::RATE_LIMIT_PREFIX . ': kaldsgrænsen for kørslen er nået — hentningen fortsætter ved næste kørsel'
                 : self::RATE_LIMIT_PREFIX . ' (429) — Adversus bad os vente; hentningen fortsætter ved næste kørsel';
         }
-        return $e instanceof AdversusError ? $e->getMessage() : 'intern fejl (' . (new \ReflectionClass($e))->getShortName() . ')';
+        return $e instanceof AdversusError ? self::safe($e->getMessage()) : 'intern fejl (' . (new \ReflectionClass($e))->getShortName() . ')';
+    }
+
+    /**
+     * Kun HTTP-status og Adversus' code fra et svar (security S5): "HTTP 403: code 403 - <fri tekst>" bliver "HTTP 403: code 403".
+     * Vores egne faste tekster (uden "HTTP n:"-præfiks) bevares.
+     */
+    public static function safe(string $msg): string
+    {
+        if (preg_match('/^HTTP ([0-9]{3})(?::\s*code ([0-9]+))?/', $msg, $m) === 1) {
+            return 'HTTP ' . $m[1] . (isset($m[2]) && $m[2] !== '' ? ': code ' . $m[2] : '');
+        }
+        return $msg;
     }
 
     // ---------------------------------------------------------------- a) succes-leads
@@ -224,7 +297,7 @@ final class Sync
                 throw $e;
             }
             // Navnet er pynt: uden adgang til /users vises "Adversus-bruger <id>"
-            ($this->log)('adversus-sync: agentnavne ikke hentet: ' . $e->getMessage());
+            ($this->log)('adversus-sync: agentnavne ikke hentet: ' . self::safe($e->getMessage()));
             return;
         }
         DB::exec("UPDATE calls c JOIN adversus_users u ON c.agent_ext_id = CAST(u.user_id AS CHAR) SET c.agent_name = u.name "
@@ -232,7 +305,57 @@ final class Sync
         DB::exec('UPDATE sync_state SET last_ok_at = ? WHERE `source` = ?', [$this->now(), self::CURSOR_USERS]);
     }
 
-    // ---------------------------------------------------------------- c) optagelser og opkald
+    // ---------------------------------------------------------------- c) ventende optagelser
+
+    /**
+     * Optagelser, hvis opkald ikke blev fundet: grupperet efter tid (højst MARGIN_WIDE fra gruppens første) og søgt fra
+     * gruppens seneste cdr.timestamp og RETRY_BACK bagud, nyeste først (de nærmeste opkald før de fjerne). Hver optagelse
+     * tæller ét forsøg pr. kørsel, hvor dens gruppe blev søgt helt; efter RETRY_RUNS forkastes den med en advarsel.
+     */
+    public function retryPending(): void
+    {
+        $this->reserve = self::RESERVE;
+        try {
+            $rows = DB::all('SELECT cdr_id, cdr_at, tries FROM adversus_pending ORDER BY cdr_at IS NULL, cdr_at ASC, cdr_id ASC LIMIT 500');
+            $groups = [];
+            foreach ($rows as $r) {
+                $t = is_string($r['cdr_at']) ? (int) strtotime($r['cdr_at'] . ' UTC') : null;
+                $last = $groups === [] ? null : $groups[count($groups) - 1];
+                if ($last !== null && $t !== null && $last['first'] !== null && $t - $last['first'] <= self::MARGIN_WIDE) {
+                    $groups[count($groups) - 1]['want'][(int) $r['cdr_id']] = $t;
+                    $groups[count($groups) - 1]['last'] = $t;
+                } else {
+                    $groups[] = ['first' => $t, 'last' => $t, 'want' => [(int) $r['cdr_id'] => $t]];
+                }
+            }
+            foreach ($groups as $g) {
+                $hi = ($g['last'] ?? $this->ts()) + self::MARGIN;
+                $lo = ($g['first'] ?? $this->ts()) - self::RETRY_BACK;
+                $missing = $this->lookup(max($lo, $this->cfg->syncSince - self::RETRY_BACK), $hi, $g['want'], self::WIDE_PAGES, 'DESC');
+                $found = array_diff_key($g['want'], $missing);
+                if ($found !== []) {
+                    DB::exec('DELETE FROM adversus_pending WHERE cdr_id IN (' . implode(',', array_fill(0, count($found), '?')) . ')',
+                        array_keys($found));
+                }
+                foreach (array_keys($missing) as $id) {
+                    DB::exec('UPDATE adversus_pending SET tries = tries + 1 WHERE cdr_id = ?', [$id]);
+                }
+                $gone = DB::all('SELECT cdr_id FROM adversus_pending WHERE tries >= ? AND cdr_id IN ('
+                    . implode(',', array_fill(0, count($g['want']), '?')) . ')', array_merge([self::RETRY_RUNS], array_keys($g['want'])));
+                foreach ($gone as $r) {
+                    DB::exec('DELETE FROM adversus_pending WHERE cdr_id = ?', [(int) $r['cdr_id']]);
+                    $this->discardedIds[] = (int) $r['cdr_id'];
+                    $this->stats['discarded']++;
+                }
+            }
+        } catch (OutOfBudget) {
+            // resten prøves ved næste kørsel; en gruppe, der ikke blev søgt helt, har ikke brugt et forsøg
+        } finally {
+            $this->reserve = 0;
+        }
+    }
+
+    // ---------------------------------------------------------------- d) optagelser og opkald
 
     public function recordings(): void
     {
@@ -240,7 +363,7 @@ final class Sync
         [$r, $w] = $this->recCursor();
         $first = true;   // intet vindue er færdigt i denne kørsel endnu
         while (true) {
-            $b = min($r + $w, $this->ts() - self::LAG);
+            $b = min($r + $w, $this->ts() - $this->cfg->lag);
             if ($b <= $r) {
                 break;
             }
@@ -271,6 +394,7 @@ final class Sync
 
     /**
      * Ét lukket vindue [from, to). Returnerer antal optagelser, eller null hvis vinduet er for stort og skal halveres.
+     * Optagelser uden fundet opkald lægges i adversus_pending, før cursoren flyttes.
      *
      * @throws OutOfBudget
      */
@@ -305,20 +429,33 @@ final class Sync
         if ($recs === []) {
             return 0;
         }
-        $known = array_values(array_filter($recs, static fn(?int $t): bool => $t !== null));
-        $lo = $known === [] ? $from - self::MARGIN_WIDE : min($known) - self::MARGIN;
-        $hi = $known === [] ? $to : max($known) + self::MARGIN;
-        $missing = $this->lookup($lo, $hi, $recs, PHP_INT_MAX);
-        if ($missing !== [] && $known !== []) {
-            // cdr.timestamp kan være slut- eller uploadtid: én bredere søgning før starten, med et loft over siderne
-            $mk = array_values(array_filter($missing, static fn(?int $t): bool => $t !== null));
-            $lo2 = ($mk === [] ? $from : min($mk)) - self::MARGIN_WIDE;
-            $missing = $this->lookup($lo2, $lo + 1, $missing, self::WIDE_PAGES);
+        // Allerede gemt (overlap, eller et vindue der hentes igen): ingen opslag nødvendigt
+        $saved = DB::all("SELECT external_id FROM calls WHERE `source` = 'adversus' AND external_id IN ("
+            . implode(',', array_fill(0, count($recs), '?')) . ')', array_map('strval', array_keys($recs)));
+        $want = $recs;
+        foreach ($saved as $s) {
+            unset($want[(int) $s['external_id']]);
         }
-        if ($missing !== []) {
-            $this->stats['unmatched'] += count($missing);
-            ($this->log)('adversus-sync: ' . count($missing) . ' optagelser uden opkald i /calls (id ' . implode(', ', array_slice(array_keys($missing), 0, 10))
-                . (count($missing) > 10 ? ', …' : '') . ')');
+        if ($want !== []) {
+            $known = array_values(array_filter($want, static fn(?int $t): bool => $t !== null));
+            $lo = $known === [] ? $from - self::MARGIN_WIDE : min($known) - self::MARGIN;
+            $hi = $known === [] ? $to : max($known) + self::MARGIN;
+            $missing = $this->lookup($lo, $hi, $want, PHP_INT_MAX, 'ASC');
+            if ($missing !== [] && $known !== []) {
+                // cdr.timestamp kan være slut- eller uploadtid: én bredere søgning bagud, nærmeste opkald først
+                $mk = array_values(array_filter($missing, static fn(?int $t): bool => $t !== null));
+                $top = $mk === [] ? $lo : max($mk);
+                $missing = $this->lookup($top - self::MARGIN_WIDE, $top + 1, $missing, self::WIDE_PAGES, 'DESC');
+            }
+            foreach ($missing as $id => $t) {
+                DB::exec('INSERT IGNORE INTO adversus_pending (cdr_id, cdr_at, tries, first_seen) VALUES (?, ?, 0, ?)',
+                    [$id, $t === null ? null : gmdate('Y-m-d H:i:s', $t), $this->now()]);
+            }
+            if ($missing !== []) {
+                $this->stats['unmatched'] += count($missing);
+                ($this->log)('adversus-sync: ' . count($missing) . ' optagelser uden opkald i /calls endnu — prøves igen (id '
+                    . self::idList(array_keys($missing)) . ')');
+            }
         }
         return count($recs);
     }
@@ -330,14 +467,14 @@ final class Sync
      * @return array<int, ?int>
      * @throws OutOfBudget
      */
-    private function lookup(int $lo, int $hi, array $want, int $maxPages): array
+    private function lookup(int $lo, int $hi, array $want, int $maxPages, string $direction): array
     {
         for ($p = 1; $p <= $maxPages && $want !== []; $p++) {
             $this->need(1);
             $data = $this->client->getJson('/calls', [
                 'filters'       => self::filter(['start' => ['$gt' => self::iso($lo - 1), '$lt' => self::iso($hi)]]),
                 'sortProperty'  => 'start',
-                'sortDirection' => 'ASC',
+                'sortDirection' => $direction,
                 'page'          => $p,
                 'pageSize'      => self::PAGE,
                 'includeMeta'   => 'true',
@@ -368,8 +505,9 @@ final class Sync
         }
         $origin = $call['origin'] ?? null;
         if (!in_array($origin, ['inbound', 'outbound'], true)) {
+            // Swagger kender kun inbound/outbound; noget andet tælles i advarslen (QA F-1) i stedet for at gætte
             $this->stats['skipped']++;
-            ($this->log)('adversus-sync: opkald ' . $id . ': ukendt retning — springes over');
+            $this->skippedIds[] = $id;
             return;
         }
         $lead = self::posInt($call['leadId'] ?? null);
@@ -386,7 +524,7 @@ final class Sync
         $now = $this->now();
         $existing = DB::scalar('SELECT id FROM calls WHERE `source` = ? AND external_id = ?', [self::SOURCE, (string) $id]);
         if ($existing !== false && $existing !== null) {
-            // Allerede gemt (overlap eller et vindue, der hentes igen): kun metadata; succes og status ejes af markSuccess
+            // Allerede gemt: kun metadata; succes og status ejes af markSuccess og knappen
             DB::exec('UPDATE calls SET lead_id = ?, campaign_id = ?, direction = ?, customer_phone = ?, agent_ext_id = ?, '
                 . 'agent_name = ?, started_at = ?, duration_sec = ?, updated_at = ? WHERE id = ?',
                 [$lead, $campaign, $origin, $phone, $user === null ? null : (string) $user, $agent, gmdate('Y-m-d H:i:s', $start),
@@ -407,7 +545,7 @@ final class Sync
         }
     }
 
-    // ---------------------------------------------------------------- d) succes begge veje
+    // ---------------------------------------------------------------- e) succes begge veje
 
     /** Opkald, hvis lead er blevet success, efter de blev gemt. Markeringen fjernes aldrig. */
     public function markSuccess(): int
@@ -419,19 +557,23 @@ final class Sync
         return $n;
     }
 
-    // ---------------------------------------------------------------- e) lyd
+    // ---------------------------------------------------------------- f) lyd
 
     /** @return array{ok: int, failed: int} */
     public function downloadPending(): array
     {
+        // Succes-opkald før manuelt valgte (security S1), derefter ældste først
         $rows = DB::all("SELECT id, external_id, started_at FROM calls WHERE `source` = ? AND transcript_status <> 'ikke_valgt' "
-            . "AND (audio_status = 'venter' OR (audio_status = 'fejlet' AND audio_attempts < ?)) ORDER BY started_at ASC, id ASC LIMIT "
-            . self::MAX_DOWNLOADS, [self::SOURCE, self::MAX_AUDIO_ATTEMPTS]);
+            . "AND (audio_status = 'venter' OR (audio_status = 'fejlet' AND audio_attempts < ?)) "
+            . 'ORDER BY is_success DESC, started_at ASC, id ASC LIMIT ' . self::MAX_DOWNLOADS, [self::SOURCE, self::MAX_AUDIO_ATTEMPTS]);
         $ok = 0;
         $failed = 0;
         foreach ($rows as $r) {
             if ($this->client->remaining() < 2) {
                 break;   // 307 + lydværten: næste kørsel fortsætter
+            }
+            if ($this->ts() - $this->startedAt >= self::DOWNLOAD_DEADLINE) {
+                break;   // security S2: en langsom lydvært må ikke holde låsen i timevis
             }
             $id = (int) $r['id'];
             try {
@@ -443,7 +585,7 @@ final class Sync
             } catch (RateLimited $e) {
                 throw $e;   // intet forsøg brugt
             } catch (Throwable $e) {
-                $msg = $e instanceof AdversusError || $e instanceof ZendeskError ? $e->getMessage() : 'intern fejl ved hentning';
+                $msg = $e instanceof AdversusError || $e instanceof ZendeskError ? self::safe($e->getMessage()) : 'intern fejl ved hentning';
                 DB::exec("UPDATE calls SET audio_status = 'fejlet', audio_attempts = audio_attempts + 1, audio_error = ?, "
                     . 'updated_at = ? WHERE id = ?', [mb_substr($msg, 0, 250), $this->now(), $id]);
                 ($this->log)('adversus-sync: opkald ' . $id . ': lyd ikke hentet: ' . $msg);
@@ -529,14 +671,17 @@ final class Sync
         return gmdate('Y-m-d\TH:i:s\Z', $t);
     }
 
-    /** ISO 8601 (med eller uden brøkdele af sekunder) som epoch, rundet ned til hele sekunder; null ved en ugyldig værdi. */
+    /**
+     * ISO 8601 (med eller uden brøkdele af sekunder) som epoch, rundet ned til hele sekunder; null ved en ugyldig værdi.
+     * Uden offset i strengen er tiden UTC (ikke serverens standardzone).
+     */
     public static function epoch(mixed $iso): ?int
     {
         if (!is_string($iso) || $iso === '' || preg_match('/^[0-9]{4}-[0-9]{2}-[0-9]{2}/', $iso) !== 1) {
             return null;
         }
         try {
-            return (new DateTimeImmutable($iso))->getTimestamp();
+            return (new DateTimeImmutable($iso, new DateTimeZone('UTC')))->getTimestamp();
         } catch (\Exception) {
             return null;
         }

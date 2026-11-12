@@ -16,13 +16,22 @@ use DateTimeZone;
  *   recording_hosts = …        (valgfri; værter, optagelsens 307-redirect må gå til — hentes uden login)
  *   success_status = success   (valgfri; lead-status for en succesfuld registrering — kun de leads transcriberes)
  *   sync_since = 2026-11-12    (valgfri; F004: hentningens start, dansk midnat. since er probens og bruges ikke af sync)
+ *   lag_minutes = 10           (valgfri; F004: så langt bag nu ligger det seneste optagelsesvindue, 1–120)
  */
 final class AdversusConfig
 {
     /** F004 (DECISIONS #31): uden sync_since starter hentningen 2026-11-12 00:00 dansk tid */
     public const SYNC_SINCE_DEFAULT = '2026-11-12';
+    /**
+     * /recordings.timestamp er upload-tiden (swagger: "Timestamp for when the recording was uploaded", anbefalet som
+     * cursor), så en optagelse er normalt synlig, når den får sit tidsstempel. 10 min giver plads til forsinket
+     * indeksering og ur-forskel; en optagelse, der dukker op senere end det med et ældre tidsstempel, ville ligge bag
+     * cursoren. Kan sættes op i config, hvis DEV-loggen viser det.
+     */
+    public const LAG_DEFAULT = 600;
 
     public readonly int $syncSince;
+    public readonly int $lag;
 
     /** @param list<string> $recordingHosts */
     public function __construct(
@@ -32,8 +41,10 @@ final class AdversusConfig
         public readonly array $recordingHosts = [],
         public readonly string $successStatus = 'success',
         ?int $syncSince = null,
+        ?int $lag = null,
     ) {
-        $this->syncSince = $syncSince ?? self::localMidnight(self::SYNC_SINCE_DEFAULT);
+        $this->syncSince = $syncSince ?? (int) self::localMidnight(self::SYNC_SINCE_DEFAULT);
+        $this->lag = $lag ?? self::LAG_DEFAULT;
     }
 
     /** ÅÅÅÅ-MM-DD som epoch for midnat i Europe/Copenhagen; null ved en ugyldig dato. */
@@ -87,7 +98,14 @@ final class AdversusConfig
                 throw new AdversusError('[adversus] sync_since er ikke ÅÅÅÅ-MM-DD');
             }
         }
-        return new self($str('username'), $str('password'), $since->getTimestamp(), $hosts, $success, $syncSince);
+        $lag = null;
+        if ($str('lag_minutes') !== '') {
+            if (!ctype_digit($str('lag_minutes')) || (int) $str('lag_minutes') < 1 || (int) $str('lag_minutes') > 120) {
+                throw new AdversusError('[adversus] lag_minutes skal være et helt tal fra 1 til 120');
+            }
+            $lag = (int) $str('lag_minutes') * 60;
+        }
+        return new self($str('username'), $str('password'), $since->getTimestamp(), $hosts, $success, $syncSince, $lag);
     }
 
     /** Datoen som ISO 8601 til Adversus' filtre. */

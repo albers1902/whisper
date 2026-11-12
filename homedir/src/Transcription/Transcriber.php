@@ -107,8 +107,10 @@ final class Transcriber
             $cond .= ' AND duration_sec > 0 AND duration_sec <= ?';
             $params[] = $maxAudio;
         }
-        // Lidt flere kandidater end nødvendigt: en samtidig kørsel kan have taget nogle af dem
-        $ids = DB::all('SELECT id FROM calls WHERE ' . $cond . ' ORDER BY (transcript_status = \'fejlet\'), started_at ASC, id ASC LIMIT '
+        // Lidt flere kandidater end nødvendigt: en samtidig kørsel kan have taget nogle af dem. Manuelt valgte
+        // Adversus-opkald (ikke succes) kommer efter Zendesk og succes-opkald (F004, security S1)
+        $ids = DB::all('SELECT id FROM calls WHERE ' . $cond . ' ORDER BY (transcript_status = \'fejlet\'), '
+            . "(`source` = 'adversus' AND is_success = 0), started_at ASC, id ASC LIMIT "
             . ($max + 4), $params);
         $jobs = [];
         foreach ($ids as $row) {

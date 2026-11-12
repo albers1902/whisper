@@ -34,6 +34,17 @@ $t = new Transcriber(new FakeEngine(), static fn(): int => time());
 $jobs = $t->claim(5);
 F004Check::that('AK2', array_column($jobs, 'id') === [(int) $a['id']], 'transcription-køen tager succes-opkaldet og ikke "ikke valgt"');
 
+// Prioritet (security S1): et manuelt valgt Adversus-opkald kommer efter Zendesk og succes, også når det er ældst
+$manual = f004_insert(2099, false, 'ventende', '2026-11-01 08:00:00');
+f002_audio($manual);
+$zen = f002_insert(['started_at' => '2026-11-02 08:00:00']);
+f002_audio($zen);
+DB::exec("UPDATE calls SET transcript_status = 'ventende', claimed_at = NULL WHERE id = ?", [(int) $a['id']]);
+$order = array_column($t->claim(3), 'id');
+F004Check::that('AK2', $order === [$zen, (int) $a['id'], $manual], 'claim: Zendesk og succes før manuelt valgte (fik ' . implode(',', $order) . ')');
+DB::exec('DELETE FROM calls WHERE id IN (?, ?)', [$zen, $manual]);
+DB::exec("UPDATE calls SET transcript_status = 'ventende', claimed_at = NULL, transcript_attempts = 0 WHERE id = ?", [(int) $a['id']]);
+
 // Siden tæller ikke "ikke valgt" som "venter på lyd"
 $st = \Whisper\Calls::status();
 F004Check::that('AK2', $st['audio_waiting'] === 0, '"ikke valgt" tælles ikke som "venter på lyd"');

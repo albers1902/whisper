@@ -26,6 +26,17 @@ try {
     F004Check::that('AK5', !str_contains($e->getMessage(), '2026-13-40'), 'ugyldig sync_since afvises uden at gentage værdien');
 }
 
+// Sommer- og vintertid: midnat på omskiftningsdagene er stadig midnat i dansk tid (QA)
+F004Check::that('AK5', AdversusConfig::localMidnight('2026-10-25') === strtotime('2026-10-24 22:00:00 UTC'), 'midnat 2026-10-25 (sommertid ender kl. 3) = 22:00 UTC dagen før');
+F004Check::that('AK5', AdversusConfig::localMidnight('2027-03-28') === strtotime('2027-03-27 23:00:00 UTC'), 'midnat 2027-03-28 (sommertid starter kl. 2) = 23:00 UTC dagen før');
+F004Check::that('AK5', AdversusConfig::localMidnight('2026-10-26') === strtotime('2026-10-25 23:00:00 UTC'), 'dagen efter vintertid: 23:00 UTC');
+// Tidsstempler uden offset er UTC, ikke serverens zone (QA)
+F004Check::that('AK5', \Whisper\Adversus\Sync::epoch('2026-11-12T10:00:00') === strtotime('2026-11-12 10:00:00 UTC')
+    && \Whisper\Adversus\Sync::epoch('2026-11-12T10:00:00.750Z') === strtotime('2026-11-12 10:00:00 UTC'), 'epoch(): uden offset = UTC, millisekunder rundes ned');
+// lag_minutes (LAG kan sættes i config)
+$cfgLag = AdversusConfig::fromSection($sec + ['lag_minutes' => '30']);
+F004Check::that('AK5', $cfgLag !== null && $cfgLag->lag === 1800 && AdversusConfig::fromSection($sec)?->lag === 600, 'lag_minutes: standard 10 min, kan sættes');
+
 // Data før og efter since
 $S = f004_since() + 2 * 86400;    // sync_since = to dage efter standarden
 $cfg = f004_cfg([F004_AUDIO_HOST], $S);

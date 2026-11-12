@@ -97,6 +97,14 @@ function f004_recorded(FakeAdversus $http, int $id, int $lead, int $start, int $
     return $call;
 }
 
+/** Kun /recordings-posten (opkaldet lægges evt. senere med f004_call): cdr.timestamp og upload-tid frit. */
+function f004_recording(FakeAdversus $http, int $id, int $cdrTs, int $uploadTs): void
+{
+    $http->recordings[] = ['cdr' => ['id' => $id, 'timestamp' => f004_iso($cdrTs)], 'timestamp' => f004_iso($uploadTs),
+        'recording' => ['name' => 'rec-' . $id . '.mp3', 'download' => 'https://' . F004_AUDIO_HOST . '/rec/' . $id . '.mp3?' . F004_SIG],
+        'clips' => []];
+}
+
 /** @return array<string, mixed> et opkald uden optagelse */
 function f004_call(FakeAdversus $http, int $id, int $lead, int $start, int $duration = 120, string $origin = 'outbound', int $user = 77): array
 {
@@ -157,6 +165,10 @@ final class FakeAdversus implements HttpTransport
     public bool $usersForbidden = false;
     /** @var list<int> opkald, hvis /recording svarer 404 */
     public array $noRecording = [];
+    /** /leads svarer 500 med fri tekst (kundenavn) i message */
+    public bool $leadsError = false;
+    /** Kaldes ved hver hentning fra lydværten (fx for at flytte testens ur) */
+    public ?Closure $onAudio = null;
 
     public function request(string $method, string $url, array $headers = [], ?string $body = null, ?string $saveTo = null): HttpResult
     {
@@ -169,6 +181,9 @@ final class FakeAdversus implements HttpTransport
         $path = is_array($u) ? (string) ($u['path'] ?? '') : '';
         parse_str(is_array($u) ? (string) ($u['query'] ?? '') : '', $q);
         if ($host === F004_AUDIO_HOST || $host === 'evil.example.com') {
+            if ($this->onAudio !== null) {
+                ($this->onAudio)();
+            }
             if ($saveTo !== null) {
                 file_put_contents($saveTo, 'ID3' . str_repeat("\x01\x02\x03\x04", 64));
             }
@@ -189,7 +204,10 @@ final class FakeAdversus implements HttpTransport
             return new HttpResult(404, [], '');
         }
         if ($path === '/v1/users' && $this->usersForbidden) {
-            return new HttpResult(403, [], '{"code":403,"message":"Forbidden"}');
+            return new HttpResult(403, [], '{"code":403,"message":"Forbidden for Kunde Jensen"}');
+        }
+        if ($path === '/v1/leads' && $this->leadsError) {
+            return new HttpResult(500, [], '{"code":500,"message":"Lead for Kunde Jensen kunne ikke læses"}');
         }
         [$key, $items] = $lists[$path];
         $filters = is_string($q['filters'] ?? null) ? json_decode($q['filters'], true) : [];
