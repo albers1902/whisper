@@ -61,11 +61,9 @@ Paths::writePrivate(Paths::dir('cache') . '/f007-queue.json', '{"last_ok_at":nul
 UiV2::reset(false);
 F007Check::that('AK4', UiV2::queue()['status']['waiting'] === 1, 'cache med urimelige tal ignoreres');
 
-// H009: advarslen fra før genopretningen er forældet
-DB::exec('UPDATE sync_state SET last_run_at = ? WHERE `source` = ?', [gmdate('Y-m-d H:i:s', time() + 60), AdversusSync::RECOVERY]);
+// En udløbet advarsel (WARN_TTL) vises ikke, heller ikke som markør; H013's migrate() rydder den forældede fra før H013
+DB::exec('UPDATE sync_state SET last_run_at = ? WHERE `source` = ?', [gmdate('Y-m-d H:i:s', time() - AdversusSync::WARN_TTL - 60), AdversusSync::WARN]);
 $after = f007_get($c, '/', ['kilde' => 'adversus']);
 F007Check::that('AK4', !str_contains($after->body, 'Nogle opkald kunne ikke hentes') && !str_contains($after->body, 'tab-flag-warn'),
-    'advarsel fra før H009-genopretningen vises ikke');
-F007Check::that('AK4', AdversusSync::beforeRecovery($now) && !AdversusSync::beforeRecovery(gmdate('Y-m-d H:i:s', time() + 3600)),
-    'beforeRecovery: kun advarsler fra før genopretningen');
+    'udløbet advarsel vises ikke');
 F007Check::done();

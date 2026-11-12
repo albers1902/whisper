@@ -57,9 +57,11 @@ function f004_setup(): string
     $dir = f005_setup();
     Flags::override(Feature::FLAG, true);
     DB::exec('DELETE FROM adversus_success_leads');
+    DB::exec('DELETE FROM adversus_leads');
+    DB::exec('DELETE FROM adversus_pending');
     DB::exec('DELETE FROM adversus_users');
-    // Systemet efter H009's engangs-genopretning; test_H009-AK3 fjerner markøren for at prøve den
-    DB::exec('INSERT IGNORE INTO sync_state (`source`, cursor_value) VALUES (?, ?)', [Sync::RECOVERY, 'done']);
+    // Systemet efter H013's engangs-oprydning; test_H013-AK4 fjerner markøren for at prøve den
+    DB::exec('INSERT IGNORE INTO sync_state (`source`, cursor_value) VALUES (?, ?)', [Sync::MIGRATED, 'done']);
     return $dir;
 }
 
@@ -115,10 +117,11 @@ function f004_recording(FakeAdversus $http, int $id, int $cdrTs, int $uploadTs):
 }
 
 /** @return array<string, mixed> et opkald uden optagelse */
-function f004_call(FakeAdversus $http, int $id, int $lead, int $start, int $duration = 120, string $origin = 'outbound', int $user = 77): array
+function f004_call(FakeAdversus $http, int $id, int $lead, int $start, int $duration = 120, string $origin = 'outbound', int $user = 77,
+    string $disposition = 'answered'): array
 {
     $call = ['id' => $id, 'leadId' => $lead, 'campaignId' => 31, 'userId' => $user, 'contactId' => 9, 'number' => '+45 12 34 56 78',
-        'origin' => $origin, 'disposition' => 'answered', 'start' => f004_iso($start), 'end' => f004_iso($start + $duration),
+        'origin' => $origin, 'disposition' => $disposition, 'start' => f004_iso($start), 'end' => f004_iso($start + $duration),
         'duration' => $duration, 'conversation' => max(0, $duration - 10)];
     $http->calls[] = $call;
     return $call;

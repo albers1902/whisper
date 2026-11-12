@@ -554,10 +554,6 @@ final class Calls
         if (!is_string($at) || !is_string($text) || $now - (int) strtotime($at . ' UTC') > Adversus\Sync::WARN_TTL) {
             return null;
         }
-        // F007: en advarsel fra før H009-genopretningen nævner id'er, som genopretningen henter igen
-        if (UiV2::on() && Adversus\Sync::beforeRecovery($at)) {
-            return null;
-        }
         return $text;
     }
 

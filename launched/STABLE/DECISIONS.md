@@ -470,3 +470,35 @@ Accepteret risiko. Fund S3 (LOW) i security-critic/H012_v1.md. Køres down/0008 
 sider på manual_at. Rækkefølgen ved rollback er kode først (Revert-H), derefter down; valgte, ikke færdige opkald skal vælges
 igen. Beskrevet i down-filen og changes/H012.md.
 Udløber: 2027-02-10
+
+## #79 — 2026-11-12 — H013-S1: kundenumre gemmes for alle Adversus-opkald uden retention
+H013-S1 · Accepteret risiko (MEDIUM, security-critic H013_v2): telefonnummer (renset), agentnavn og disposition gemmes
+for ALLE Adversus-CDR'er, også ubesvarede og uden succes (ca. 10.000 pr. døgn). Ejeren besluttede det 2026-11-12; det
+afløser #38 (kun opkald med optagelse). Lyd og transcription hentes fortsat kun for succes og manuelt valgte. Der er
+ingen sletning eller retention. Retention (fx nummeret slettet eller hashet for ikke-valgte opkald efter N dage) afklares
+med ejeren senest før STABLE.
+Udløber: 2027-02-10
+
+## #80 — 2026-11-12 — H013-S2: alle Adversus-CDR'er med nummer kan ses af alle med adgang til "Alle opkald"
+H013-S2 · Accepteret risiko (LOW, security-critic H013_v2): `Calls::sourceSql('alle')` filtrerer ikke på valgt/succes,
+så detaljesiden og "Alle opkald" viser nu også ikke-valgte CDR'er med nummer for enhver indlogget bruger. Rolle- og
+synlighedsregler hører til F007. F007 skal tage stilling til nummer og detalje pr. rolle. Vurderet i security-critic
+F007_v2: ingen rollebegrænsning nu (alle brugere er interne og ser allerede valgte opkald med nummer, transcript og lyd);
+rolleregel og retention i en senere opgave inden fristen.
+Udløber: 2027-02-10
+
+## #81 — 2026-11-12 — H013-S3: engangsoprydningen i Sync::migrate() sletter adversus_pending og kan ikke rulles tilbage
+H013-S3 · Accepteret risiko (LOW, security-critic H013_v2): `Sync::migrate()` tømmer `adversus_pending` og fjerner
+sync_state `adversus-warn` og `adversus-rec` ved første kørsel (og retter lead-status til den konfigurerede
+success_status i samme transaktion). Det er afledte data, og det sker i kode, ikke i migrationen. Revert-H efter første
+kørsel genskaber ikke ventelisten, og markøren `h013-adversus` forhindrer gentagelse efter down/up. Tabellen
+`adversus_pending` droppes først i en contract med eget ID (LIFECYCLE §6).
+Udløber: 2027-02-10
+
+## #82 — 2026-11-12 — H013-S5: opkald, der bevidst ikke gemmes, holder kontrollerne i gang
+H013-S5 · Accepteret risiko (LOW, security-critic H013_v2): opkald med ukendt retning eller ugyldigt id gemmes ikke, men
+tæller i Adversus' total. `missing()` ser derfor et permanent hul, og `recent()` (hver kørsel), `check()` (hver time) og
+`dayCheck()` (spoler tilbage til døgnet) henter det samme vindue igen. Det er begrænset af MAX_REQUESTS=100 og RESERVE=30
+(lyd kan ikke starves), men det spilder API-budget og forsinker backfill. Rettes i en senere H (træk sprungne opkald fra
+totalen eller sæt loft på genhentning uden fremgang). Imens overvåges `rescanned` og `skipped`.
+Udløber: 2027-02-10

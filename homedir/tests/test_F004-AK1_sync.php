@@ -1,8 +1,9 @@
 <?php
 declare(strict_types=1);
 
-// F004-AK1: med fake-transport (fixtures fra /recordings, /calls og /leads) gemmer sync kun opkald med optagelse, med
-// korrekt kilde, lead og varighed, og flytter cursorerne frem. En ny kørsel giver ingen dubletter. Højst 100 kald.
+// F004-AK1: med fake-transport (fixtures fra /calls og /leads) gemmer sync opkaldene med korrekt kilde, lead og varighed,
+// og flytter cursorerne frem. En ny kørsel giver ingen dubletter. Højst 100 kald. Fra H013 gemmes ALLE CDR'er (også
+// dem uden optagelse), og /recordings bruges ikke.
 
 require_once __DIR__ . '/f004_lib.php';
 
@@ -27,7 +28,8 @@ $r = $sync->run();
 echo implode("\n", $log), "\n", Sync::logLine($r), "\n";
 
 $rows = DB::all("SELECT * FROM calls WHERE `source` = 'adversus' ORDER BY external_id");
-F004Check::that('AK1', array_column($rows, 'external_id') === ['1001', '1002', '1003'], 'kun de tre opkald med optagelse er gemt');
+F004Check::that('AK1', array_column($rows, 'external_id') === ['1001', '1002', '1003', '1004', '1005'], 'alle fem CDR-poster er gemt (H013)');
+F004Check::that('AK1', $http->to('/v1/recordings') === [], 'optagelseslisten bruges ikke (H013)');
 $a = $rows[0];
 F004Check::that('AK1', $a['source'] === 'adversus' && (int) $a['lead_id'] === 501 && (int) $a['campaign_id'] === 31, 'kilde, lead og kampagne');
 F004Check::that('AK1', (int) $a['duration_sec'] === 95 && $a['direction'] === 'outbound', 'varighed og retning (origin)');
@@ -39,21 +41,22 @@ F004Check::that('AK1', $a['agent_name'] === 'Anne Adversus' && $a['agent_ext_id'
 $users = DB::all('SELECT * FROM adversus_users');
 F004Check::that('AK1', count($users) === 1 && array_keys($users[0]) === ['user_id', 'name', 'updated_at'], 'kun id og navn gemmes om brugeren');
 
-$rec = json_decode((string) DB::scalar('SELECT cursor_value FROM sync_state WHERE `source` = ?', ['adversus-rec']), true);
-F004Check::that('AK1', is_array($rec) && $rec['t'] === $now - Sync::LAG, 'optagelses-cursoren står ved nu − LAG (alle vinduer gemt)');
-$leadCursor = (int) DB::scalar('SELECT cursor_value FROM sync_state WHERE `source` = ?', ['adversus-leads']);
+$rec = json_decode((string) DB::scalar('SELECT cursor_value FROM sync_state WHERE `source` = ?', [Sync::CURSOR_CDR]), true);
+F004Check::that('AK1', is_array($rec) && $rec['t'] === $S + 4 * 3600 + 17, 'CDR-cursoren står ved seneste start');
+$leadCursor = (int) DB::scalar('SELECT cursor_value FROM sync_state WHERE `source` = ?', [Sync::CURSOR_LEADS]);
 F004Check::that('AK1', $leadCursor === $S + 1800, 'lead-cursoren står ved sidste lastUpdatedTime');
 F004Check::that('AK1', DB::scalar("SELECT last_ok_at FROM sync_state WHERE `source` = 'adversus'") !== null && $r['error'] === null,
     'kørslen er ok (last_ok_at sat)');
 F004Check::that('AK1', $r['requests'] <= 100 && Sync::MAX_REQUESTS === 100, 'højst 100 kald (fik ' . $r['requests'] . ')');
-F004Check::that('AK1', $r['recordings'] === 3 && $r['new'] === 3, 'loglinjens tal: 3 optagelser, 3 nye');
-F004Check::that('AK1', str_starts_with(Sync::logLine($r), 'adversus-sync: 3 optagelser, 3 nye opkald, 1 succes, 1 kø, 0 umatchede · kald '),
-    'loglinjen har formatet fra spec');
+F004Check::that('AK1', $r['cdr'] === 5 && $r['new'] === 5, 'loglinjens tal: 5 cdr, 5 nye');
+F004Check::that('AK1', str_starts_with(Sync::logLine($r),
+    'adversus-sync: 5 cdr (5 nye, dag 2026-11-12), 1 leads, 2 succes, lyd 2 hentet/0 uden optagelse/0 fejlet, kontrol 6 t (0 igen) · kald '),
+    'loglinjen har tal for hver fase (fik ' . Sync::logLine($r) . ')');
 
 // Ny kørsel senere: intet nyt, ingen dubletter
 ['sync' => $sync2] = f004_sync(f004_cfg(), $http, $now + 1200);
 $r2 = $sync2->run();
-F004Check::that('AK1', (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus'") === 3 && $r2['new'] === 0, 'ingen dubletter ved ny kørsel');
+F004Check::that('AK1', (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus'") === 5 && $r2['new'] === 0, 'ingen dubletter ved ny kørsel');
 
 // Ingen hemmeligheder eller signerede URL'er i loggen
 $all = implode("\n", $log) . Sync::logLine($r);

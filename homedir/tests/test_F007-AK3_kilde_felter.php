@@ -32,6 +32,14 @@ F007Check::that('AK3', str_contains($ar->body, 'Kampagne #31') && str_contains($
 $all = f007_get($c, '/', ['kilde' => 'adversus', 'vis' => 'alle']);
 F007Check::that('AK3', f007_ids($all) === [$no, $ok] && str_contains($all->body, 'aria-current="true">Alle opkald'), 'Adversus "Alle opkald": begge');
 F007Check::that('AK3', str_contains($all->body, '>Ikke valgt</span>'), '"Ikke valgt" vises under Alle opkald');
+// H013: et CDR uden samtale (fx optaget) hedder "Ikke besvaret"
+\Whisper\DB::exec("UPDATE calls SET disposition = 'busy' WHERE id = ?", [$no]);
+$busy = f007_get($c, '/', ['kilde' => 'adversus', 'vis' => 'alle']);
+F007Check::that('AK3', str_contains($busy->body, '>Ikke besvaret</span>') && !str_contains($busy->body, '>Ikke valgt</span>'),
+    'ubesvaret Adversus-opkald (disposition busy): "Ikke besvaret"');
+\Whisper\DB::exec("UPDATE calls SET disposition = 'answered' WHERE id = ?", [$no]);
+F007Check::that('AK3', str_contains(f007_get($c, '/', ['kilde' => 'adversus', 'vis' => 'alle'])->body, '>Ikke valgt</span>'),
+    'besvaret uden succes: stadig "Ikke valgt"');
 
 $d = f007_get($c, '/opkald/' . $ok, ['kilde' => 'adversus']);
 F007Check::that('AK3', str_contains($d->body, '<dt>Kampagne</dt>') && str_contains($d->body, '<dt>Lead</dt>') && !str_contains($d->body, '<dt>Ticket</dt>'),

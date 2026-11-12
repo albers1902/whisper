@@ -46,16 +46,32 @@ F004Check::that('AK8', array_filter($http->requests, static fn(array $r): bool =
 F004Check::that('AK8', !str_contains(f004_dump(), 'evil.example.com') && !str_contains(f004_dump(), 'X-Amz'), 'ingen URL gemt');
 F004Check::that('AK8', !str_contains(implode("\n", $log), 'evil') && !str_contains(implode("\n", $log), 'X-Amz'), 'ingen URL i loggen');
 
-// 3. Opkald uden optagelse (404): fejlet med kort tekst, højst 5 forsøg
-DB::exec("UPDATE calls SET audio_status = 'venter', audio_attempts = 0 WHERE external_id = '8001'");
+// 3. Opkald uden optagelse (404, H013): lige efter opkaldet prøves igen efter 30 min uden at bruge et forsøg; når
+// opkaldet er 6 t gammelt, er det endeligt (alle forsøg brugt, "Lyd mangler") og spørges ikke mere
+DB::exec("UPDATE calls SET audio_status = 'venter', audio_attempts = 0, audio_error = NULL WHERE external_id = '8001'");
 $http->redirectHost = F004_AUDIO_HOST;
 $http->noRecording = [8001];
-for ($i = 0; $i < 7; $i++) {
-    ['sync' => $s] = f004_sync(f004_cfg([F004_AUDIO_HOST]), $http, $now + 1200 + $i * 600);
+$asked = static fn(): int => count($http->to('/v1/calls/8001/recording'));
+$n0 = $asked();
+['sync' => $s] = f004_sync(f004_cfg([F004_AUDIO_HOST]), $http, $now + 1200);
+$s->run();
+$a = DB::all("SELECT * FROM calls WHERE external_id = '8001'")[0];
+F004Check::that('AK8', $asked() === $n0 + 1 && $a['audio_status'] === 'venter' && (int) $a['audio_attempts'] === 0
+    && $a['audio_error'] === Sync::NO_AUDIO_YET, '404 lige efter opkaldet: venter igen uden forsøg');
+['sync' => $s] = f004_sync(f004_cfg([F004_AUDIO_HOST]), $http, $now + 1800);
+$s->run();
+F004Check::that('AK8', $asked() === $n0 + 1, 'ikke spurgt igen inden for 30 min');
+$late = $S + 600 + 60 + Sync::NO_AUDIO_FINAL + 60;
+['sync' => $s] = f004_sync(f004_cfg([F004_AUDIO_HOST]), $http, $late);
+$r404 = $s->run();
+$a = DB::all("SELECT * FROM calls WHERE external_id = '8001'")[0];
+F004Check::that('AK8', (int) $a['audio_attempts'] === 5 && $a['audio_status'] === 'fejlet' && $a['audio_error'] === Sync::NO_AUDIO
+    && $r404['no_audio'] === 1, '404 efter 6 t: endeligt uden optagelse');
+for ($i = 1; $i <= 3; $i++) {
+    ['sync' => $s] = f004_sync(f004_cfg([F004_AUDIO_HOST]), $http, $late + $i * 3600);
     $s->run();
 }
-$a = DB::all("SELECT * FROM calls WHERE external_id = '8001'")[0];
-F004Check::that('AK8', (int) $a['audio_attempts'] === 5 && $a['audio_status'] === 'fejlet', 'højst 5 forsøg');
+F004Check::that('AK8', $asked() === $n0 + 2, 'derefter spørges der ikke mere (' . ($asked() - $n0) . ' opslag i alt)');
 
 // 4. Deadline (security S2): ingen nye downloads efter 8 min af kørslen. Hver hentning "tager" 300 s på testens ur.
 f004_setup();

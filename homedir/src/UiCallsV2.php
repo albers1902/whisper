@@ -332,7 +332,16 @@ final class UiCallsV2
     {
         [$class, $text] = Ui::status((string) ($call['audio_status'] ?? ''), (string) ($call['transcript_status'] ?? ''), $audioOnDisk,
             QueueRules::fromConfig()->skipReason($call, time()));
+        if ($class === 's-ikke-valgt' && Calls::isAdversus($call) && self::unanswered($call)) {
+            return [$class, 'Ikke besvaret'];   // H013: CDR uden samtale (optaget, intet svar …) — der er intet at transcribere
+        }
         return [$class, $text === 'Venter' ? 'I kø' : $text];
+    }
+
+    /** H013: Adversus-opkald, hvor der ikke blev talt (disposition i Sync::NO_CONVERSATION). @param array<string, mixed> $call */
+    public static function unanswered(array $call): bool
+    {
+        return in_array($call['disposition'] ?? null, AdversusSync::NO_CONVERSATION, true);
     }
 
     private static function ticketTag(int $ticket, ?string $subdomain): string

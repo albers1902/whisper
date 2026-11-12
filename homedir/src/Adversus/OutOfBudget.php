@@ -5,7 +5,7 @@ namespace Whisper\Adversus;
 
 use RuntimeException;
 
-/** Sync's optagelsesfase har ikke flere kald uden at gå ind i reserven til lyd. Intern: fanges altid i Sync::recordings(). */
+/** Sync's CDR- eller kontrolfase har ikke flere kald uden at gå ind i reserven til lyd. Intern: fanges altid i Sync::cdrs()/check(). */
 final class OutOfBudget extends RuntimeException
 {
 }

@@ -16,7 +16,7 @@ use DateTimeZone;
  *   recording_hosts = …        (valgfri; værter, optagelsens 307-redirect må gå til — hentes uden login)
  *   success_status = success   (valgfri; lead-status for en succesfuld registrering — kun de leads transcriberes)
  *   sync_since = 2026-11-12    (valgfri; F004: hentningens start, dansk midnat. since er probens og bruges ikke af sync)
- *   lag_minutes = 10           (valgfri; F004: så langt bag nu ligger det seneste optagelsesvindue, 1–120)
+ *   lag_minutes = 10           (valgfri; F004/H013: så langt bag nu går CDR-cursoren (/calls start), 1–120)
  *   filter_tz = Europe/Copenhagen (valgfri; H009: zonen, Adversus læser filtrenes tidscifre i — se filterTime)
  */
 final class AdversusConfig
@@ -24,10 +24,8 @@ final class AdversusConfig
     /** F004 (DECISIONS #31): uden sync_since starter hentningen 2026-11-12 00:00 dansk tid */
     public const SYNC_SINCE_DEFAULT = '2026-11-12';
     /**
-     * /recordings.timestamp er upload-tiden (swagger: "Timestamp for when the recording was uploaded", anbefalet som
-     * cursor), så en optagelse er normalt synlig, når den får sit tidsstempel. 10 min giver plads til forsinket
-     * indeksering og ur-forskel; en optagelse, der dukker op senere end det med et ældre tidsstempel, ville ligge bag
-     * cursoren. Kan sættes op i config, hvis DEV-loggen viser det.
+     * CDR-cursoren (/calls sorteret på start) går kun til nu − lag, så et opkald normalt er logget, når det hentes. Et
+     * opkald, der logges senere (fx et langt opkald), hentes af Sync's kontrol pr. time (H013). Kan sættes i config.
      */
     public const LAG_DEFAULT = 600;
     /**
