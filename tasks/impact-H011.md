@@ -3,7 +3,7 @@
 Tier: 1
 
 Grund:
-- Migration 0006 (expand, `transcripts.diar_status`/`diar_attempts`/`diarized_at`).
+- Migration 0007 (expand, `transcripts.diar_status`/`diar_attempts`/`diarized_at`).
 - Diarization er efter ejerens krav et separat trin i ledig tid (spec v2, `fullstack-ai/H011_v0.md` tillæg 1). Det
   skal derfor kunne se, hvilke transcripts der mangler talere, og huske fejl.
 - Derudover: ny lokal model og ny afhængighed i venv'et (sherpa-onnx 2.0.1, låst med hash), ændret transcript-format
@@ -17,7 +17,7 @@ MCP). Ingen designere: UI-delen er kun tekstetiketten "Agent:"/"Kunde:".
   - `homedir/cron/diarize.php`, `homedir/cron/diarize.py`
   - `homedir/src/Transcription/Diarization.php`, `DiarizationEngine.php`, `DiarizationSettings.php`, `Diarizer.php`,
     `ProcessDiarizer.php`
-  - `homedir/migrations/0006_v0.6.0_diarization.sql` (+ down)
+  - `homedir/migrations/0007_v0.7.0_diarization.sql` (+ down)
 - Ændrede:
   - `homedir/cron/whisper-requirements.txt` (to nye låste wheels), `whisper-setup.sh` (modeller + selvtest) og
     `whisper-cron.sh` (ny cron-linje)
@@ -42,5 +42,5 @@ MCP som en del af transcriptet (#20). Det er samme modtager og samme data, nu me
   intet.
 
 ## Rollback
-`[diarization] enabled = off` i config.ini (uden deploy), flaget off eller Revert-H. 0006 har en down-fil. Talerne i
+`[diarization] enabled = off` i config.ini (uden deploy), flaget off eller Revert-H. 0007 har en down-fil. Talerne i
 segments_json ignoreres af kode fra før H011.
