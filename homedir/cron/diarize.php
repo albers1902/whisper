@@ -9,7 +9,12 @@ declare(strict_types=1);
  *
  * Gør intet, når flaget H011_diarization er slukket, `[diarization] enabled = off` står i config.ini, en udrulning kører,
  * eller der er opkald i transcription-køen. Højst én kørsel ad gangen (var/locks/diarize.lock). Motoren kører med
- * nice 19 / ionice -c3 og stoppes inden for ca. 5 s, når der kommer et opkald, så transcription aldrig venter på den.
+ * nice 19 / ionice -c3 og stoppes inden for ca. 5 s, når der kommer et opkald eller en udrulning starter, så
+ * transcription aldrig venter på den.
+ *
+ * Talerne beregnes igen (fx efter en ændring af [diarization] agent_phrases) ved at nulstille bogføringen:
+ *
+ *   php ~/cron/diarize.php --reset <opkalds-id|fejlet|alle>
  */
 
 use Whisper\Transcription\DiarizationSettings;
@@ -28,6 +33,17 @@ if (file_exists($deploying)) {
 }
 
 require_once __DIR__ . '/../src/Bootstrap.php';
+
+if (($argv[1] ?? '') === '--reset') {
+    try {
+        $n = Diarizer::reset((string) ($argv[2] ?? ''));
+    } catch (\InvalidArgumentException $e) {
+        fwrite(STDERR, 'diarize: ' . $e->getMessage() . "\n");
+        exit(2);
+    }
+    echo 'diarize: ', $n, " transcript(s) nulstillet — talerne beregnes igen, når transcription-køen er tom\n";
+    exit(0);
+}
 
 if (!\Whisper\Flags::enabled(\Whisper\App::FLAG) || !\Whisper\Flags::enabled(\Whisper\CallPages::FLAG)) {
     exit(0);
@@ -67,12 +83,6 @@ $jobLog = static function (string $line) use (&$warnings, $log): void {
     $warnings = [];
     $log($line);
 };
-$d = new Diarizer($engine, $settings, null, $jobLog);
-$start = time();
-while (time() - $start < 3000 && !file_exists($deploying)) {
-    // 0 = intet at gøre, eller transcription-køen fik et opkald: stop til næste cron-minut
-    if ($d->runOnce(3000 - (time() - $start)) === 0 || $d->stopped) {
-        break;
-    }
-}
+$d = new Diarizer($engine, $settings, null, $jobLog, static fn(): bool => file_exists($deploying));
+$d->run(3000);
 $lock->release();

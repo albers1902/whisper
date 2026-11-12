@@ -16,9 +16,10 @@ interface DiarizationEngine
      *
      * @param list<string> $files absolutte stier (Calls::audioFile)
      * @param Closure(string, list<mixed>|EngineError, float): void $onResult fil, rå intervaller eller fejl, sekunder
-     * @param Closure(): bool $stop spørges ca. hvert STOP_CHECK sekund, mens motoren kører; true = stop den straks
-     * @return bool true, hvis $stop stoppede motoren (resultaterne før det er afleveret)
-     * @throws EngineError hvis motoren ikke kunne startes, fejlede eller nåede tidsgrænsen
+     * @param Closure(): bool $stop spørges ca. hvert ProcessDiarizer::STOP_CHECK sekund, mens motoren kører; true = stop den
+     * @return float|null null = motoren kørte færdig; ellers stoppet af $stop, og tallet er sekunder fra beslutningen, til
+     *   motoren var død (resultaterne før det er afleveret)
+     * @throws EngineError hvis motoren ikke kunne startes, fejlede (exit ≠ 0) eller nåede tidsgrænsen
      */
-    public function diarize(array $files, int $limitSec, Closure $onResult, Closure $stop): bool;
+    public function diarize(array $files, int $limitSec, Closure $onResult, Closure $stop): ?float;
 }

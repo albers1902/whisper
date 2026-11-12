@@ -12,12 +12,17 @@ use Whisper\Paths;
  *   nice -n 19 [ionice -c3] var/whisper/venv/bin/python cron/diarize.py --models var/whisper/diarization --threads N -- <fil> …
  * med proc_open og et argv-array (ingen shell). Filstierne bygges af appen ud fra opkaldets id, tråde er et valideret
  * heltal. Svaret er JSON Lines, én linje pr. fil: {"file", "seconds", "intervals": […]} eller {"file", "error": <type>}.
- * Mens motoren kører, spørges $stop hvert STOP_CHECK sekund; et ventende opkald i transcription-køen stopper den straks
- * (SIGTERM, efter 10 s SIGKILL), så diarization aldrig forsinker transcription mere end et par sekunder.
+ * Mens motoren kører, spørges $stop hvert STOP_CHECK sekund; et ventende opkald i transcription-køen (eller en
+ * udrulning) stopper den straks: SIGTERM, efter højst KILL_WAIT sekunder SIGKILL (python har ingen handler, så SIGTERM
+ * dræber den normalt med det samme), så diarization aldrig forsinker transcription mere end ca. STOP_CHECK sekunder.
+ * Motorens stderr lægges efter hinanden i var/whisper/diarize-fejl.log (0600, ryddes over ERRLOG_MAX), så en fejl ikke
+ * overskrives af næste kørsel.
  */
 final class ProcessDiarizer implements DiarizationEngine
 {
     public const STOP_CHECK = 5;
+    public const KILL_WAIT = 2;
+    public const ERRLOG_MAX = 1048576;
 
     public function __construct(private readonly int $threads)
     {
@@ -43,7 +48,7 @@ final class ProcessDiarizer implements DiarizationEngine
         return Config::baseDir() . '/cron/diarize.py';
     }
 
-    public function diarize(array $files, int $limitSec, Closure $onResult, Closure $stop): bool
+    public function diarize(array $files, int $limitSec, Closure $onResult, Closure $stop): ?float
     {
         if ($files === [] || count($files) > Diarizer::BATCH || count(array_unique($files)) !== count($files)) {
             throw new EngineError('ugyldig batch');
@@ -86,10 +91,11 @@ final class ProcessDiarizer implements DiarizationEngine
 
         $out = (string) tempnam(Paths::dir('whisper'), 'diar');
         $old = umask(077);
+        $errLog = self::openErrorLog(count($files));
         $proc = null;
         $code = -1;
         $timedOut = false;
-        $stopped = false;
+        $stopped = null;
         $pos = 0;
         $buf = '';
         $drain = static function (bool $final) use ($out, &$pos, &$buf, $onLine): void {
@@ -113,7 +119,7 @@ final class ProcessDiarizer implements DiarizationEngine
         try {
             $env = ['PATH' => '/usr/local/bin:/usr/bin:/bin', 'HOME' => Config::baseDir(), 'HF_HOME' => Paths::dir('whisper/hf'),
                 'HF_HUB_OFFLINE' => '1', 'LANG' => 'C.UTF-8'];
-            $proc = proc_open($argv, [0 => ['file', '/dev/null', 'r'], 1 => ['file', $out, 'w'], 2 => ['file', self::errorFile(), 'w']],
+            $proc = proc_open($argv, [0 => ['file', '/dev/null', 'r'], 1 => ['file', $out, 'w'], 2 => ['file', $errLog, 'a']],
                 $pipes, null, $env);
             if (!is_resource($proc)) {
                 $proc = null;
@@ -136,8 +142,9 @@ final class ProcessDiarizer implements DiarizationEngine
                 if (time() - $checked >= self::STOP_CHECK) {
                     $checked = time();
                     if ($stop()) {
-                        $stopped = true;
+                        $t = microtime(true);
                         self::kill($proc);
+                        $stopped = microtime(true) - $t;
                         break;
                     }
                 }
@@ -154,8 +161,8 @@ final class ProcessDiarizer implements DiarizationEngine
             umask($old);
             @unlink($out);
         }
-        if ($stopped) {
-            return true;
+        if ($stopped !== null) {
+            return $stopped;
         }
         if ($timedOut) {
             throw new EngineError('diarization blev stoppet efter tidsgrænsen', EngineError::TIMEOUT);
@@ -163,14 +170,30 @@ final class ProcessDiarizer implements DiarizationEngine
         if ($code !== 0) {
             throw new EngineError('diarization fejlede (exit ' . $code . ')');
         }
-        return false;
+        return null;
     }
 
-    /** @param resource $proc SIGTERM, efter 10 s SIGKILL */
+    /**
+     * Fejlloggen klar til append: 0600 (også en fil, der fandtes i forvejen), ryddet over ERRLOG_MAX, og en linje, der
+     * siger, hvilken kørsel det følgende stderr hører til.
+     */
+    private static function openErrorLog(int $files): string
+    {
+        $f = self::errorFile();
+        clearstatcache(true, $f);
+        if (is_file($f) && (int) filesize($f) > self::ERRLOG_MAX) {
+            @unlink($f);
+        }
+        @file_put_contents($f, gmdate('Y-m-d\TH:i:s\Z') . ' diarize.py startet med ' . $files . " fil(er)\n", FILE_APPEND);
+        @chmod($f, 0600);
+        return $f;
+    }
+
+    /** @param resource $proc SIGTERM, efter højst KILL_WAIT s SIGKILL */
     private static function kill($proc): void
     {
         proc_terminate($proc, 15);
-        for ($i = 0; $i < 100 && proc_get_status($proc)['running']; $i++) {
+        for ($i = 0; $i < self::KILL_WAIT * 10 && proc_get_status($proc)['running']; $i++) {
             usleep(100000);
         }
         if (proc_get_status($proc)['running']) {

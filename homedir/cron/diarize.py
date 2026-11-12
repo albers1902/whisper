@@ -91,6 +91,7 @@ def main() -> int:
         try:
             res = {"file": f, "intervals": diarize(sd, decode_audio(f, sampling_rate=SAMPLE_RATE))}
         except Exception as e:  # noqa: BLE001 - én dårlig fil må ikke stoppe resten
+            print("fejl i %s:" % os.path.basename(f), file=sys.stderr)
             traceback.print_exc(file=sys.stderr)
             res = {"file": f, "error": type(e).__name__}
         res["seconds"] = round(time.monotonic() - t, 2)
