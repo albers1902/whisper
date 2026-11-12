@@ -60,8 +60,10 @@ if (DIRECTORY_SEPARATOR === '/') {
     $b = h006_state($calls[1]['id']);
     $c = h006_state($calls[2]['id']);
     H006Check::that('AK3', $a['status'] === 'faerdig' && $a['transcript'], 'ProcessEngine: A (skrevet før stop) er gemt');
-    H006Check::that('AK3', $b['status'] === 'fejlet' && $b['attempts'] === 1 && str_starts_with((string) $b['error'], 'motoren blev stoppet'),
-        'ProcessEngine: B er fejlet med ét forsøg');
+    // H008: grænsen (2 s) stoppede B, før det havde kørt sit eget budget (max(5 min, 4 × varighed)), så det var
+    // kørslens tid, der slap op: B sættes tilbage uden brugt forsøg (egen grænse: H008-AK4)
+    H006Check::that('AK3', $b['status'] === 'ventende' && $b['attempts'] === 0,
+        'ProcessEngine: B (stoppet før sit eget budget) er ventende med 0 forsøg');
     H006Check::that('AK3', $c['status'] === 'ventende' && $c['attempts'] === 0, 'ProcessEngine: C er ventende med 0 forsøg');
 }
 

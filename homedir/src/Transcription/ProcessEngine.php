@@ -168,7 +168,7 @@ final class ProcessEngine implements BatchEngine
     private static function check(int $code, bool $timedOut, int $limit): void
     {
         if ($timedOut) {
-            throw new EngineError('motoren blev stoppet efter tidsgrænsen (' . intdiv($limit, 60) . ' min)');
+            throw new EngineError('motoren blev stoppet efter tidsgrænsen (' . intdiv($limit, 60) . ' min)', EngineError::TIMEOUT);
         }
         if ($code !== 0) {
             throw new EngineError('motoren fejlede (exit ' . $code . ')');
