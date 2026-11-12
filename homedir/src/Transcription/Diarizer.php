@@ -12,7 +12,8 @@ use Whisper\Paths;
 /**
  * Hvem taler, som et separat trin i ledig tid (H011, cron/diarize.php). Transcription er uændret og går altid først:
  *
- * - Kører kun, når transcription-køen er tom (ingen opkald med hentet lyd i "ventende" eller "transcriberer").
+ * - Kører kun, når transcription-køen er tom (ingen opkald med hentet lyd i "transcriberer", eller i "ventende", som
+ *   køens regler tager).
  * - Tager færdige transcripts uden talere (transcripts.diar_status IS NULL), nyeste opkald først, BATCH ad gangen, og
  *   lægger "speaker"/"role" ind i segments_json (Diarization::apply).
  * - Mens motoren kører, spørges køen (og udrulningen) hvert ProcessDiarizer::STOP_CHECK sekund. Skal den stoppe, dræbes
@@ -76,7 +77,10 @@ final class Diarizer
      */
     public static function busy(): bool
     {
-        return DB::all("SELECT 1 FROM calls WHERE audio_status = 'hentet' AND transcript_status IN ('ventende', 'transcriberer') LIMIT 1") !== [];
+        // Kun opkald, køen faktisk tager (H012): sprungne opkald ("For kort", "Ikke automatisk") står ventende for altid
+        [$rule, $params] = QueueRules::fromConfig()->eligibleSql(time());
+        return DB::all("SELECT 1 FROM calls WHERE audio_status = 'hentet' AND (transcript_status = 'transcriberer' "
+            . "OR (transcript_status = 'ventende' AND " . $rule . ')) LIMIT 1', $params) !== [];
     }
 
     public static function pauseFile(): string

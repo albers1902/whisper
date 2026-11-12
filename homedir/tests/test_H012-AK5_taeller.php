@@ -8,6 +8,7 @@ require_once __DIR__ . '/h012_lib.php';
 
 use Whisper\Calls;
 use Whisper\DB;
+use Whisper\Transcription\Diarizer;
 use Whisper\Transcription\QueueRules;
 
 $now = F002_NOW;
@@ -45,5 +46,17 @@ H012Check::that('AK5', str_contains($body, '1 venter på transcription') && !str
     'statuslinjen: 1 venter på transcription');
 QueueRules::override(QueueRules::off());
 H012Check::that('AK5', str_contains(f002_get($c, '/')->body, '3 venter på transcription'), 'reglerne slået fra: 3 venter');
+
+// Diarization (H011) kører i ledig tid: sprungne opkald holder den ikke tilbage
+f004_setup();
+h012_zendesk($t, 3600, 5);
+h012_zendesk($t, 60 * $day);
+QueueRules::override(new QueueRules());
+H012Check::that('AK5', !Diarizer::busy(), 'kun sprungne opkald: køen er ledig for diarization');
+QueueRules::override(QueueRules::off());
+H012Check::that('AK5', Diarizer::busy(), 'reglerne slået fra: de samme opkald holder diarization tilbage som før');
+QueueRules::override(new QueueRules());
+h012_zendesk($t, 3600, 125);
+H012Check::that('AK5', Diarizer::busy(), 'et opkald, køen tager: diarization venter');
 
 H012Check::done();
