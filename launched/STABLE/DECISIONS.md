@@ -197,3 +197,17 @@ H001 · Accepteret risiko: rækker i `launched/compliance/ACCESS.md` står som "
 pladsholdere (LOW, security-critic H001_v1). De udfyldes med rigtige konti og datoer i docs-PR'en efter
 serveropsætningen af DEV.
 Udløber: 2027-02-09
+
+## #33 — 2026-11-12 — H006: kørselsrammen på 50 min er ikke en garanti
+H006 · Accepteret risiko: Resttiden begrænser kun summen for en batch. Batchens gulv (op til 2400 s) og et langt opkalds
+egen grænse (max(2 t, 4 × varighed)) kan overskride kørslens ramme på 50 min. Det er samme grænse som før H006, og låsen
+forhindrer parallelle motorer. Konsekvensen er kun, at de næste cron-kørsler udskydes (LOW, security-critic H006_v2,
+fund 1, rest efter H006-LOW-3 fra v1). H006-LOW-1 og LOW-2 fra v1 er lukket i v2.
+Udløber: 2027-02-10
+
+## #34 — 2026-11-12 — H006: undtagelse efter claim frigives uden forbrugt forsøg
+H006 · Accepteret risiko: En deterministisk undtagelse efter claim og uden for motoren frigiver opkaldene med refunderet
+forsøg. Den logges kun som fast tekst og kan gentages hvert minut, indtil undtagelsen forsvinder (LOW, security-critic
+H006_v2, fund 2). Sandsynligheden er lav. Rettes i H007, som alligevel ændrer `runBatch`: undtagelsens klasse og linje
+logges i `sidste-fejl.log`, og løkken stopper til næste minut.
+Udløber: 2027-02-10
