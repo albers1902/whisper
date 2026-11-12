@@ -7,6 +7,10 @@ use Closure;
 use Whisper\Adversus\Feature;
 use Whisper\Mcp\Server;
 use Whisper\Mcp\Tokens;
+use Whisper\OAuth\Authorize;
+use Whisper\OAuth\Grants;
+use Whisper\OAuth\Issuer;
+use Whisper\OAuth\OAuth;
 
 /**
  * Router og controllere for F001 (login, konto, brugeradministration) og ruterne for F002 (opkald; controllerne er i
@@ -22,7 +26,7 @@ final class App
     public const FLAG = 'F001_brugere';
     public const IDLE_SECONDS = 8 * 3600;
     /** Appens version (MCP serverInfo, F003). Følger den seneste migrations version. */
-    public const VERSION = '0.4.0';
+    public const VERSION = '0.6.0';
 
     private const BAD_LOGIN = 'Forkert e-mail eller adgangskode.';
     private const LOCKED = 'For mange forsøg — prøv igen om lidt.';
@@ -30,6 +34,17 @@ final class App
     public const ALREADY_REVOKED = 'Nøglen er allerede tilbagekaldt.';
     public const KEYS_REVOKED_SELF = 'Dine MCP-nøgler til Claude Desktop er tilbagekaldt. Opret en ny nøgle her, hvis du stadig skal bruge den.';
     public const KEYS_REVOKED_RESET = 'Brugerens MCP-nøgler til Claude Desktop er tilbagekaldt. Brugeren kan oprette nye under Konto.';
+    /** F006 tændt: kun forbundne apps (DECISIONS #48, F003-nøgler virker ikke med flaget). */
+    public const APPS_REVOKED_SELF = 'Dine forbundne apps er tilbagekaldt. Forbind Claude igen her, hvis du stadig skal bruge det.';
+    public const APPS_REVOKED_RESET = 'Brugerens forbundne apps er tilbagekaldt.';
+    public const APP_ALREADY_REVOKED = 'Forbindelsen er allerede tilbagekaldt.';
+    public const OAUTH_INVALID_TITLE = 'Forbindelsen kan ikke oprettes';
+    public const OAUTH_INVALID_TEXT = 'Anmodningen fra appen er ugyldig, så Whisper sender dig ikke videre. Gå tilbage til Claude, fjern '
+        . 'Whisper-connectoren, og tilføj den igen.';
+    public const OAUTH_EXPIRED_TITLE = 'Forbindelsen er udløbet';
+    public const OAUTH_EXPIRED_TEXT = 'Siden har været åben for længe, anmodningen er allerede brugt, eller en nyere forbindelse er '
+        . 'startet i et andet vindue. Gå tilbage til Claude, og vælg Forbind igen.';
+    public const OAUTH_LIMITED_TEXT = 'For mange forsøg på kort tid. Vent et minut, og vælg Forbind i Claude igen.';
 
     /** @var Closure(): int */
     private Closure $clock;
@@ -91,7 +106,12 @@ final class App
             if (!$csrfOk) {
                 return $this->forbidden($s, null, 'Formularen er udløbet. Gå tilbage, genindlæs siden og prøv igen.');
             }
-            return $method === 'POST' ? $this->loginPost($req, $s, $now) : Response::html(View::login(Csrf::token($s), null, ''));
+            return $method === 'POST' ? $this->loginPost($req, $s, $now)
+                : Response::html(View::login(Csrf::token($s), null, '', Authorize::loginContext($s, $now)));
+        }
+        if ($route === 'oauth_authorize') {
+            // F006: før login-kravet, så en anonym anmodning kan valideres og gemmes, før brugeren sendes til /login
+            return $this->oauthAuthorize($req, $method, $s, $user, $csrfOk, $now);
         }
 
         if ($user === null) {
@@ -101,6 +121,15 @@ final class App
         if ($route === 'logout') {
             if (!$csrfOk) {
                 return $this->forbidden($s, $user, 'Formularen er udløbet. Gå tilbage, genindlæs siden og prøv igen.');
+            }
+            // F006 (QA F4): "Ikke dig? Log ud" på godkendelsessiden beholder den validerede, ventende anmodning, så
+            // den rigtige bruger kan logge ind og fortsætte. Sessionen tømmes og får nyt id som ved et login.
+            $pending = OAuth::enabled() ? Authorize::pending($s, $now) : null;
+            if ($pending !== null) {
+                $s->clear();
+                $s->regenerate();
+                $s->set(Authorize::SESSION_KEY, $pending);
+                return Response::redirect('/login');
             }
             $s->destroy();
             return Response::redirect('/login');
@@ -127,13 +156,14 @@ final class App
             'call_txt'   => CallPages::transcript($id, $user),
             'call_zip'   => CallPages::zip($req, $user, $csrf),
             'konto'     => $method === 'POST' ? $this->accountPost($req, $s, $user, $now)
-                : Response::html(View::account($user, $csrf, null, $this->flash($s), self::mcp($user, $req))),
+                : Response::html(View::account($user, $csrf, $this->flash($s, 'flash_error'), $this->flash($s), $this->mcp($user, $req, null, null, $s))),
             'users'     => Response::html(View::users($user, $csrf, Users::all(), $this->flash($s))),
             'user_new'  => $method === 'POST' ? $this->userNewPost($req, $s, $user, $now)
                 : Response::html(View::userNew($user, $csrf, null, ['email' => '', 'name' => '', 'role' => 'user'])),
             'user_confirm' => $this->userConfirm($s, $user, $id, $action),
             'mcp_create'   => $this->mcpCreate($req, $s, $user, $now),
             'mcp_revoke'   => $this->mcpRevoke($s, $user, $id, $now),
+            'app_revoke'   => $this->appRevoke($s, $user, $id, $now),
             default     => $this->userEdit($req, $method, $s, $user, $id, $now),
         };
     }
@@ -155,6 +185,8 @@ final class App
         'call_select'  => ['POST'],
         'mcp_create'   => ['POST'],
         'mcp_revoke'   => ['POST'],
+        'oauth_authorize' => ['GET', 'POST'],
+        'app_revoke'   => ['POST'],
     ];
 
     /** @return array{0: ?string, 1: int, 2: string} rute, bruger-id, handling (kun for bekræftelsessiden) */
@@ -179,7 +211,15 @@ final class App
                 return [$sub === '/lyd' ? 'call_audio' : ($sub === '/transcript' ? 'call_txt' : 'call_show'), (int) $m[1], ''];
             }
         }
-        if (Server::enabled()) {
+        if (OAuth::enabled()) {
+            // F006: godkendelse og tilbagekald af forbundne apps. Nøgle-handlingerne findes ikke med OAuth (DECISIONS #48)
+            if ($path === '/oauth/authorize') {
+                return ['oauth_authorize', 0, ''];
+            }
+            if (preg_match('#^/konto/app/([1-9][0-9]{0,9})/tilbagekald$#', $path, $m) === 1) {
+                return ['app_revoke', (int) $m[1], ''];
+            }
+        } elseif (Server::enabled()) {
             // F003: nøgle-handlingerne findes kun med flaget (og F002) tændt
             if ($path === '/konto/mcp-noegle') {
                 return ['mcp_create', 0, ''];
@@ -228,7 +268,7 @@ final class App
         // Forsøget registreres som fejl FØR bcrypt (begin), så samtidige requests tæller hinanden med
         $attempt = LoginThrottle::begin($email, $req->ip, $now);
         if ($attempt === null) {
-            return Response::html(View::login(Csrf::token($s), self::LOCKED, $email), 429);
+            return Response::html(View::login(Csrf::token($s), self::LOCKED, $email, Authorize::loginContext($s, $now)), 429);
         }
 
         $user = $email !== '' ? Users::findByEmail($email) : null;
@@ -236,23 +276,32 @@ final class App
             // Ukendt e-mail: én bcrypt-beregning med standard-cost som for en rigtig bruger, så svartiden ikke
             // afslører, om e-mailen findes (en hash koster det samme som en verify)
             Password::hash(str_replace("\0", '', $password));   // bcrypt afviser NUL-tegn
-            return Response::html(View::login(Csrf::token($s), self::BAD_LOGIN, $email));
+            return Response::html(View::login(Csrf::token($s), self::BAD_LOGIN, $email, Authorize::loginContext($s, $now)));
         }
         $hash = (string) $user['password_hash'];
         if (!password_verify($password, $hash) || (int) $user['active'] !== 1) {
-            return Response::html(View::login(Csrf::token($s), self::BAD_LOGIN, $email));
+            return Response::html(View::login(Csrf::token($s), self::BAD_LOGIN, $email, Authorize::loginContext($s, $now)));
         }
         LoginThrottle::succeed($attempt);
 
         $id = (int) $user['id'];
         Users::touchLogin($id, $password, $hash, $now);
         $fresh = Users::find($id) ?? $user;
-        $s->clear();          // intet fra den anonyme session (heller ikke CSRF-tokenet) følger med
+        // F006: kun den validerede, ventende OAuth-anmodning overlever login (ingen next=-parameter: open redirect)
+        $pending = OAuth::enabled() ? Authorize::pending($s, $now) : null;
+        $s->clear();          // intet andet fra den anonyme session (heller ikke CSRF-tokenet) følger med
         $s->regenerate();     // nyt session-id ved login (session fixation)
         $s->set('user_id', $id);
         $s->set('pwfp', Users::fingerprint($fresh));
         $s->set('last_seen', $now);
-        return Response::redirect((int) $fresh['must_change_password'] === 1 ? '/konto' : '/');
+        if ($pending !== null) {
+            // Ved tvunget skift fortsætter forbindelsen efter skiftet (design F006, BØR)
+            $s->set(Authorize::SESSION_KEY, $pending);
+        }
+        if ((int) $fresh['must_change_password'] === 1) {
+            return Response::redirect('/konto');
+        }
+        return Response::redirect($pending !== null ? '/oauth/authorize' : '/');
     }
 
     /** @param array<string, mixed> $user */
@@ -264,10 +313,10 @@ final class App
         // gætte den uendeligt
         $attempt = LoginThrottle::begin((string) $user['email'], $req->ip, $now);
         if ($attempt === null) {
-            return Response::html(View::account($user, Csrf::token($s), self::LOCKED, null, self::mcp($user, $req)), 429);
+            return Response::html(View::account($user, Csrf::token($s), self::LOCKED, null, $this->mcp($user, $req, null, null, $s)), 429);
         }
         if (!password_verify($current, (string) $user['password_hash'])) {
-            return Response::html(View::account($user, Csrf::token($s), 'Den nuværende adgangskode er forkert.', null, self::mcp($user, $req)), 422);
+            return Response::html(View::account($user, Csrf::token($s), 'Den nuværende adgangskode er forkert.', null, $this->mcp($user, $req, null, null, $s)), 422);
         }
         LoginThrottle::succeed($attempt);
         $error = null;
@@ -279,7 +328,7 @@ final class App
             $error = 'Den nye adgangskode skal være forskellig fra den nuværende.';
         }
         if ($error !== null) {
-            return Response::html(View::account($user, Csrf::token($s), $error, null, self::mcp($user, $req)), 422);
+            return Response::html(View::account($user, Csrf::token($s), $error, null, $this->mcp($user, $req, null, null, $s)), 422);
         }
 
         $wasForced = (int) $user['must_change_password'] === 1;
@@ -288,7 +337,10 @@ final class App
         // Nyt fingeraftryk: denne session fortsætter, alle andre for brugeren afvises ved næste request
         $s->regenerate();
         $s->set('pwfp', Users::fingerprint($fresh));
-        $s->set('flash', 'Adgangskoden er skiftet.' . ($revoked > 0 ? ' ' . self::KEYS_REVOKED_SELF : ''));
+        $s->set('flash', 'Adgangskoden er skiftet.' . ($revoked > 0 ? ' ' . (OAuth::enabled() ? self::APPS_REVOKED_SELF : self::KEYS_REVOKED_SELF) : ''));
+        if ($wasForced && OAuth::enabled() && Authorize::pending($s, $now) !== null) {
+            return Response::redirect('/oauth/authorize');   // F006: den ventende forbindelse fortsætter efter skiftet
+        }
         return Response::redirect($wasForced ? '/' : '/konto');
     }
 
@@ -365,7 +417,7 @@ final class App
                     }
                     $reset = Users::resetPassword($id, $now);
                     return Response::html(View::oneTimePassword($admin, Csrf::token($s), $target, $reset['password'],
-                        'Adgangskode nulstillet', $reset['revoked'] > 0 ? self::KEYS_REVOKED_RESET : null));
+                        'Adgangskode nulstillet', $reset['revoked'] > 0 ? (OAuth::enabled() ? self::APPS_REVOKED_RESET : self::KEYS_REVOKED_RESET) : null));
                 case 'deactivate':
                     Users::setActive($id, false, (int) $admin['id'], $now);
                     $msg = 'Brugeren er deaktiveret.';
@@ -391,15 +443,141 @@ final class App
      * @param array<string, mixed> $user
      * @param array{token: string, name: string}|null $new  den netop oprettede nøgle (kun i POST-svaret)
      * @return array{tokens: list<array<string, mixed>>, origin: string, new: array{token: string, name: string}|null,
-     *     error: ?string, name: string}|null
+     *     error: ?string, name: string, apps: list<array<string, mixed>>|null, resume?: bool}|null
      */
-    private static function mcp(array $user, Request $req, ?array $new = null, ?string $error = null): ?array
+    private function mcp(array $user, Request $req, ?array $new = null, ?string $error = null, ?Session $s = null): ?array
     {
         if (!Server::enabled()) {
             return null;
         }
+        if (OAuth::enabled()) {
+            // F006: kun "Forbind Claude" og forbundne apps; nøglerne vises ikke (DECISIONS #48)
+            return ['tokens' => [], 'origin' => OAuth::site($req), 'new' => null, 'error' => null, 'name' => '',
+                'apps' => Grants::active((int) $user['id'], ($this->clock)()),
+                'resume' => $s !== null && Authorize::pending($s, ($this->clock)()) !== null];
+        }
         return ['tokens' => Tokens::active((int) $user['id']), 'origin' => Server::siteOrigin($req), 'new' => $new, 'error' => $error,
-            'name' => $error !== null ? $req->str('name') : ''];
+            'name' => $error !== null ? $req->str('name') : '', 'apps' => null];
+    }
+
+    /**
+     * GET/POST /oauth/authorize (F006). GET med parametre er en ny anmodning fra klienten: valideres (se Authorize) og
+     * gemmes i sessionen. GET uden parametre fortsætter den ventende (efter login). POST er Godkend eller Afvis.
+     *
+     * @param array<string, mixed>|null $user
+     */
+    private function oauthAuthorize(Request $req, string $method, Session $s, ?array $user, bool $csrfOk, int $now): Response
+    {
+        $site = OAuth::site($req);
+        if ($site === '') {
+            return $this->oauthError($s, $user, false, 'invalid_host');
+        }
+        if ($method === 'GET') {
+            if ($req->query !== []) {
+                $retry = OAuth::ipLimited($req->ip, 'authorize', $now);
+                if ($retry > 0) {
+                    $r = Response::html(UiPages::error(429, self::OAUTH_LIMITED_TEXT, Csrf::token($s), $user, '/', self::OAUTH_INVALID_TITLE,
+                        'rate_limited'), 429);
+                    $r->headers['Retry-After'] = (string) $retry;
+                    return $r;
+                }
+                $v = Authorize::validate($req->query, $site, $now);
+                if ($v['kind'] !== 'ok') {
+                    $s->remove(Authorize::SESSION_KEY);
+                    return $v['kind'] === 'page' ? $this->oauthError($s, $user, false, $v['code']) : self::externalRedirect($v['url']);
+                }
+                $s->set(Authorize::SESSION_KEY, $v['req']);
+            }
+            $p = Authorize::pending($s, $now);
+            if ($p === null) {
+                return $this->oauthError($s, $user, true, 'no_pending_request');
+            }
+            if ($user === null) {
+                return Response::redirect('/login');
+            }
+            if ((int) $user['must_change_password'] === 1) {
+                return Response::redirect('/konto');
+            }
+            // QA F6b: "Adgangskoden er skiftet." efter et tvunget skift vises her, hvor brugeren er, og forbruges
+            $r = Response::html(UiPages::consent($user, Csrf::token($s), $p, Flags::env() === 'dev', $this->flash($s)));
+            // Chrome anvender form-action på redirecten efter POST: præcis den registrerede redirect-origin, intet andet
+            $r->headers['Content-Security-Policy'] = self::csp($p['redirect_uri']);
+            return $r;
+        }
+
+        if ($user === null) {
+            return Response::redirect('/login');   // sessionen er udløbet: anmodningen er væk (design E7)
+        }
+        $p = Authorize::pending($s, $now);
+        if (!$csrfOk || $p === null || !hash_equals($p['rid'], $req->str('rid'))) {
+            return $this->oauthError($s, $user, true, $csrfOk ? 'no_pending_request' : 'csrf');
+        }
+        $s->remove(Authorize::SESSION_KEY);   // engangs: dobbeltklik og genindsendelse giver "udløbet"
+        if ((int) $user['must_change_password'] === 1) {
+            return Response::redirect('/konto');
+        }
+        $uid = (int) $user['id'];
+        $decision = $req->str('beslutning');
+        if ($decision === 'afvis') {
+            AccessLog::write($uid, 'oauth_afvis', ['klient' => $p['client_pk']]);
+            return self::externalRedirect(Authorize::back($p, ['error' => 'access_denied'], $site));
+        }
+        if ($decision !== 'godkend') {
+            return $this->oauthError($s, $user, true, 'unknown_decision');
+        }
+        $grant = Grants::create($p['client_pk'], $uid, $p['resource'], $p['redirect_uri'], $now);
+        $code = Issuer::issueCode($grant, $p['redirect_uri'], $p['challenge'], $now);
+        AccessLog::write($uid, 'oauth_godkend', ['klient' => $p['client_pk'], 'bevilling' => $grant]);
+        return self::externalRedirect(Authorize::back($p, ['code' => $code], $site));
+    }
+
+    /** 303 til klientens redirect_uri, med samme form-action som godkendelsessiden. */
+    private static function externalRedirect(string $url): Response
+    {
+        $r = Response::redirect($url);
+        $r->headers['Content-Security-Policy'] = self::csp($url);
+        $r->headers['Referrer-Policy'] = 'no-referrer';
+        return $r;
+    }
+
+    /**
+     * E1 (ugyldig anmodning: aldrig en redirect, klientens værdier gengives ikke) og E4 (udløbet eller brugt).
+     *
+     * @param array<string, mixed>|null $user
+     */
+    private function oauthError(Session $s, ?array $user, bool $expired, string $code): Response
+    {
+        $r = Response::html(UiPages::error(400, $expired ? self::OAUTH_EXPIRED_TEXT : self::OAUTH_INVALID_TEXT, Csrf::token($s), $user, '/',
+            $expired ? self::OAUTH_EXPIRED_TITLE : self::OAUTH_INVALID_TITLE, $code), 400);
+        $r->headers['Referrer-Policy'] = 'no-referrer';
+        return $r;
+    }
+
+    /** POST /konto/app/{id}/tilbagekald (F006): som nøglerne, uden bekræftelse (design D7). @param array<string, mixed> $user */
+    private function appRevoke(Session $s, array $user, int $id, int $now): Response
+    {
+        $name = Grants::revokeOwn((int) $user['id'], $id, $now);
+        if ($name === null) {
+            $s->set('flash_error', self::APP_ALREADY_REVOKED);
+            return Response::redirect('/konto');
+        }
+        AccessLog::write((int) $user['id'], 'oauth_tilbagekald', ['bevilling' => $id]);
+        $shown = OAuth::displayName($name);
+        $s->set('flash', 'Adgangen for «' . ($shown !== '' ? $shown : 'En unavngivet app') . '» er tilbagekaldt. Appen kan ikke længere '
+            . 'læse dine transcripts i Whisper.');
+        return Response::redirect('/konto');
+    }
+
+    /** CSP for alle sider; $redirect: godkendelsessiden og redirecten derfra må sende formularen videre til netop den origin. */
+    public static function csp(?string $redirect = null): string
+    {
+        $action = "'self'";
+        $origin = $redirect !== null ? OAuth::origin($redirect) : '';
+        if (preg_match('#^https?://[a-z0-9.-]+(:[0-9]{1,5})?$#', $origin) === 1) {
+            $action .= ' ' . $origin;
+        }
+        return "default-src 'self'; style-src 'self'; img-src 'self'; form-action " . $action . '; '
+            . "frame-ancestors 'none'; base-uri 'none'; object-src 'none'";
     }
 
     /**
@@ -412,10 +590,10 @@ final class App
         try {
             $token = Tokens::create((int) $user['id'], $req->str('name'), $now);
         } catch (UserError $e) {
-            return Response::html(View::account($user, Csrf::token($s), null, null, self::mcp($user, $req, null, $e->getMessage())), 422);
+            return Response::html(View::account($user, Csrf::token($s), null, null, $this->mcp($user, $req, null, $e->getMessage())), 422);
         }
         $new = ['token' => $token, 'name' => Tokens::validName($req->str('name'))];
-        return Response::html(View::account($user, Csrf::token($s), null, null, self::mcp($user, $req, $new)));
+        return Response::html(View::account($user, Csrf::token($s), null, null, $this->mcp($user, $req, $new)));
     }
 
     /** @param array<string, mixed> $user */
@@ -472,8 +650,7 @@ final class App
     private static function secure(Response $r): Response
     {
         $r->headers += [
-            'Content-Security-Policy' => "default-src 'self'; style-src 'self'; img-src 'self'; form-action 'self'; "
-                . "frame-ancestors 'none'; base-uri 'none'; object-src 'none'",
+            'Content-Security-Policy' => self::csp(),
             'X-Content-Type-Options'  => 'nosniff',
             'X-Frame-Options'         => 'DENY',
             'Referrer-Policy'         => 'same-origin',

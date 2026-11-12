@@ -432,3 +432,17 @@ section.mcp table code { font-size: var(--fs-sm); }
   div.actions > *, form.actions > * { width: 100%; }
   pre.code { padding-right: var(--sp-4); padding-top: 52px; }
 }
+
+/* 15. F006: godkendelsessiden (visuelt brief F006 v1). Kun scopede klasser: .consent, dl.meta.single, code.host */
+.consent strong { font-weight: 600; }
+.consent ul { margin: 0 0 var(--sp-3); padding-left: var(--sp-6); }
+.consent li { margin-bottom: var(--sp-1); }
+.consent form.actions { margin: var(--sp-4) 0 var(--sp-6); }
+.consent .hint + .hint { margin-top: var(--sp-2); }
+.consent .hint button.link { font-size: inherit; padding: 0 2px; min-height: 24px; vertical-align: baseline; }
+dl.meta.single { grid-template-columns: 1fr; gap: var(--sp-3); }
+code.host {
+  font-size: 1em; font-weight: 600; color: var(--text); background: var(--surface-2); border: 1px solid var(--border);
+  border-radius: var(--radius-sm); padding: 1px var(--sp-1); -webkit-box-decoration-break: clone; box-decoration-break: clone;
+}
+section.card details summary, .card.narrow details summary { cursor: pointer; }
