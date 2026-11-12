@@ -75,6 +75,10 @@ $run = static function (string $name, array $f, ?int $maxRows, float $maxSec) us
     [$w, $pc] = $where($f);
     [$cplan, $crows] = $explain('SELECT COUNT(*) FROM (SELECT 1 FROM calls c WHERE ' . $w . ' LIMIT ' . (Calls::COUNT_CAP + 1) . ') n', $pc);
     printf("%-34s %6.1f ms antal=%-7s liste: %s || antal: %s\n", $name, $sec * 1000, $res['total'] > Calls::COUNT_CAP ? '10.000+' : $res['total'], $plan, $cplan);
+    $short = static fn(string $pl): string => trim((string) preg_replace(['/<derived2>:[^|]*\| ?/', '/ \(Using [^)]*\)/', '/c:eq_ref key=PRIMARY rows=1 \| ?/'],
+        ['', '', ''], $pl));
+    $GLOBALS['f007_sum'][] = sprintf('%s %.0fms n=%s L[%s] C[%s]', $name, $sec * 1000, $res['total'] > Calls::COUNT_CAP ? '10k+' : $res['total'],
+        $short($plan), $short($cplan));
     F007Check::that('AK12', !str_contains($plan, 'c:ALL') && !str_contains($cplan, 'c:ALL'), "$name: liste og antal bruger indeks");
     if ($maxRows !== null) {
         F007Check::that('AK12', $rows <= $maxRows && $crows <= $maxRows, "$name: få rækker i planen (liste $rows, antal $crows ≤ $maxRows)");
@@ -145,5 +149,7 @@ F007Check::that('AK12', count($x) === 50 && $sec < 0.5, sprintf('uddrag for en s
 
 DB::exec('DELETE FROM transcripts');
 DB::exec('DELETE FROM calls');
+$GLOBALS['f007_sum'][] = sprintf('agenter (Adversus): %s', $planAgents);
+echo "== RESUME\n" . implode("\n", $GLOBALS['f007_sum']) . "\n";
 F007Check::that('AK12', false, 'MIDLERTIDIG: rød for at få planerne i DEV-kommentaren');
 F007Check::done();
