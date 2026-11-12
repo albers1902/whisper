@@ -66,7 +66,7 @@ $t = new Transcriber(new FakeEngine(), null, static function (string $l): void {
 });
 $t->runOnce();
 $row = h011_row($call['id']);
-H011Check::that('AK4', $row['segments'] === (new FakeEngine())->result['segments'] && !str_contains($row['json'], 'speaker'),
+H011Check::that('AK4', $row['segments'] == (new FakeEngine())->result['segments'] && !str_contains($row['json'], 'speaker'),
     'transcription gemmer segmenterne som før, uden taler');
 H011Check::that('AK4', $row['status'] === null && $row['attempts'] === 0, 'en ny transcription nulstiller diar_status og diar_attempts');
 

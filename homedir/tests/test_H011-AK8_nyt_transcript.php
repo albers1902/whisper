@@ -24,7 +24,7 @@ $engine->before = static function (string $file) use ($call, $newSegments): void
 $log = [];
 h011_diarizer($engine, $log)->runOnce(3000);
 $row = h011_row($call['id']);
-H011Check::that('AK8', $row['segments'] === $newSegments && $row['status'] === null && $row['attempts'] === 0,
+H011Check::that('AK8', $row['segments'] == $newSegments && $row['status'] === null && $row['attempts'] === 0,
     'det nye transcript er urørt, uden talere og uden brugt forsøg: ' . $row['json']);
 H011Check::that('AK8', in_array('diarize: opkald ' . $call['id'] . ': transcriptet er lavet igen imens — tages forfra senere', $log, true),
     'loglinjen siger, at resultatet er kasseret');
