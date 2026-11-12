@@ -1,11 +1,10 @@
 <?php
 declare(strict_types=1);
 
-// F004-AK4: kaldloftet på 100 og 429 stopper pænt. Cursoren står ved sidst gemte data, og næste kørsel fortsætter uden
-// huller og uden dubletter. Datamængden kræver flere kørsler (store vinduer halveres), og der er optagelser præcis på
-// en vinduesgrænse og flere i samme sekund. Lange opkald (> 5 min og > 2 t, cdr.timestamp = sluttid) findes via det
-// brede opslag eller ventelisten. Et opkald, der først dukker op i /calls senere, gemmes ved en senere kørsel; et, der
-// aldrig dukker op, eller som har ukendt retning, forkastes synligt (advarsel), ikke lydløst (QA F-1).
+// F004-AK4: kaldloftet og 429 stopper pænt. Cursoren står ved sidst gemte data, og næste kørsel fortsætter uden huller
+// og uden dubletter. Datamængden kræver flere kørsler, og der er flere opkald i samme sekund end en side (keyset).
+// Fra H013 er det CDR'er (/calls), ikke optagelser: et opkald, der først dukker op i /calls efter cursoren, hentes af
+// kontrollen pr. time, og et opkald med ukendt retning står som synlig advarsel, ikke lydløst (QA F-1).
 
 require_once __DIR__ . '/f004_lib.php';
 
@@ -14,47 +13,32 @@ use Whisper\Calls;
 use Whisper\DB;
 
 f004_setup();
-DB::exec('DELETE FROM adversus_pending');
 $S = f004_since();
-$now = $S + 10 * 3600;
+$now = $S + 8 * 3600;
 $http = new FakeAdversus();
 $want = [];
 for ($i = 0; $i < 3000; $i++) {
     $id = 100000 + $i;
-    f004_recorded($http, $id, 50000 + $i, $S + $i * 7, 60);
+    f004_call($http, $id, 50000 + $i, $S + $i * 7, 60, 'outbound', 77, $i % 3 === 0 ? 'no-answer' : 'answered');
     $want[$id] = true;
-    if ($i % 3 === 0) {
-        f004_call($http, 900000 + $i, 50000 + $i, $S + $i * 7 + 3);   // opkald uden optagelse imellem
-    }
-    if ($i % 150 === 0) {
+    if ($i % 150 === 1) {   // succes-opkaldene er besvarede
         f004_lead($http, 50000 + $i, 'success', $S + 60);
     }
 }
-// Fem optagelser uploadet i præcis samme sekund på vinduesgrænsen S + 1 t
-for ($k = 0; $k < 5; $k++) {
+// 150 opkald i præcis samme sekund (mere end en side): keyset skal bladre inden for sekundet
+for ($k = 0; $k < 150; $k++) {
     $id = 200000 + $k;
-    f004_call($http, $id, 60000 + $k, $S + 3000 + $k, 60);
-    f004_recording($http, $id, $S + 3000 + $k, $S + 3600);
+    f004_call($http, $id, 60000 + $k, $S + 3600, 60);
     $want[$id] = true;
 }
-// Langt opkald (400 s > 5 min), cdr.timestamp = sluttid: uden for ±5 min, fundet af det brede opslag
-f004_call($http, 300001, 61001, $S + 5000, 400);
-f004_recording($http, 300001, $S + 5400, $S + 5430);
-$want[300001] = true;
-// Opkald på 2,5 t (> 2 t), cdr.timestamp = sluttid: uden for det brede opslag, fundet via ventelisten
-f004_call($http, 300002, 61002, $S + 21100, 9000);
-f004_recording($http, 300002, $S + 30100, $S + 30130);
-$want[300002] = true;
 
-/** Alle optagelser med upload før cursoren er gemt eller på ventelisten (intet tabt bag cursoren). */
+/** Alle opkald med start før cursoren er gemt (intet tabt bag cursoren). */
 $invariant = static function () use ($http): bool {
-    $rec = json_decode((string) DB::scalar('SELECT cursor_value FROM sync_state WHERE `source` = ?', ['adversus-rec']), true);
+    $rec = json_decode((string) DB::scalar('SELECT cursor_value FROM sync_state WHERE `source` = ?', [Sync::CURSOR_CDR]), true);
     $t = is_array($rec) ? (int) $rec['t'] : 0;
     $saved = array_flip(array_column(DB::all("SELECT external_id FROM calls WHERE `source` = 'adversus'"), 'external_id'));
-    $pending = array_flip(array_map('strval', array_column(DB::all('SELECT cdr_id FROM adversus_pending'), 'cdr_id')));
-    foreach ($http->recordings as $r) {
-        $id = (string) $r['cdr']['id'];
-        if (strtotime($r['timestamp']) < $t && !isset($saved[$id]) && !isset($pending[$id])) {
+    foreach ($http->calls as $c) {
+        if (strtotime($c['start']) < $t && !isset($saved[(string) $c['id']])) {
             return false;
         }
     }
@@ -62,138 +46,80 @@ $invariant = static function () use ($http): bool {
 };
 
 // 1. Kørsel med 429 midt i: stopper pænt, rate limit står som information, cursoren er ikke gået forbi
-$http->fail429At = 12;
+$http->fail429At = 8;
 ['sync' => $s1] = f004_sync(f004_cfg(), $http, $now);
 $r1 = $s1->run();
 F004Check::that('AK4', $r1['error'] !== null && str_starts_with($r1['error'], Sync::RATE_LIMIT_PREFIX), '429 stopper kørslen pænt (rate limit)');
 F004Check::that('AK4', $invariant(), 'efter 429: cursoren står ved sidst gemte data');
 $http->fail429At = null;
 
-// 2. Kørsler med kaldloftet 100, til alt er hentet og ventelisten er tom
+// 2. Kørsler med et lavt kaldloft (40), til alt er hentet og kontrolleret
+$log = [];
 $runs = 0;
 $maxReq = 0;
 $okInv = true;
 $caughtUp = false;
-$sawPending = false;
 for ($run = 1; $run <= 30; $run++) {
     $before = count($http->requests);
-    ['sync' => $s] = f004_sync(f004_cfg(), $http, $now + $run);
+    ['sync' => $s] = f004_sync(f004_cfg(), $http, $now + $run, $log, 40);
     $s->run();
     $runs++;
     $maxReq = max($maxReq, count($http->requests) - $before);
     $okInv = $okInv && $invariant();
-    $pendingN = (int) DB::scalar('SELECT COUNT(*) FROM adversus_pending');
-    $sawPending = $sawPending || $pendingN > 0;
-    $rec = json_decode((string) DB::scalar('SELECT cursor_value FROM sync_state WHERE `source` = ?', ['adversus-rec']), true);
+    $chk = json_decode((string) DB::scalar('SELECT cursor_value FROM sync_state WHERE `source` = ?', [Sync::CURSOR_CHECK]), true);
     $audio = (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus' AND transcript_status <> 'ikke_valgt' AND audio_status <> 'hentet'");
-    if (is_array($rec) && $rec['t'] >= $now + $run - Sync::LAG && $audio === 0 && $pendingN === 0) {
+    if (is_array($chk) && $chk['b'] + Sync::CHECK_SPAN > $now - Sync::CHECK_SETTLE && $audio === 0
+        && (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus'") >= count($want)) {
         $caughtUp = true;
         break;
     }
 }
 echo "kørsler: $runs, største kørsel: $maxReq kald\n";
 F004Check::that('AK4', $runs > 1, 'datamængden kræver flere kørsler (loftet nås)');
-F004Check::that('AK4', $maxReq <= 100, 'ingen kørsel bruger over 100 kald (største: ' . $maxReq . ')');
-F004Check::that('AK4', $okInv, 'efter hver kørsel er alt bag cursoren gemt eller på ventelisten');
-F004Check::that('AK4', $sawPending, 'opkaldet på 2,5 t kom på ventelisten undervejs');
-F004Check::that('AK4', $caughtUp, 'hentningen indhenter efterslæbet, og ventelisten tømmes');
+F004Check::that('AK4', $maxReq <= 40, 'ingen kørsel bruger over loftet (største: ' . $maxReq . ')');
+F004Check::that('AK4', $okInv, 'efter hver kørsel er alt bag cursoren gemt');
+F004Check::that('AK4', $caughtUp, 'hentningen indhenter efterslæbet, og kontrollen er nået frem');
 
 $ids = array_column(DB::all("SELECT external_id FROM calls WHERE `source` = 'adversus'"), 'external_id');
 $missing = array_diff(array_map('strval', array_keys($want)), $ids);
-F004Check::that('AK4', $missing === [], 'ingen huller: alle optagede opkald er gemt (' . count($missing) . ' mangler: ' . implode(',', array_slice($missing, 0, 5)) . ')');
+F004Check::that('AK4', $missing === [], 'ingen huller: alle CDR\'er er gemt (' . count($missing) . ' mangler: ' . implode(',', array_slice($missing, 0, 5)) . ')');
 F004Check::that('AK4', count($ids) === count(array_unique($ids)) && count($ids) === count($want), 'ingen dubletter og intet ekstra');
-F004Check::that('AK4', in_array('300001', $ids, true) && in_array('300002', $ids, true), 'lange opkald (> 5 min og > 2 t) er gemt');
-F004Check::that('AK4', (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus' AND external_id >= '900000'") === 0,
-    'opkald uden optagelse er aldrig gemt');
-F004Check::that('AK4', (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus' AND external_id LIKE '2000%'") === 5,
-    'optagelser på vinduesgrænsen og i samme sekund er med');
-F004Check::that('AK4', Calls::adversusWarning($now + $runs) === null, 'ingen advarsel, når alt er fundet');
+F004Check::that('AK4', (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus' AND external_id LIKE '2000%'") === 150,
+    '150 opkald i samme sekund er alle med');
+F004Check::that('AK4', (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus' AND disposition = 'no-answer'") === 1000,
+    'ubesvarede opkald er også gemt (med disposition)');
+F004Check::that('AK4', Calls::adversusWarning($now + $runs) === null, 'ingen advarsel, når alt er hentet');
+F004Check::that('AK4', (int) DB::scalar('SELECT COUNT(*) FROM adversus_pending') === 0 && $http->to('/v1/recordings') === [],
+    'ingen venteliste og ingen optagelsesliste');
 
-// Filtrene bruger kun $gt/$lt (ingen $gte); det brede opslag søger nyeste først
 $all = urldecode(implode("\n", array_column($http->requests, 'url')));
 F004Check::that('AK4', !str_contains($all, '$gte'), 'ingen $gte i filtrene');
-F004Check::that('AK4', str_contains($all, 'sortDirection=DESC'), 'det brede opslag søger nærmeste opkald først (DESC)');
 
-// 3. Sent indekseret, aldrig fundet og ukendt retning (ny, lille datamængde)
+// 3. Sent logget opkald og ukendt retning (ny, lille datamængde)
 f004_setup();
-DB::exec('DELETE FROM adversus_pending');
 $http = new FakeAdversus();
 $T = $S + 3600;
-f004_recording($http, 400001, $T, $T + 90);                    // opkaldet kommer først i /calls efter første kørsel
-f004_recording($http, 400002, $T + 100, $T + 190);             // opkaldet findes aldrig
-f004_recorded($http, 400003, 81003, $T + 200, 60, 'internal'); // ukendt retning
-$t0 = $T + 3 * 3600;
+f004_call($http, 400001, 81001, $T, 60);
+f004_call($http, 400003, 81003, $T + 200, 60, 'internal');   // ukendt retning
+f004_call($http, 400004, 81004, $T + 1800, 60);
+$t0 = $T + 2 * 3600;
 ['sync' => $a] = f004_sync(f004_cfg(), $http, $t0);
 $ra = $a->run();
-F004Check::that('AK4', $ra['unmatched'] === 2 && (int) DB::scalar('SELECT COUNT(*) FROM adversus_pending') === 2, 'umatchede kommer på ventelisten');
 F004Check::that('AK4', $ra['skipped'] === 1 && str_contains((string) Calls::adversusWarning($t0), 'ukendt retning (id 400003)'),
     'ukendt retning står som synlig advarsel (sync_state)');
-f004_call($http, 400001, 81001, $T - 30, 120);
-for ($k = 1; $k <= Sync::RETRY_RUNS + 1; $k++) {
-    ['sync' => $b] = f004_sync(f004_cfg(), $http, $t0 + $k * 600);
-    $rb = $b->run();
-    if ($k === 1) {
-        F004Check::that('AK4', DB::scalar("SELECT id FROM calls WHERE external_id = '400001'") !== false, 'sent indekseret opkald er gemt ved næste kørsel');
-    }
-}
-F004Check::that('AK4', (int) DB::scalar('SELECT COUNT(*) FROM adversus_pending') === 0, 'ventelisten er tom efter ' . Sync::RETRY_RUNS . ' kørsler');
-$warn = (string) Calls::adversusWarning($t0 + (Sync::RETRY_RUNS + 1) * 600);
-F004Check::that('AK4', str_contains($warn, '1 optagelser uden opkald') && str_contains($warn, '400002'), 'den aldrig fundne er forkastet med synlig advarsel');
-F004Check::that('AK4', str_contains($warn, '400003') && str_contains($warn, ' | '), 'den nye advarsel er lagt til den tidligere (ukendt retning) i stedet for at overskrive (QA N-3)');
+// Et langt opkald startede før cursoren, men dukker først op i /calls nu
+f004_call($http, 400002, 81002, $T + 100, 5400);
+['sync' => $b] = f004_sync(f004_cfg(), $http, $t0 + 600);
+$b->run();
+F004Check::that('AK4', DB::scalar("SELECT id FROM calls WHERE external_id = '400002'") === false, 'keyset alene finder ikke det sent loggede opkald');
+$log = [];
+['sync' => $c] = f004_sync(f004_cfg(), $http, $T + 3600 + Sync::CHECK_SETTLE + 60, $log);
+$rc = $c->run();
+F004Check::that('AK4', DB::scalar("SELECT id FROM calls WHERE external_id = '400002'") !== false && $rc['rescanned'] >= 1,
+    'kontrollen pr. time henter det sent loggede opkald');
+F004Check::that('AK4', (bool) array_filter($log, static fn(string $l): bool => str_contains($l, 'kontrol ' . Sync::iso($T) . ': Adversus har 4 opkald, gemt 2')),
+    'kontrollen logger tallene (' . implode(' / ', $log) . ')');
+F004Check::that('AK4', (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus'") === 3, 'ingen dubletter efter kontrollen');
 F004Check::that('AK4', Calls::adversusWarning($t0 + 3 * 86400) === null, 'advarslen forsvinder efter et døgn');
-F004Check::that('AK4', str_contains(Sync::logLine(['discarded' => 1, 'skipped' => 1]), '1 forkastet, 1 ukendt retning'), 'loglinjen tæller forkastede');
-
-// 4. Mange umatchede (QA N-2, security N1): ventelisten bruger højst RETRY_REQUESTS kald, og et nyt vindue bliver færdigt
-f004_setup();
-DB::exec('DELETE FROM adversus_pending');
-$http = new FakeAdversus();
-$T = $S + 2 * 86400;
-$vals = [];
-$params = [];
-for ($g = 0; $g < 40; $g++) {   // 40 grupper med tid (3 t imellem) …
-    $vals[] = '(?, ?, 0, ?)';
-    array_push($params, 500000 + $g, gmdate('Y-m-d H:i:s', $S + $g * 3 * 3600), gmdate('Y-m-d H:i:s', $T));
-}
-for ($n = 0; $n < 50; $n++) {   // … og 50 uden cdr.timestamp
-    $vals[] = '(?, NULL, 0, ?)';
-    array_push($params, 600000 + $n, gmdate('Y-m-d H:i:s', $T));
-}
-DB::exec('INSERT INTO adversus_pending (cdr_id, cdr_at, tries, first_seen) VALUES ' . implode(', ', $vals), $params);
-DB::exec('INSERT INTO sync_state (`source`, cursor_value) VALUES (?, ?)', ['adversus-rec', (string) json_encode(['t' => $T, 'w' => 3600])]);
-f004_recorded($http, 410001, 91001, $T + 600, 60);
-$desc = static fn(): int => count(array_filter($http->requests, static fn(array $r): bool => str_contains(urldecode($r['url']), 'sortDirection=DESC')));
-['sync' => $p1] = f004_sync(f004_cfg(), $http, $T + 3 * 3600);
-$p1->run();
-F004Check::that('AK4', $desc() === Sync::RETRY_REQUESTS, 'ventelisten brugte højst ' . Sync::RETRY_REQUESTS . ' kald (fik ' . $desc() . ')');
-F004Check::that('AK4', DB::scalar("SELECT id FROM calls WHERE external_id = '410001'") !== false, 'det nye vindue blev alligevel færdigt (opkaldet er gemt)');
-$rec = json_decode((string) DB::scalar('SELECT cursor_value FROM sync_state WHERE `source` = ?', ['adversus-rec']), true);
-F004Check::that('AK4', is_array($rec) && $rec['t'] === $T + 3 * 3600 - Sync::LAG, 'optagelses-cursoren nåede op til nu − LAG');
-$before = $desc();
-['sync' => $p2] = f004_sync(f004_cfg(), $http, $T + 3 * 3600 + 600);
-$p2->run();
-F004Check::that('AK4', $desc() - $before <= Sync::RETRY_REQUESTS, 'anden kørsel: igen højst ' . Sync::RETRY_REQUESTS . ' kald');
-$nullTries = array_map('intval', array_column(DB::all('SELECT tries FROM adversus_pending WHERE cdr_at IS NULL'), 'tries'));
-F004Check::that('AK4', count($nullTries) === 50 && array_unique($nullTries) === [1], 'de 50 uden cdr.timestamp blev søgt som én gruppe (alle ét forsøg)');
-F004Check::that('AK4', (int) DB::scalar('SELECT MIN(tries) FROM adversus_pending WHERE cdr_at IS NOT NULL') === 1, 'færrest forsøg først: alle 40 grupper er nået i to kørsler');
-
-// 5. Fuld venteliste (security N1): ingen tavs vækst, men forkastet med advarsel
-f004_setup();
-DB::exec('DELETE FROM adversus_pending');
-$http = new FakeAdversus();
-for ($chunk = 0; $chunk < Sync::PENDING_MAX; $chunk += 500) {
-    $vals = [];
-    $params = [];
-    for ($n = $chunk; $n < min(Sync::PENDING_MAX, $chunk + 500); $n++) {
-        $vals[] = '(?, NULL, 0, ?)';
-        array_push($params, 700000 + $n, gmdate('Y-m-d H:i:s', $T));
-    }
-    DB::exec('INSERT INTO adversus_pending (cdr_id, cdr_at, tries, first_seen) VALUES ' . implode(', ', $vals), $params);
-}
-DB::exec('INSERT INTO sync_state (`source`, cursor_value) VALUES (?, ?)', ['adversus-rec', (string) json_encode(['t' => $T, 'w' => 3600])]);
-f004_recording($http, 420001, $T + 600, $T + 700);   // opkaldet findes ikke
-['sync' => $f1] = f004_sync(f004_cfg(), $http, $T + 3 * 3600);
-$rf = $f1->run();
-F004Check::that('AK4', (int) DB::scalar('SELECT COUNT(*) FROM adversus_pending') <= Sync::PENDING_MAX, 'ventelisten vokser ikke over ' . Sync::PENDING_MAX);
-F004Check::that('AK4', $rf['discarded'] >= 1 && str_contains((string) Calls::adversusWarning($T + 3 * 3600), 'ventelisten er fuld')
-    && str_contains((string) Calls::adversusWarning($T + 3 * 3600), '420001'), 'fuld venteliste: forkastet med synlig advarsel');
+F004Check::that('AK4', str_contains(Sync::logLine(['skipped' => 1]), '1 ukendt retning'), 'loglinjen tæller ukendt retning');
 F004Check::done();

@@ -1,7 +1,7 @@
 <?php
 declare(strict_types=1);
 
-// F004-AK5: med sync_since hentes intet før denne tid: ingen optagelser, opkald eller succes-leads før, og ingen
+// F004-AK5: med sync_since hentes intet før denne tid: ingen opkald eller leads før (H013: CDR'er og alle leads), og ingen
 // filtergrænse under since − 1 s. Uden nøglen er standarden 2026-11-12 00:00 dansk tid; probens since bruges ikke.
 
 require_once __DIR__ . '/f004_lib.php';
@@ -51,15 +51,15 @@ f004_lead($http, 803, 'success', $S + 100);
 $sync->run();
 $ids = array_column(DB::all("SELECT external_id FROM calls WHERE `source` = 'adversus' ORDER BY external_id"), 'external_id');
 F004Check::that('AK5', $ids === ['5003'], 'kun opkaldet efter since er gemt (fik ' . implode(',', $ids) . ')');
-F004Check::that('AK5', array_map('intval', array_column(DB::all('SELECT lead_id FROM adversus_success_leads'), 'lead_id')) === [803],
-    'intet succes-lead før since');
+F004Check::that('AK5', array_map('intval', array_column(DB::all('SELECT lead_id FROM adversus_leads'), 'lead_id')) === [803],
+    'intet lead før since');
 
 // Ingen filtergrænse under since − 1 s
 $lowest = PHP_INT_MAX;
 foreach ($http->requests as $r) {
     parse_str((string) parse_url($r['url'], PHP_URL_QUERY), $q);
     $f = is_string($q['filters'] ?? null) ? json_decode($q['filters'], true) : null;
-    if (!is_array($f) || !str_contains($r['url'], '/v1/recordings') && !str_contains($r['url'], '/v1/leads')) {
+    if (!is_array($f) || !str_contains($r['url'], '/v1/calls') && !str_contains($r['url'], '/v1/leads')) {
         continue;
     }
     foreach ($f as $ops) {
@@ -68,5 +68,5 @@ foreach ($http->requests as $r) {
         }
     }
 }
-F004Check::that('AK5', $lowest === $S - 1, 'laveste grænse i /recordings og /leads er since − 1 s ($gt, ingen $gte)');
+F004Check::that('AK5', $lowest === $S - 1, 'laveste grænse i /calls og /leads er since − 1 s ($gt, ingen $gte)');
 F004Check::done();
