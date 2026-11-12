@@ -107,19 +107,31 @@ $t0 = $T + 2 * 3600;
 $ra = $a->run();
 F004Check::that('AK4', $ra['skipped'] === 1 && str_contains((string) Calls::adversusWarning($t0), 'ukendt retning (id 400003)'),
     'ukendt retning står som synlig advarsel (sync_state)');
-// Et langt opkald startede før cursoren, men dukker først op i /calls nu
+// Et langt opkald startede før cursoren, men dukker først op i /calls nu: den nylige kontrol (hver kørsel) henter det
 f004_call($http, 400002, 81002, $T + 100, 5400);
-['sync' => $b] = f004_sync(f004_cfg(), $http, $t0 + 600);
-$b->run();
-F004Check::that('AK4', DB::scalar("SELECT id FROM calls WHERE external_id = '400002'") === false, 'keyset alene finder ikke det sent loggede opkald');
 $log = [];
-['sync' => $c] = f004_sync(f004_cfg(), $http, $T + 3600 + Sync::CHECK_SETTLE + 60, $log);
-$rc = $c->run();
-F004Check::that('AK4', DB::scalar("SELECT id FROM calls WHERE external_id = '400002'") !== false && $rc['rescanned'] >= 1,
-    'kontrollen pr. time henter det sent loggede opkald');
-F004Check::that('AK4', (bool) array_filter($log, static fn(string $l): bool => str_contains($l, 'kontrol ' . Sync::iso($T) . ': Adversus har 4 opkald, gemt 2')),
+['sync' => $b] = f004_sync(f004_cfg(), $http, $t0 + 600, $log);
+$rb = $b->run();
+F004Check::that('AK4', DB::scalar("SELECT id FROM calls WHERE external_id = '400002'") !== false && $rb['rescanned'] >= 1,
+    'den nylige kontrol henter det sent loggede opkald ved næste kørsel');
+F004Check::that('AK4', (bool) array_filter($log, static fn(string $l): bool => str_contains($l, 'nylig kontrol ' . Sync::iso($T) . ': Adversus har 4 opkald, gemt 2')),
     'kontrollen logger tallene (' . implode(' / ', $log) . ')');
 F004Check::that('AK4', (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus'") === 3, 'ingen dubletter efter kontrollen');
+
+// Et opkald, der først logges efter både den nylige kontrol og timens kontrol, findes af dagskontrollen (ikke tabt stille)
+['sync' => $c] = f004_sync(f004_cfg(), $http, $T + 3600 + Sync::CHECK_SETTLE + 60);
+$c->run();
+f004_call($http, 400005, 81005, $T + 300, 60);
+$found = false;
+$dayLog = [];
+for ($k = 0; $k < 6 && !$found; $k++) {
+    ['sync' => $d] = f004_sync(f004_cfg(), $http, $S + 2 * 86400 + 600 + $k * 600, $dayLog);
+    $d->run();
+    $found = DB::scalar("SELECT id FROM calls WHERE external_id = '400005'") !== false;
+}
+F004Check::that('AK4', $found, 'dagskontrollen henter et opkald, der blev logget efter timens kontrol');
+F004Check::that('AK4', (bool) array_filter($dayLog, static fn(string $l): bool => str_contains($l, 'dagskontrol ' . Sync::iso($S) . ':')),
+    'dagskontrollen logger det (' . implode(' / ', array_slice($dayLog, 0, 4)) . ')');
 F004Check::that('AK4', Calls::adversusWarning($t0 + 3 * 86400) === null, 'advarslen forsvinder efter et døgn');
 F004Check::that('AK4', str_contains(Sync::logLine(['skipped' => 1]), '1 ukendt retning'), 'loglinjen tæller ukendt retning');
 F004Check::done();

@@ -50,7 +50,7 @@ F004Check::that('AK1', DB::scalar("SELECT last_ok_at FROM sync_state WHERE `sour
 F004Check::that('AK1', $r['requests'] <= 100 && Sync::MAX_REQUESTS === 100, 'højst 100 kald (fik ' . $r['requests'] . ')');
 F004Check::that('AK1', $r['cdr'] === 5 && $r['new'] === 5, 'loglinjens tal: 5 cdr, 5 nye');
 F004Check::that('AK1', str_starts_with(Sync::logLine($r),
-    'adversus-sync: 5 cdr (5 nye, dag 2026-11-12), 1 leads, 2 succes, lyd 2 hentet/0 uden optagelse/0 fejlet, kontrol 3 t (0 igen) · kald '),
+    'adversus-sync: 5 cdr (5 nye, dag 2026-11-12), 1 leads, 2 succes, lyd 2 hentet/0 uden optagelse/0 fejlet, kontrol 6 t (0 igen) · kald '),
     'loglinjen har tal for hver fase (fik ' . Sync::logLine($r) . ')');
 
 // Ny kørsel senere: intet nyt, ingen dubletter

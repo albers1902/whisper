@@ -18,22 +18,28 @@ f004_call($http, 1, 11, $S + 600, 90);                                    // suc
 f004_call($http, 2, 11, $S + 700, 0, 'outbound', 77, 'no-answer');       // succes, ikke besvaret
 f004_call($http, 3, 12, $S + 800, 60);                                    // ikke succes
 f004_call($http, 4, 12, $S + 900, 0, 'outbound', 77, 'busy');            // ikke succes, optaget
+f004_call($http, 5, 13, $S + 950, 60);                                    // gemt før H013 (succes, færdig, lyd hentet)
 f004_lead($http, 11, 'success', $S + 60);
 f004_lead($http, 12, 'notInterested', $S + 60);
+$pre = f004_insert(5, true, 'faerdig', gmdate('Y-m-d H:i:s', $S + 950));
+DB::exec("UPDATE calls SET audio_status = 'hentet', audio_path = 'recordings/2026/11/x.mp3' WHERE id = ?", [$pre]);
 ['sync' => $sync] = f004_sync(f004_cfg(), $http, $S + 3 * 3600);
 $r = $sync->run();
 $rows = [];
 foreach (DB::all("SELECT * FROM calls WHERE `source` = 'adversus' ORDER BY external_id") as $row) {
     $rows[(int) $row['external_id']] = $row;
 }
-H013Check::that('AK1', array_keys($rows) === [1, 2, 3, 4], 'alle fire CDR\'er er gemt, også ubesvarede og uden succes');
+H013Check::that('AK1', array_keys($rows) === [1, 2, 3, 4, 5], 'alle CDR\'er er gemt, også ubesvarede og uden succes');
+H013Check::that('AK1', (int) $rows[5]['id'] === $pre && (int) $rows[5]['is_success'] === 1 && $rows[5]['transcript_status'] === 'faerdig'
+    && $rows[5]['audio_status'] === 'hentet' && $rows[5]['audio_path'] === 'recordings/2026/11/x.mp3',
+    'et opkald gemt før H013 beholder succes, status og lyd, når CDR\'en hentes igen (QA L8)');
 H013Check::that('AK1', $rows[2]['disposition'] === 'no-answer' && $rows[4]['disposition'] === 'busy' && $rows[1]['disposition'] === 'answered',
     'dispositionen gemmes');
 H013Check::that('AK1', (int) $rows[1]['is_success'] === 1 && (int) $rows[2]['is_success'] === 1 && (int) $rows[3]['is_success'] === 0,
     'succes afgøres af leadets status');
 H013Check::that('AK1', $http->to('/v1/recordings') === [] && (int) DB::scalar('SELECT COUNT(*) FROM adversus_pending') === 0,
     'ingen optagelsesliste og ingen venteliste');
-H013Check::that('AK1', $r['error'] === null && $r['cdr'] === 4 && $r['new'] === 4, 'kørslen er ok: 4 cdr, 4 nye');
+H013Check::that('AK1', $r['error'] === null && $r['cdr'] >= 5 && $r['new'] === 4, 'kørslen er ok: 4 nye (det gamle er ikke nyt)');
 
 // Backfill over tre dage med et lavt kaldloft: dag for dag, genoptages efter hver kørsel, ingen dubletter
 f004_setup();

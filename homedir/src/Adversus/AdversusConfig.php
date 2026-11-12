@@ -16,7 +16,7 @@ use DateTimeZone;
  *   recording_hosts = …        (valgfri; værter, optagelsens 307-redirect må gå til — hentes uden login)
  *   success_status = success   (valgfri; lead-status for en succesfuld registrering — kun de leads transcriberes)
  *   sync_since = 2026-11-12    (valgfri; F004: hentningens start, dansk midnat. since er probens og bruges ikke af sync)
- *   lag_minutes = 10           (valgfri; F004: så langt bag nu ligger det seneste optagelsesvindue, 1–120)
+ *   lag_minutes = 10           (valgfri; F004/H013: så langt bag nu går CDR-cursoren (/calls start), 1–120)
  *   filter_tz = Europe/Copenhagen (valgfri; H009: zonen, Adversus læser filtrenes tidscifre i — se filterTime)
  */
 final class AdversusConfig

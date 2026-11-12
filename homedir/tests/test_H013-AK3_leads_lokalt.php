@@ -49,6 +49,26 @@ $st = $status();
 H013Check::that('AK3', $st[42] === 'success' && $st[41] === 'notInterested' && $r2['leads'] === 3,
     'statusskift fanges ved næste kørsel (de 2 ændrede + 1 s overlap på cursoren; fik ' . $r2['leads'] . ')');
 
+// Et fremtidigt tidsstempel låser ikke lead-cursoren (security H013-S4): cursoren står højst ved nu
+f004_lead($http, 47, 'success', $now + 10 * 365 * 86400);
+['sync' => $sync3] = f004_sync(f004_cfg(), $http, $now + 1200);
+$sync3->run();
+H013Check::that('AK3', (int) DB::scalar('SELECT cursor_value FROM sync_state WHERE `source` = ?', [Sync::CURSOR_LEADS]) <= $now + 1200,
+    'lead-cursoren er begrænset til nu');
+f004_lead($http, 48, 'success', $now + 1500);
+['sync' => $sync4] = f004_sync(f004_cfg(), $http, $now + 1800);
+$sync4->run();
+H013Check::that('AK3', ($status()[48] ?? null) === 'success', 'et senere lead hentes stadig');
+
+// En fejl i /leads stopper ikke CDR-hentningen (QA M2, security H013-S4); første fejl står i resultatet
+$http->leadsError = true;
+f004_call($http, 4901, 41, $now + 1000, 60);
+['sync' => $sync5] = f004_sync(f004_cfg(), $http, $now + 2400);
+$r5 = $sync5->run();
+H013Check::that('AK3', $r5['error'] === 'HTTP 500: code 500' && DB::scalar("SELECT id FROM calls WHERE external_id = '4901'") !== false,
+    'lead-fejl: CDR\'en er hentet alligevel, og fejlen står i resultatet');
+$http->leadsError = false;
+
 // Migrationen kopierede kendte succes-leads (her: prøvet direkte med samme SQL på en tom tabel)
 DB::exec('DELETE FROM adversus_leads');
 DB::exec('INSERT INTO adversus_success_leads (lead_id, last_updated_at, seen_at) VALUES (46, NULL, ?)', [gmdate('Y-m-d H:i:s', $now)]);

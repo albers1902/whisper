@@ -21,8 +21,9 @@ use Whisper\Zendesk\ZendeskError;
  * b) Agentnavne: /users højst én gang i døgnet (én gang i timen, hvis et opkald har en ukendt agent).
  * c) CDR'er: /calls sorteret på start efter cursoren (keyset) op til nu − lag → ALLE opkald i calls. Opkald uden succes
  *    får 'ikke_valgt'; opkald uden samtale (busy, no-answer, …) kommer aldrig i lydkøen af sig selv.
- * d) Kontrol: hver afsluttet time sammenlignes, når den er CHECK_SETTLE gammel, med Adversus' total (1 kald). Mangler
- *    der opkald (fx et langt opkald, der først blev logget efter cursoren), hentes timen igen med samme upsert.
+ * d) Kontrol mod Adversus' total (1 kald pr. vindue): de seneste RECENT_HOURS timer hver kørsel, hver time igen, når den
+ *    er CHECK_SETTLE gammel, og hvert døgn efter DAY_SETTLE. Mangler der opkald (fx et langt opkald, der først blev
+ *    logget efter cursoren), hentes de igen med samme upsert, og det logges.
  * e) Succes: et lead, der bliver success, markerer sine opkald og sætter de besvarede i kø (fjernes aldrig igen).
  * f) Lyd kun for opkald i kø (succes eller manuelt valgt) via /calls/{id}/recording; redirect kun til recording_hosts,
  *    og ingen nye downloads efter DOWNLOAD_DEADLINE (security S1, S2). Den signerede URL gemmes aldrig.
@@ -55,6 +56,11 @@ final class Sync
     /** Kontrollens enhed og hvor gammel en time skal være, før den kontrolleres (lange opkald er logget til den tid) */
     public const CHECK_SPAN = 3600;
     public const CHECK_SETTLE = 10800;
+    /** Så mange timer op til cursoren kontrolleres hver kørsel (1 kald pr. time), så et langt opkald findes med det samme */
+    public const RECENT_HOURS = 3;
+    /** Et døgn kontrolleres samlet (1 kald) så længe efter dets slut; mangler der opkald, kontrolleres timerne forfra */
+    public const DAY_SETTLE = 86400;
+    public const CURSOR_DAY = 'adversus-cdr-day';
     /** Dispositioner uden samtale: ingen lyd at hente, så de kommer ikke i lydkøen af sig selv */
     public const NO_CONVERSATION = ['busy', 'no-answer', 'failed', 'congestion'];
     public const USER_PAGES = 3;
@@ -107,8 +113,9 @@ final class Sync
     }
 
     /**
-     * Hele kørslen. Fejl står i sync_state.last_error (rate limit med præfikset "rate limit", som siden viser som
-     * information). Lyd hentes også, når en tidligere fase stoppede.
+     * Hele kørslen. Faserne kører uafhængigt: en fejl i én (fx /leads) stopper ikke de andre (QA H013 M2, security
+     * H013-S4). Den første fejl står i sync_state.last_error (rate limit med præfikset "rate limit", som siden viser
+     * som information).
      *
      * @return array{cdr: int, new: int, leads: int, success: int, queued: int, no_audio: int, failed: int, checked: int, rescanned: int, skipped: int, requests: int, error: ?string, day: string}
      */
@@ -118,23 +125,15 @@ final class Sync
         DB::exec('INSERT INTO sync_state (`source`, last_run_at) VALUES (?, ?) ON DUPLICATE KEY UPDATE last_run_at = VALUES(last_run_at)',
             [self::SOURCE, $this->now()]);
         $error = null;
-        foreach ([fn() => $this->migrate(), fn() => $this->leads(), fn() => $this->users(), fn() => $this->cdrs(), fn() => $this->check()] as $phase) {
+        $phases = [fn() => $this->migrate(), fn() => $this->leads(), fn() => $this->users(), fn() => $this->cdrs(),
+            fn() => $this->recent(), fn() => $this->dayCheck(), fn() => $this->check(), fn() => $this->markSuccess(),
+            fn() => $this->downloadPending()];
+        foreach ($phases as $phase) {
             try {
                 $phase();
             } catch (Throwable $e) {
-                $error = $this->describe($e);
-                break;
+                $error ??= $this->describe($e);
             }
-        }
-        try {
-            $this->markSuccess();
-        } catch (Throwable $e) {
-            $error ??= $this->describe($e);
-        }
-        try {
-            $this->downloadPending();
-        } catch (Throwable $e) {
-            $error ??= $this->describe($e);
         }
         if ($error === null) {
             DB::exec('UPDATE sync_state SET last_ok_at = ?, last_error = NULL WHERE `source` = ?', [$this->now(), self::SOURCE]);
@@ -234,6 +233,11 @@ final class Sync
         try {
             $pending = DB::exec('DELETE FROM adversus_pending');
             DB::exec('DELETE FROM sync_state WHERE `source` IN (?, ?)', [self::WARN, 'adversus-rec']);
+            // 0009 kopierede kendte succes-leads som 'success' (SQL kender ikke config); en anden success_status rettes her
+            if ($this->cfg->successStatus !== 'success') {
+                DB::exec("UPDATE adversus_leads l JOIN adversus_success_leads s ON s.lead_id = l.lead_id SET l.`status` = ? "
+                    . "WHERE l.`status` = 'success'", [$this->cfg->successStatus]);
+            }
             DB::exec('INSERT INTO sync_state (`source`, cursor_value, last_run_at) VALUES (?, ?, ?)', [self::MIGRATED, 'done', $this->now()]);
             $pdo->commit();
         } catch (Throwable $e) {
@@ -276,7 +280,7 @@ final class Sync
                     [$id, $status === '' ? 'unknown' : $status, $t === null ? null : gmdate('Y-m-d H:i:s', $t), $this->now()]);
                 $n++;
                 if ($t !== null) {
-                    $max = max($max, $t);
+                    $max = max($max, min($t, $this->ts()));   // et fremtidigt tidsstempel må ikke låse cursoren (security H013-S4)
                 }
             }
             $this->stats['leads'] = $n;
@@ -377,7 +381,71 @@ final class Sync
         }
     }
 
-    // ---------------------------------------------------------------- d) kontrol pr. time
+    // ---------------------------------------------------------------- d) kontrol: nylige timer, døgn og afsluttede timer
+
+    /**
+     * Hver kørsel: de seneste RECENT_HOURS timer op til cursoren (1 kald pr. time). Mangler der opkald (typisk et langt
+     * opkald, der først blev logget, efter cursoren passerede dets start), hentes vinduet straks — så et langt
+     * succes-opkald findes ved næste kørsel og ikke først efter CHECK_SETTLE (QA H013 M1). Kun når cursoren er nået op
+     * til nu; under backfill tager kontrollen af afsluttede timer sig af det.
+     */
+    public function recent(): void
+    {
+        $this->reserve = self::RESERVE;
+        $h = $this->cdrCursor()[2];
+        try {
+            if ($h < $this->ts() - self::CHECK_SETTLE) {
+                return;
+            }
+            $b = max($this->cfg->syncSince, intdiv($h, self::CHECK_SPAN) * self::CHECK_SPAN - (self::RECENT_HOURS - 1) * self::CHECK_SPAN);
+            while ($b < $h) {
+                $e = min(intdiv($b, self::CHECK_SPAN) * self::CHECK_SPAN + self::CHECK_SPAN, $h);
+                $gap = $this->missing($b, $e);
+                if ($gap !== null) {
+                    ($this->log)('adversus-sync: nylig kontrol ' . self::iso($b) . ': Adversus har ' . $gap[0] . ' opkald, gemt ' . $gap[1]
+                        . ' — hentes igen');
+                    $this->stats['rescanned']++;
+                    $this->refetch($b, $e, 1, null);
+                }
+                $b = $e;
+            }
+        } catch (OutOfBudget) {
+            // næste kørsel kontrollerer de samme timer igen
+        } finally {
+            $this->reserve = 0;
+        }
+    }
+
+    /**
+     * Ét kald pr. døgn (dansk døgn), DAY_SETTLE efter dets slut: mangler der stadig opkald (logget efter timens kontrol),
+     * logges det, og døgnets timer kontrolleres forfra af check(), så intet tabes stille (QA H013 M1).
+     */
+    public function dayCheck(): void
+    {
+        $this->reserve = self::RESERVE;
+        $raw = $this->cursorInt(self::CURSOR_DAY);
+        $d = $raw === null || $raw < $this->cfg->syncSince ? $this->cfg->syncSince : $raw;
+        try {
+            $next = (new DateTimeImmutable('@' . $d))->setTimezone($this->cfg->filterTz)->modify('+1 day')->setTime(0, 0)->getTimestamp();
+            if ($next + self::DAY_SETTLE > $this->ts() || $next > $this->checkCursor()[0]) {
+                return;   // døgnet er ikke gammelt nok, eller dets timer er ikke kontrolleret endnu
+            }
+            $gap = $this->missing($d, $next);
+            if ($gap !== null) {
+                ($this->log)('adversus-sync: dagskontrol ' . self::iso($d) . ': Adversus har ' . $gap[0] . ' opkald, gemt ' . $gap[1]
+                    . ' — døgnets timer kontrolleres igen');
+                $this->stats['rescanned']++;
+                if ($this->checkCursor()[0] > $d) {
+                    $this->saveCheckCursor($d, 0);
+                }
+            }
+            $this->saveCursor(self::CURSOR_DAY, (string) $next);
+        } catch (OutOfBudget) {
+            // næste kørsel
+        } finally {
+            $this->reserve = 0;
+        }
+    }
 
     /**
      * Timer, cursoren er forbi, og som er CHECK_SETTLE gamle: Adversus' total (1 kald med pageSize 1) mod antal gemte.
@@ -392,32 +460,22 @@ final class Sync
             while ($b + self::CHECK_SPAN <= $limit) {
                 $e = $b + self::CHECK_SPAN;
                 if ($p === 0) {
-                    $this->need(1);
-                    [, $total] = $this->callsPage($b, $e, 1, 1);
-                    $local = (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus' AND started_at >= ? AND started_at < ?",
-                        [gmdate('Y-m-d H:i:s', $b), gmdate('Y-m-d H:i:s', $e)]);
-                    $this->stats['checked']++;
-                    if ($total === null || $total <= $local) {
+                    $gap = $this->missing($b, $e);
+                    if ($gap === null) {
                         [$b, $p] = [$e, 0];
                         $this->saveCheckCursor($b, $p);
                         continue;
                     }
-                    ($this->log)('adversus-sync: kontrol ' . self::iso($b) . ': Adversus har ' . $total . ' opkald, gemt ' . $local
+                    ($this->log)('adversus-sync: kontrol ' . self::iso($b) . ': Adversus har ' . $gap[0] . ' opkald, gemt ' . $gap[1]
                         . ' — timen hentes igen');
                     $this->stats['rescanned']++;
                     $p = 1;
                     $this->saveCheckCursor($b, $p);
                 }
-                while (true) {
-                    $this->need(1);
-                    [$items] = $this->callsPage($b, $e, $p, self::PAGE);
-                    $this->saveCalls($items);
-                    if (count($items) < self::PAGE) {
-                        break;
-                    }
-                    $p++;
-                    $this->saveCheckCursor($b, $p);
-                }
+                $hour = $b;
+                $this->refetch($b, $e, $p, function (int $page) use ($hour): void {
+                    $this->saveCheckCursor($hour, $page);
+                });
                 [$b, $p] = [$e, 0];
                 $this->saveCheckCursor($b, $p);
             }
@@ -425,6 +483,44 @@ final class Sync
             // fortsætter ved næste kørsel fra samme time og side
         } finally {
             $this->reserve = 0;
+        }
+    }
+
+    /**
+     * Adversus' total for [b, e) mod antal gemte (1 kald).
+     *
+     * @return array{0: int, 1: int}|null [total, gemt], hvis der mangler opkald; ellers null
+     * @throws OutOfBudget
+     */
+    private function missing(int $b, int $e): ?array
+    {
+        $this->need(1);
+        [, $total] = $this->callsPage($b, $e, 1, 1);
+        $local = (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus' AND started_at >= ? AND started_at < ?",
+            [gmdate('Y-m-d H:i:s', $b), gmdate('Y-m-d H:i:s', $e)]);
+        $this->stats['checked']++;
+        return $total !== null && $total > $local ? [$total, $local] : null;
+    }
+
+    /**
+     * Henter [b, e) igen fra side $p med samme upsert (ingen dubletter).
+     *
+     * @param (Closure(int): void)|null $saved kaldes med næste side, så en afbrudt genhentning kan fortsætte
+     * @throws OutOfBudget
+     */
+    private function refetch(int $b, int $e, int $p, ?Closure $saved): void
+    {
+        while (true) {
+            $this->need(1);
+            [$items] = $this->callsPage($b, $e, $p, self::PAGE);
+            $this->saveCalls($items);
+            if (count($items) < self::PAGE) {
+                return;
+            }
+            $p++;
+            if ($saved !== null) {
+                $saved($p);
+            }
         }
     }
 

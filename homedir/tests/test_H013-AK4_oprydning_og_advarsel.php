@@ -56,4 +56,19 @@ H013Check::that('AK4', str_starts_with($w, 'advarsel: ' . gmdate('Y-m-d H:i:s', 
     'den nyeste advarsel står først (' . $w . ')');
 H013Check::that('AK4', mb_strlen($w) <= 250 && !str_contains($w, 'optagelser forkastet') && !str_contains($w, 'ventelisten'),
     'højst 250 tegn, og intet om ventelisten');
+
+// Oprydningen retter de kopierede succes-leads til en anden success_status (QA L6; SQL i 0009 kender ikke config)
+f004_setup();
+DB::exec('DELETE FROM sync_state WHERE `source` = ?', [Sync::MIGRATED]);
+DB::exec('INSERT INTO adversus_success_leads (lead_id, last_updated_at, seen_at) VALUES (61, NULL, ?)', [gmdate('Y-m-d H:i:s', $now)]);
+DB::exec("INSERT INTO adversus_leads (lead_id, `status`, last_updated_at, synced_at) VALUES (61, 'success', NULL, ?), (62, 'success', NULL, ?)",
+    [gmdate('Y-m-d H:i:s', $now), gmdate('Y-m-d H:i:s', $now)]);
+$won = new \Whisper\Adversus\AdversusConfig('apiuser' . bin2hex(random_bytes(4)), 'pw-' . bin2hex(random_bytes(12)), $S, [F004_AUDIO_HOST], 'won');
+$client = new \Whisper\Adversus\Client($won, new FakeAdversus(), static function (int $s): void {
+}, Sync::MAX_REQUESTS);
+(new Sync($client, $won, static fn(): int => $now, static function (string $l): void {
+}))->run();
+H013Check::that('AK4', DB::scalar('SELECT `status` FROM adversus_leads WHERE lead_id = 61') === 'won'
+    && DB::scalar('SELECT `status` FROM adversus_leads WHERE lead_id = 62') === 'success',
+    'kopierede succes-leads får den konfigurerede success_status; andre røres ikke');
 H013Check::done();
