@@ -2,25 +2,32 @@
 
 Tier: 2
 
-Grund: rettelse af F004-sync's opslag i Adversus' `/calls` og en read-only diagnose. Ingen migration, ingen auth, ingen
-ny ekstern modtager (samme Adversus-API og samme felter som F004). Critic er `security-critic`, fordi koden læser
-input udefra (Adversus' svar) og udskriver det på DEV (diagnosen), og fordi genopretningen ændrer sync-cursorer.
+Grund: rettelse af F004-sync's tidsfiltre mod Adversus (lokal væg-tid), en engangs-genopretning af sync-cursoren og en
+read-only diagnose. Der er ingen migration, ingen auth og ingen ny ekstern modtager (samme Adversus-API og samme felter
+som F004). Critic er `security-critic`, fordi koden læser input udefra (Adversus' svar), udskriver det på DEV
+(diagnosen) og ændrer sync-cursorer og ventelisten.
+
+PR 1 (#32, merget) indeholder kun diagnosen. PR 2 (`hotfix/H009-adversus-match-2`) indeholder fixet, genopretningen og
+rettelserne af diagnosen (security H009_v1 S1, S2 og S4).
 
 ## Berørte stier
-- `homedir/src/Adversus/Sync.php` (opslaget af opkald, genopretning)
-- `homedir/src/Adversus/Diagnose.php` (ny, read-only)
-- `homedir/cron/adversus-diagnose.php` (ny, køres manuelt, ikke i crontab)
+- `homedir/src/Adversus/Sync.php` (filtertider, genopretning)
+- `homedir/src/Adversus/AdversusConfig.php` (`filter_tz`)
+- `homedir/src/Adversus/Diagnose.php`, `homedir/cron/adversus-diagnose.php`
 - `homedir/tests/f004_lib.php`, `homedir/tests/test_H009-*.php`
 
 ## Persondata og eksterne modtagere
-Ingen nye. Diagnosen udskriver kun id'er, tidsstempler, varigheder, HTTP-status og feltnavne — aldrig telefonnummer,
-navne, URL'er eller fri tekst ud over den rensede fejltekst (samme regel som F004a-proben og F004 security S5).
+Ingen nye. Diagnosen udskriver kun id'er, tidsstempler, varigheder, HTTP-status, feltnavne og en renset fejltekst
+(DECISIONS #53).
 
 ## Risiko
-- Et forkert valgt opslag kan stadig ramme forkert. Derfor diagnosen før fixet og en fake, der svarer som det målte API.
-- Genopretningen henter vinduer fra `sync_since` igen og bruger kald, til cursoren er tilbage ved nu. Kaldloftet pr.
-  kørsel er uændret, så Adversus' grænse (1000/time) holdes.
-- Diagnosen kører ved siden af cron-sync'en. Begge bruger Client med loft og 429-håndtering.
+- **Hvis Adversus begynder at respektere `Z`,** ligger filtrene 1 t forkert igen. Den rettede diagnose viser det
+  (afsnit 1: "inden for vinduet"), og `filter_tz = UTC` er en nødvej uden kodeændring.
+- **Når sommertid slutter,** forekommer lokal 02:00–03:00 to gange. Et vindue i den time kan ramme den forkerte. Det
+  sker én time om året om natten med få opkald. Det vides og står i fragmentet.
+- **Genopretningen** henter vinduer fra `sync_since` igen. Med ca. 27 kald pr. time-vindue ved spidsbelastning er
+  efterslæbet indhentet på ca. 8 kørsler. Loftet på 100 kald pr. kørsel er uændret, så Adversus' grænse på 1000 i
+  timen holdes.
 
 ## Rollback
-Revert-H.
+Revert-H. Nødvej uden deploy: `[adversus] filter_tz = UTC` (`vi ~/config/config.ini`) giver den gamle fortolkning.
