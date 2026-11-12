@@ -42,8 +42,9 @@ final class App
     public const OAUTH_INVALID_TEXT = 'Anmodningen fra appen er ugyldig, så Whisper sender dig ikke videre. Gå tilbage til Claude, fjern '
         . 'Whisper-connectoren, og tilføj den igen.';
     public const OAUTH_EXPIRED_TITLE = 'Forbindelsen er udløbet';
-    public const OAUTH_EXPIRED_TEXT = 'Siden har været åben for længe, eller anmodningen er allerede brugt. Gå tilbage til Claude, og vælg '
-        . 'Forbind igen.';
+    public const OAUTH_EXPIRED_TEXT = 'Siden har været åben for længe, anmodningen er allerede brugt, eller en nyere forbindelse er '
+        . 'startet i et andet vindue. Gå tilbage til Claude, og vælg Forbind igen.';
+    public const OAUTH_LIMITED_TEXT = 'For mange forsøg på kort tid. Vent et minut, og vælg Forbind i Claude igen.';
 
     /** @var Closure(): int */
     private Closure $clock;
@@ -120,6 +121,15 @@ final class App
         if ($route === 'logout') {
             if (!$csrfOk) {
                 return $this->forbidden($s, $user, 'Formularen er udløbet. Gå tilbage, genindlæs siden og prøv igen.');
+            }
+            // F006 (QA F4): "Ikke dig? Log ud" på godkendelsessiden beholder den validerede, ventende anmodning, så
+            // den rigtige bruger kan logge ind og fortsætte. Sessionen tømmes og får nyt id som ved et login.
+            $pending = OAuth::enabled() ? Authorize::pending($s, $now) : null;
+            if ($pending !== null) {
+                $s->clear();
+                $s->regenerate();
+                $s->set(Authorize::SESSION_KEY, $pending);
+                return Response::redirect('/login');
             }
             $s->destroy();
             return Response::redirect('/login');
@@ -442,7 +452,7 @@ final class App
         }
         if (OAuth::enabled()) {
             // F006: kun "Forbind Claude" og forbundne apps; nøglerne vises ikke (DECISIONS #48)
-            return ['tokens' => [], 'origin' => Server::siteOrigin($req), 'new' => null, 'error' => null, 'name' => '',
+            return ['tokens' => [], 'origin' => OAuth::site($req), 'new' => null, 'error' => null, 'name' => '',
                 'apps' => Grants::active((int) $user['id'], ($this->clock)()),
                 'resume' => $s !== null && Authorize::pending($s, ($this->clock)()) !== null];
         }
@@ -458,12 +468,19 @@ final class App
      */
     private function oauthAuthorize(Request $req, string $method, Session $s, ?array $user, bool $csrfOk, int $now): Response
     {
-        $site = Server::siteOrigin($req);
+        $site = OAuth::site($req);
         if ($site === '') {
             return $this->oauthError($s, $user, false, 'invalid_host');
         }
         if ($method === 'GET') {
             if ($req->query !== []) {
+                $retry = OAuth::ipLimited($req->ip, 'authorize', $now);
+                if ($retry > 0) {
+                    $r = Response::html(UiPages::error(429, self::OAUTH_LIMITED_TEXT, Csrf::token($s), $user, '/', self::OAUTH_INVALID_TITLE,
+                        'rate_limited'), 429);
+                    $r->headers['Retry-After'] = (string) $retry;
+                    return $r;
+                }
                 $v = Authorize::validate($req->query, $site, $now);
                 if ($v['kind'] !== 'ok') {
                     $s->remove(Authorize::SESSION_KEY);
@@ -481,7 +498,8 @@ final class App
             if ((int) $user['must_change_password'] === 1) {
                 return Response::redirect('/konto');
             }
-            $r = Response::html(UiPages::consent($user, Csrf::token($s), $p, Flags::env() === 'dev'));
+            // QA F6b: "Adgangskoden er skiftet." efter et tvunget skift vises her, hvor brugeren er, og forbruges
+            $r = Response::html(UiPages::consent($user, Csrf::token($s), $p, Flags::env() === 'dev', $this->flash($s)));
             // Chrome anvender form-action på redirecten efter POST: præcis den registrerede redirect-origin, intet andet
             $r->headers['Content-Security-Policy'] = self::csp($p['redirect_uri']);
             return $r;
@@ -507,7 +525,7 @@ final class App
         if ($decision !== 'godkend') {
             return $this->oauthError($s, $user, true, 'unknown_decision');
         }
-        $grant = Grants::create($p['client_pk'], $uid, $p['resource'], $now);
+        $grant = Grants::create($p['client_pk'], $uid, $p['resource'], $p['redirect_uri'], $now);
         $code = Issuer::issueCode($grant, $p['redirect_uri'], $p['challenge'], $now);
         AccessLog::write($uid, 'oauth_godkend', ['klient' => $p['client_pk'], 'bevilling' => $grant]);
         return self::externalRedirect(Authorize::back($p, ['code' => $code], $site));

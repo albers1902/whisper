@@ -124,9 +124,19 @@
       say('Sætter opkaldet i kø.');
     });
   });
+  /* 5. F006: Godkend/Afvis sendes kun én gang (QA F3). Knapperne låses først efter afsendelsen (setTimeout 0), så den
+     valgte knaps name/value kommer med. Uden JS fanger serveren et dobbeltklik (engangs-rid). */
+  d.querySelectorAll('form[data-once]').forEach(function (form) {
+    form.addEventListener('submit', function () {
+      setTimeout(function () {
+        form.querySelectorAll('button[type="submit"]').forEach(function (b) { b.disabled = true; });
+      }, 0);
+    });
+  });
   /* Tilbage-knappen kan genskabe siden fra bfcache med en låst knap: gendan den (F004 UX Finding 3) */
   window.addEventListener('pageshow', function (ev) {
     if (!ev.persisted) { return; }
+    d.querySelectorAll('form[data-once] button[type="submit"]').forEach(function (b) { b.disabled = false; });
     d.querySelectorAll('form.select-call button[data-busy]').forEach(function (btn) {
       btn.disabled = false;
       btn.removeAttribute('aria-disabled');

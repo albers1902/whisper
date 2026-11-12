@@ -33,15 +33,16 @@ final class UiPages
      * @param array<string, mixed> $user
      * @param array{client_name: string, redirect_uri: string, rid: string} $req
      */
-    public static function consent(array $user, string $csrf, array $req, bool $dev): string
+    public static function consent(array $user, string $csrf, array $req, bool $dev, ?string $ok = null): string
     {
         $e = Ui::e(...);
         $name = OAuth::displayName($req['client_name']);
-        $named = $name !== '' ? '<strong>«' . $e($name) . '»</strong>' : '<strong>En unavngivet app</strong>';
+        // Uden navn: almindelig vægt, ingen «» (visuelt brief): det er ikke et navn fra appen
+        $named = $name !== '' ? '<strong>«' . $e($name) . '»</strong>' : 'En unavngivet app';
         $host = OAuth::host($req['redirect_uri']);
         $warn = $dev && !OAuth::isClaudeHost($host)
             ? Ui::msg('warn', '<p>Appen sender dig til ' . $e($host) . '. Det er kun tilladt på udviklingsserveren.</p>') : '';
-        return Ui::layout('Giv adgang til Whisper', '<div class="card narrow consent"><h1>Giv adgang til Whisper</h1>'
+        return Ui::layout('Giv adgang til Whisper', '<div class="card narrow consent"><h1>Giv adgang til Whisper</h1>' . Ui::message(null, $ok)
             . '<p>' . $named . ' vil have læseadgang til dine opkald og transcripts i Whisper.</p>'
             . '<dl class="meta single">'
             . '<div><dt>App</dt><dd>' . $named . '<span class="hint">Navnet oplyses af appen selv.</span></dd></div>'
@@ -53,7 +54,7 @@ final class UiPages
             . '<p>Appen kan ikke ændre, slette eller oprette noget i Whisper.</p>'
             . '<p class="hint">Godkend kun, hvis du selv har bedt Claude om at forbinde til Whisper lige nu.</p>'
             . $warn
-            . '<form method="post" action="/oauth/authorize" class="actions">' . View::csrfField($csrf)
+            . '<form method="post" action="/oauth/authorize" class="actions" data-once>' . View::csrfField($csrf)
             . '<input type="hidden" name="rid" value="' . $e($req['rid']) . '">'
             . '<button type="submit" name="beslutning" value="godkend">Godkend</button>'
             . '<button type="submit" name="beslutning" value="afvis" class="secondary">Afvis</button></form>'
