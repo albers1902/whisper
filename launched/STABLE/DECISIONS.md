@@ -367,3 +367,65 @@ H009-F3 · Accepteret risiko (LOW, security-critic H009_v2): et optagelsesvindue
 time 02:00–03:00 kan give et omvendt filter. Resultatet er højst en stand på op til en time. Der mistes ingen
 optagelser, og vinduerne er sammenhængende.
 Udløber: 2027-02-10
+
+## #60 — 2026-11-12 — F006-S1r: loftet pr. IP er fælles for al Claude-trafik
+F006-S1r · Accepteret risiko (LOW, security-critic F006_v2): højst 30 registreringer i timen pr. IP. Al Claude-trafik
+kommer fra få Anthropic-adresser, så mange samtidige forbindelser kan få 429. For dette projekts størrelse er det
+rummeligt.
+Udløber: 2027-02-10
+
+## #61 — 2026-11-12 — F006-S2r: samtykke med vildledende klientnavn
+F006-S2r · Accepteret risiko (LOW, security-critic F006_v2): en anden kan registrere en klient til den ægte
+Claude-callback med et selvopgivet navn. Godkendelsessiden mærker navnet som selvopgivet og viser værten.
+Udløber: 2027-02-10
+
+## #62 — 2026-11-12 — F006-S3r: to par er gyldige i grace-vinduet på 30 s
+F006-S3r · Accepteret risiko (LOW, security-critic F006_v2): et refresh-token, der bruges igen inden for 30 s, giver
+et ekstra gyldigt par, uden at kæden tilbagekaldes. Vinduet er nødvendigt for Claudes retry og parallelle refresh.
+Det strammes i et opfølgende H (én genudstedelse pr. token).
+Udløber: 2027-02-10
+
+## #63 — 2026-11-12 — F006-S4r: uden public_url afhænger issuer og ressource af Host
+F006-S4r · Accepteret risiko (LOW, security-critic F006_v2): uden `[app] public_url` bygges metadata af Host-headeren
+(jf. #25). Metadata er `no-store`. `public_url` sættes, før F006 tændes på test eller stable.
+Udløber: 2027-02-10
+
+## #64 — 2026-11-12 — F006-S5r: rate limit på authorize tæller efter sessionen er startet
+F006-S5r · Accepteret risiko (LOW, security-critic F006_v2): et gyldigt anonymt authorize-kald over loftet skriver
+stadig en sessionsfil. Det rettes i et opfølgende H (limiteren køres før sessionen).
+Udløber: 2027-02-10
+
+## #65 — 2026-11-12 — F006-S6: rollback med flaget slukket får F003-nøgler til at virke igen
+F006-S6 · Accepteret risiko (LOW, security-critic F006_v2): slås `F006_oauth` fra, virker F003-nøgler igen.
+Præcisering af #24: siden F006 tilbagekaldes både F003-nøgler og forbundne apps, når brugeren skifter eller får
+nulstillet adgangskoden, og når brugeren deaktiveres.
+Udløber: 2027-02-10
+
+## #66 — 2026-11-12 — F006-N1: fortrængning og oprydning efter 24 t kan ramme klienter uden bevilling
+F006-N1 · Accepteret risiko (LOW, security-critic F006_v2; qa-critic F006_v2 N2 og N5): en klient kan blive fortrængt,
+før brugeren når at godkende, og en cachet `client_id` kan pege på en ryddet klient. Brugeren ser fejlsiden med
+besked om at tilføje connectoren igen. Det verificeres i smoke-testen.
+Udløber: 2027-02-10
+
+## #67 — 2026-11-12 — F006-N2: godkendelse tilbagekalder tidligere bevilling for samme redirect_uri
+F006-N2 · Accepteret risiko (LOW, security-critic F006_v2; qa-critic F006_v2 N1): det sker allerede ved godkendelsen
+og ikke først ved det første token-bytte, og det logges ikke. En tabt redirect kan dermed koste den gamle forbindelse.
+Har samme Whisper-bruger to Claude-konti, afbryder de hinanden. Ejeren bruger én Claude-konto. Det flyttes til
+token-byttet og logges i et opfølgende H.
+Udløber: 2027-02-10
+
+## #68 — 2026-11-12 — F006-N3: Log ud bevarer den ventende anmodning for alle logouts
+F006-N3 · Accepteret risiko (LOW, security-critic F006_v2): på en delt browser kan en anden bruger inden for
+30 minutter se godkendelsessiden for en forbindelse, som den første startede. Siden viser "Logget ind som". Det
+begrænses til logout fra godkendelsessiden i et opfølgende H.
+Udløber: 2027-02-10
+
+## #69 — 2026-11-12 — F006-N4: ipKey giver IPv4-mappede adresser én fælles nøgle
+F006-N4 · Accepteret risiko (LOW, security-critic F006_v2): leveres `REMOTE_ADDR` som `::ffff:a.b.c.d`, deler alle
+IPv4-klienter loftet. Apache leverer normalt ren IPv4. Det normaliseres i et opfølgende H.
+Udløber: 2027-02-10
+
+## #70 — 2026-11-12 — F006-N5: FOR UPDATE kan give låsekonflikter på token-endpointet
+F006-N5 · Accepteret risiko (LOW, security-critic F006_v2): gap-låse ved ukendte hashes kan give kortvarige 500-svar
+ved samtidige kald. Klienten kan prøve igen.
+Udløber: 2027-02-10
