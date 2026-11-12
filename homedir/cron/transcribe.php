@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * F002: transcriberer ventende opkald ét ad gangen med faster-whisper (src/Transcription/). Cron hvert minut, lagt i
+ * F002: transcriberer ventende opkald (i batches, H006) med faster-whisper (src/Transcription/). Cron hvert minut, lagt i
  * sitets egen crontab af cron/whisper-cron.sh:
  *
  *   * * * * * /usr/bin/php /home/<bruger>/cron/transcribe.php >> /home/<bruger>/logs/transcribe.log 2>&1
@@ -73,7 +73,9 @@ if (!$engine->available()) {
 
 $start = time();
 while (time() - $start < 3000 && !file_exists($deploying)) {
-    if ($t->runOnce() === null) {
+    // Op til [whisper] batch opkald pr. motorkald, så modellen indlæses én gang pr. batch (H006; batch = 1: én ad gangen).
+    // Resttiden af rammen begrænser batchen, og et langt opkald venter til næste kørsel, hvis der er under 10 min tilbage.
+    if ($t->runBatch(3000 - (time() - $start)) === 0) {
         break;
     }
 }
