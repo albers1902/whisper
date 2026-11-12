@@ -2,7 +2,7 @@
 declare(strict_types=1);
 
 /**
- * F004: henter Adversus-opkald med optagelse, succes-leads og lyden til opkald i kø (src/Adversus/Sync.php). Cron hvert
+ * F004/H013: henter Adversus-CDR'er og leads inkrementelt og lyden til opkald i kø (src/Adversus/Sync.php). Cron hvert
  * 10. minut, lagt i sitets egen crontab af cron/whisper-cron.sh:
  *
  *   * /10 * * * * /usr/bin/php /home/<bruger>/cron/adversus-sync.php >> /home/<bruger>/logs/adversus-sync.log 2>&1

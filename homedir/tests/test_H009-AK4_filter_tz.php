@@ -40,9 +40,8 @@ $code = Diagnose::cli(sys_get_temp_dir(), $section + ['filter_tz' => 'Mars/Olymp
     });
 H009Check::that('AK4', $code === 1 && count($http->requests) === 0 && $out === ['✘ ' . $err], 'ugyldig zone: exit 1 og 0 kald');
 
-// Alle tidsfiltre i en sync-kørsel er væg-tid (lead-cursoren, /recordings og /calls)
+// Alle tidsfiltre i en sync-kørsel er væg-tid (lead-cursoren og /calls; /recordings bruges ikke fra H013)
 f004_setup();
-DB::exec('DELETE FROM adversus_pending');
 $S = f004_since();
 $http = new FakeAdversus();
 f004_recorded($http, 9001, 901, $S + 3600, 120);
@@ -64,11 +63,11 @@ foreach ($http->requests as $req) {
     }
 }
 ksort($seen);
-H009Check::that('AK4', array_keys($seen) === ['/v1/calls start', '/v1/leads lastUpdatedTime', '/v1/recordings timestamp'],
-    'filtre på /calls, /leads og /recordings (fik ' . implode(', ', array_keys($seen)) . ')');
+H009Check::that('AK4', array_keys($seen) === ['/v1/calls start', '/v1/leads lastUpdatedTime'],
+    'filtre på /calls og /leads (fik ' . implode(', ', array_keys($seen)) . ')');
 H009Check::that('AK4', $ok, 'alle filtertider er dansk væg-tid (cifrene 1 t foran UTC i november)');
 H009Check::that('AK4', (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus' AND external_id = '9001' AND is_success = 1") === 1
-    && (int) DB::scalar('SELECT COUNT(*) FROM adversus_success_leads WHERE lead_id = 901') === 1, 'opkaldet og succes-leadet er fundet');
+    && (int) DB::scalar("SELECT COUNT(*) FROM adversus_leads WHERE lead_id = 901 AND `status` = 'success'") === 1, 'opkaldet og succes-leadet er fundet');
 H009Check::that('AK4', $r['error'] === null, 'kørslen er ok');
 
 H009Check::done();
