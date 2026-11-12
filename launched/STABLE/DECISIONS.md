@@ -133,6 +133,25 @@ F003-S4 · Accepteret risiko: 401-svar tælles ikke, og links bygges af `Host` (
 kan ikke gættes (256 bit). Sysadmin bekræfter, at vhosten ikke har catch-all-alias, før STABLE.
 Udløber: 2027-02-09
 
+## #26 — 2026-11-12 — H004-1: afgrænserne om kundetale kan forfalskes
+H004-1 · Accepteret risiko: rammen om kundetale (`Tools::FRAME_START`/`FRAME_END`) er en fast tekst, som kundens egen
+tale kan indeholde (MEDIUM, security-critic H004_v1, QA H004_v1 fund 1). Rammen er en afbødning af #22, ikke en
+teknisk grænse. `/konto` advarer mod at kombinere nøglen med skrivende værktøjer. Neutralisering af afgrænserne i
+teksten laves i næste H-nummer.
+Udløber: 2027-02-10
+
+## #27 — 2026-11-12 — H004-2: Zendesk-metadata i hovedet af get_transcript er ikke indrammet
+H004-2 · Accepteret risiko: agentnavn og andre Zendesk-felter står over rammen uden rensning for linjeskift (LOW,
+security-critic H004_v1). Det kræver skriveadgang i Zendesk. Rensning af linjeskift og kontroltegn laves i samme H som
+#26.
+Udløber: 2027-02-10
+
+## #28 — 2026-11-12 — H004-3: REGEXP_INSTR-dialekt kun testet på MariaDB 10.11
+H004-3 · Accepteret risiko: søgeuddragets ordgrænse-regex er kun testet på DEV's MariaDB 10.11 (LOW, security-critic
+og QA H004_v1). En dialektforskel giver en SQL-fejl, ikke datatab. Testen H004-AK6 skal køre grøn på databasen for
+TEST og STABLE, før de tages i brug.
+Udløber: 2027-02-10
+
 ## #5 — 2026-11-11 — H001: /health uden rate limit eller cache
 H001 · Accepteret risiko: `/health` er offentlig og laver en DB-skriveprøve ved hvert kald uden rate limit eller cache.
 Samtidige kald kan give falsk `degraded` (LOW, security-critic H001_v1 og v2). Kun driftsforstyrrelse, og der er ingen
