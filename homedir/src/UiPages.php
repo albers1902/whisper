@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Whisper;
 
 use Whisper\Mcp\Tokens;
+use Whisper\OAuth\OAuth;
 
 /**
  * Login, konto (inkl. F003's MCP-sektion), brugere og fejlsider i det nye UI (F005, UX §3.5–3.8). View kalder hertil
@@ -11,17 +12,61 @@ use Whisper\Mcp\Tokens;
  */
 final class UiPages
 {
-    public static function login(string $csrf, ?string $error, string $email): string
+    /** @param ?string $context  F006: en ventende forbindelse (design F006 §1); null = siden som før */
+    public static function login(string $csrf, ?string $error, string $email, ?string $context = null): string
     {
         return Ui::layout('Log ind', '<section class="card narrow login">'
             . '<p class="login-brand"><strong>Whisper</strong><span>Opkald og transcripts fra kundeservice</span></p>'
-            . '<h1>Log ind</h1>' . Ui::message($error)
+            . '<h1>Log ind</h1>' . ($context !== null ? Ui::msg('info', '<p>' . Ui::e($context) . '</p>') : '') . Ui::message($error)
             . '<form method="post" action="/login">' . View::csrfField($csrf)
             . '<label>E-mail<input type="email" name="email" value="' . Ui::e($email) . '" required autofocus autocomplete="username"></label>'
             . '<label>Adgangskode<input type="password" name="password" required autocomplete="current-password"></label>'
             . '<button type="submit" class="full">Log ind</button></form>'
-            . '<p class="hint">Glemt adgangskode? Kontakt en administrator.</p></section>', null, $csrf);
+            . '<p class="hint">Glemt adgangskode? Kontakt en administrator.</p>'
+            . ($context !== null ? '<p class="hint">Vil du ikke forbinde? Luk bare vinduet.</p>' : '') . '</section>', null, $csrf);
     }
+
+    /**
+     * Godkendelsessiden (design F006 §2, visuelt brief: .consent, dl.meta.single, code.host). Klientnavnet er
+     * ikke-betroet (D8): renset, i «», mærket "oplyses af appen selv", aldrig i title eller H1. Værten vises i ASCII.
+     *
+     * @param array<string, mixed> $user
+     * @param array{client_name: string, redirect_uri: string, rid: string} $req
+     */
+    public static function consent(array $user, string $csrf, array $req, bool $dev): string
+    {
+        $e = Ui::e(...);
+        $name = OAuth::displayName($req['client_name']);
+        $named = $name !== '' ? '<strong>«' . $e($name) . '»</strong>' : '<strong>En unavngivet app</strong>';
+        $host = OAuth::host($req['redirect_uri']);
+        $warn = $dev && !OAuth::isClaudeHost($host)
+            ? Ui::msg('warn', '<p>Appen sender dig til ' . $e($host) . '. Det er kun tilladt på udviklingsserveren.</p>') : '';
+        return Ui::layout('Giv adgang til Whisper', '<div class="card narrow consent"><h1>Giv adgang til Whisper</h1>'
+            . '<p>' . $named . ' vil have læseadgang til dine opkald og transcripts i Whisper.</p>'
+            . '<dl class="meta single">'
+            . '<div><dt>App</dt><dd>' . $named . '<span class="hint">Navnet oplyses af appen selv.</span></dd></div>'
+            . '<div><dt>Sender dig til</dt><dd><code class="host">' . $e($host) . '</code></dd></div>'
+            . '<div><dt>Logget ind som</dt><dd>' . $e((string) ($user['name'] ?? '')) . ' · ' . $e((string) ($user['email'] ?? '')) . '</dd></div>'
+            . '</dl>'
+            . '<h2>Appen kan</h2><ul><li>søge i dine opkald og transcripts</li>'
+            . '<li>læse transcripts og opkaldsoplysninger (dato, kundens nummer, agent og ticket)</li></ul>'
+            . '<p>Appen kan ikke ændre, slette eller oprette noget i Whisper.</p>'
+            . '<p class="hint">Godkend kun, hvis du selv har bedt Claude om at forbinde til Whisper lige nu.</p>'
+            . $warn
+            . '<form method="post" action="/oauth/authorize" class="actions">' . View::csrfField($csrf)
+            . '<input type="hidden" name="rid" value="' . $e($req['rid']) . '">'
+            . '<button type="submit" name="beslutning" value="godkend">Godkend</button>'
+            . '<button type="submit" name="beslutning" value="afvis" class="secondary">Afvis</button></form>'
+            . '<p class="hint">Adgangen gælder, indtil du tilbagekalder den under Konto → Forbundne apps.</p>'
+            // div, ikke p: en form må ikke stå i et p-element
+            . '<div class="hint">Ikke dig? <form method="post" action="/logout" class="inline">' . View::csrfField($csrf)
+            . '<button type="submit" class="link">Log ud</button></form></div>'
+            . '<p class="hint">' . $e(self::MCP_WARNING) . '</p>'
+            . '</div>', $user, $csrf);
+    }
+
+    /** Prompt-injection (DECISIONS #22), ordlyd uden "nøgle" (F006, design §3). */
+    public const MCP_WARNING = 'Kombinér ikke Whisper med værktøjer, der kan sende mails eller ændre data, i samme Claude-samtale.';
 
     /** @param array<string, mixed> $user */
     public static function home(array $user, string $csrf, ?string $ok): string
@@ -32,12 +77,17 @@ final class UiPages
     /**
      * @param array<string, mixed> $user
      * @param array{tokens: list<array<string, mixed>>, origin: string, new: array{token: string, name: string}|null,
-     *     error: ?string, name: string}|null $mcp
+     *     error: ?string, name: string, apps: list<array<string, mixed>>|null, resume?: bool}|null $mcp
      */
     public static function account(array $user, string $csrf, ?string $error, ?string $ok, ?array $mcp): string
     {
         $forced = (int) ($user['must_change_password'] ?? 0) === 1
-            ? Ui::msg('info', '<p>Du skal vælge en ny adgangskode, før du kan bruge Whisper.</p>') : '';
+            ? Ui::msg('info', '<p>Du skal vælge en ny adgangskode, før du kan bruge Whisper.</p>'
+                . (($mcp['resume'] ?? false) ? '<p>Når du har valgt en ny adgangskode, fortsætter du med at forbinde Claude.</p>' : '')) : '';
+        $section = '';
+        if ($mcp !== null) {
+            $section = $mcp['apps'] !== null ? self::connect($csrf, $mcp['origin'], $mcp['apps']) : self::mcp($csrf, $mcp);
+        }
         return Ui::layout('Konto', '<div class="card medium"><h1>Konto</h1>' . $forced . Ui::message($error, $ok)
             . '<dl class="meta"><div><dt>Navn</dt><dd>' . Ui::e((string) $user['name']) . '</dd></div>'
             . '<div><dt>E-mail</dt><dd>' . Ui::e((string) $user['email']) . '</dd></div>'
@@ -49,14 +99,63 @@ final class UiPages
             . '<label>Gentag ny adgangskode<input type="password" name="confirm" required minlength="' . Password::MIN_LENGTH
             . '" autocomplete="new-password"></label>'
             . '<button type="submit">Skift adgangskode</button></form></section>'
-            . ($mcp !== null ? self::mcp($csrf, $mcp) : '') . '</div>', $user, $csrf, 'konto');
+            . $section . '</div>', $user, $csrf, 'konto');
+    }
+
+    /**
+     * "Forbind Claude" (F006, design §3 uden Avanceret: DECISIONS #48). Menunavnene er Claude's egne
+     * (claude.com/docs/connectors/custom/add-unlisted, 2026-11-12).
+     *
+     * @param list<array<string, mixed>> $apps
+     */
+    private static function connect(string $csrf, string $origin, array $apps): string
+    {
+        $e = Ui::e(...);
+        $now = time();
+        $url = $origin !== ''
+            ? '<div class="secret"><input id="connector-url" type="text" readonly value="' . $e($origin . '/mcp') . '" aria-label="Whispers connector-URL">'
+                . Ui::copyButton('connector-url', 'Kopiér URL') . '</div>'
+            : Ui::msg('info', '<p>Whispers adresse er ikke sat op. Kontakt en administrator.</p>');
+        $rows = '';
+        foreach ($apps as $a) {
+            $name = OAuth::displayName((string) $a['client_name']);
+            $shown = $name !== '' ? $name : 'En unavngivet app';
+            $created = View::dateTime($a['created_at'] ?? null);
+            $used = $a['last_used_at'] ?? null;
+            $usedText = 'Aldrig';
+            if (is_string($used) && $used !== '' && ($ts = strtotime($used)) !== false) {
+                $usedText = '<span title="' . $e(View::dateTime($used)) . '">' . $e(ucfirst(Ui::ago($ts, $now))) . '</span>';
+            }
+            $rows .= '<tr><td data-label="App" class="ellipsis" title="' . $e($shown) . '">' . $e($shown) . '</td>'
+                . '<td data-label="Forbundet" class="num">' . $e($created) . '</td>'
+                . '<td data-label="Sidst brugt">' . $usedText . '</td>'
+                . '<td><form method="post" action="/konto/app/' . (int) $a['id'] . '/tilbagekald" class="inline">' . View::csrfField($csrf)
+                . '<button type="submit" class="button danger-secondary small" aria-label="'
+                . $e('Tilbagekald adgangen for «' . $shown . '», forbundet ' . $created) . '">Tilbagekald</button></form></td></tr>';
+        }
+        $list = $rows === '' ? '<p class="muted">Ingen apps er forbundet endnu. Når du godkender Claude, står forbindelsen her.</p>'
+            : '<div class="table-wrap"><table class="keys"><caption class="sr-only">Forbundne apps</caption><thead><tr><th scope="col">App</th>'
+                . '<th scope="col">Forbundet</th><th scope="col">Sidst brugt</th><th scope="col"><span class="sr-only">Handling</span></th>'
+                . '</tr></thead><tbody>' . $rows . '</tbody></table></div>';
+        return '<section class="mcp" aria-labelledby="claude-h"><h2 id="claude-h">Forbind Claude</h2>'
+            . '<p>Forbind Claude til Whisper, så Claude kan søge i og læse dine transcripts. Claude får kun læseadgang.</p>'
+            . '<h3>Tilføj Whisper i Claude</h3><ol class="steps">'
+            . '<li>Åbn Claude (claude.ai eller Claude Desktop), og gå til Customize → Connectors.</li>'
+            . '<li>Vælg Add → "Add custom connector". Skriv Whisper som navn, og indsæt URL\'en:' . $url . '</li>'
+            . '<li>Vælg Continue, derefter Add og Connect. Whisper åbner i et vindue: log ind, og vælg Godkend.</li>'
+            . '<li>Spørg fx: "Find opkald fra i går, hvor kunden nævner flytning."</li></ol>'
+            . '<p class="hint">Du skal ikke bruge en nøgle, Node.js eller genstarte Claude.</p>'
+            . '<p class="hint">Bruger I Claude Team eller Enterprise, er det en ejer af organisationen, der tilføjer connectoren under '
+            . 'Organization settings → Connectors. Derefter vælger du selv Connect.</p>'
+            . Ui::msg('warn', '<p>' . $e(self::MCP_WARNING) . '</p>')
+            . '<h3>Forbundne apps (' . count($apps) . ')</h3>' . $list . '</section>';
     }
 
     /**
      * Sektionen "Claude Desktop (MCP)" efter UX §3.6.
      *
      * @param array{tokens: list<array<string, mixed>>, origin: string, new: array{token: string, name: string}|null,
-     *     error: ?string, name: string} $mcp
+     *     error: ?string, name: string, apps: list<array<string, mixed>>|null, resume?: bool} $mcp
      */
     private static function mcp(string $csrf, array $mcp): string
     {
@@ -231,7 +330,8 @@ final class UiPages
             ? ['Nulstil adgangskode', "Nulstil adgangskoden for <strong>$name</strong>? Den nuværende adgangskode holder op med at "
                 . "virke med det samme, $name logges ud, og du får en engangskode, som kun vises én gang.", 'Ja, nulstil adgangskoden']
             : ['Deaktiver bruger', "Deaktiver <strong>$name</strong>? $name logges ud med det samme og kan ikke logge ind, "
-                . 'før en administrator genaktiverer brugeren.', 'Ja, deaktiver brugeren'];
+                . 'før en administrator genaktiverer brugeren.' . (OAuth::enabled() ? ' Brugerens forbundne apps holder op med at virke.' : ''),
+                'Ja, deaktiver brugeren'];
         return Ui::layout($title, '<section class="card narrow"><h1>' . Ui::e($title) . '</h1><p>' . $text . '</p>'
             . '<form method="post" action="/brugere/' . $id . '" class="actions">' . View::csrfField($csrf)
             . '<input type="hidden" name="action" value="' . Ui::e($action) . '">'
@@ -244,14 +344,17 @@ final class UiPages
      * @param array<string, mixed>|null $user
      * @param string $home  linket "Til opkald" (fx med listens filtre)
      */
-    public static function error(int $status, string $text, ?string $csrf = null, ?array $user = null, string $home = '/'): string
+    public static function error(int $status, string $text, ?string $csrf = null, ?array $user = null, string $home = '/',
+        ?string $title = null, ?string $details = null): string
     {
         $titles = [400 => 'Ugyldig forespørgsel', 403 => 'Ingen adgang', 404 => 'Ikke fundet', 405 => 'Metoden er ikke tilladt',
             500 => 'Der skete en fejl'];
-        $title = $titles[$status] ?? 'Fejl';
+        $title ??= $titles[$status] ?? 'Fejl';
         $link = $user !== null ? '<a class="button secondary" href="' . Ui::e($home) . '">Til opkald</a>'
             : '<a class="button secondary" href="/login">Til login</a>';
-        return Ui::layout($title, '<section class="card narrow"><h1>' . Ui::e($title) . '</h1><p>' . Ui::e($text) . '</p>'
+        // F006 (D4): en fast teknisk kode i en <details>, aldrig klientens egne værdier
+        $more = $details !== null ? '<details><summary>Teknisk besked</summary><p><code>' . Ui::e($details) . '</code></p></details>' : '';
+        return Ui::layout($title, '<section class="card narrow"><h1>' . Ui::e($title) . '</h1><p>' . Ui::e($text) . '</p>' . $more
             . '<div class="actions">' . $link . '</div></section>', $user, $csrf ?? '');
     }
 
