@@ -64,7 +64,7 @@ foreach ($http->requests as $r) {
     }
     foreach ($f as $ops) {
         if (is_array($ops) && isset($ops['$gt'])) {
-            $lowest = min($lowest, (int) strtotime((string) $ops['$gt']));
+            $lowest = min($lowest, f004_filter_epoch((string) $ops['$gt']));   // H009: filtercifre er dansk væg-tid
         }
     }
 }

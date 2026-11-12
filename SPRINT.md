@@ -30,6 +30,9 @@ Status: `bash shared/report.sh status` og `bash shared/report.sh check`. Ingen t
   - fejl i agent-opslag fjerner opkaldet, og poison-opkald logges ofte (QA F002 v2 N-2 og N-3)
   - flag-hook kun i CLI (DECISIONS #17)
   - retention og sletning af opkald før STABLE (DECISIONS #16)
+- **2027-03-29 (dagen efter sommertidens start):** ejeren kører `php ~/cron/adversus-diagnose.php` og sender
+  `KONKLUSION recordings-filter`. Viser den forskydning, sættes `[adversus] filter_tz = +01:00` (DECISIONS #58).
+  Inden 2027-02-10 forsøges en måling mod en sommerdato.
 
 ## Besluttet (ejeren 2026-11-11, skrives i DECISIONS.md i første docs-PR)
 - Lokal transcription. Ingen lyd forlader serveren.
