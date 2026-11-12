@@ -21,8 +21,8 @@ use Whisper\Paths;
 final class DiarizationSettings
 {
     public const FLAG = 'H011_diarization';
-    public const DEFAULT_PHRASES = ['du snakker med', 'du taler med', 'du har ringet til', 'velkommen til', 'mit navn er',
-        'fra tryg energi'];
+    /** "mit navn er" er bevidst ikke med: kunder siger det også (QA/security H011 v1) */
+    public const DEFAULT_PHRASES = ['du snakker med', 'du taler med', 'du har ringet til', 'velkommen til', 'fra tryg energi'];
     public const MAX_PHRASES = 30;
     public const MAX_PHRASE_LEN = 100;
 

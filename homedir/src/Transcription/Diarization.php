@@ -9,14 +9,16 @@ namespace Whisper\Transcription;
  * - Hvert segment får taleren med størst samlet tidsoverlap med diarization-intervallerne; uden overlap det nærmeste
  *   interval. Segmenter deles ikke ved et talerskifte (det kræver ordtidsstempler fra whisper).
  * - Talerne nummereres 0, 1, … efter, hvem der taler først i transcriptet.
- * - Rolle: taleren i det første segment, der indeholder en agentmarkør, er "agent", alle andre "kunde". Agenten
- *   præsenterer sig typisk i starten, så en kunde, der senere siger "mit navn er", vinder ikke. Uden markør får ingen
- *   en rolle, og visningen siger "Taler 1"/"Taler 2".
+ * - Rolle: taleren i det første segment, der indeholder en agentmarkør, er "agent", alle andre "kunde". Kun segmenter,
+ *   der starter inden for de første MARKER_WINDOW sekunder, tæller: agenten præsenterer sig i starten, og en kunde, der
+ *   senere nævner en markør, kan ikke vende rollerne. Uden markør får ingen en rolle, og visningen siger "Taler 1"/"Taler 2".
  */
 final class Diarization
 {
     /** Motoren kører med 2 talere; et højere nummer i svaret er ugyldigt */
     public const MAX_SPEAKERS = 8;
+    /** Agentmarkører tæller kun i segmenter, der starter inden for så mange sekunder */
+    public const MARKER_WINDOW = 60.0;
 
     /**
      * Motorens intervaller: [{"start": s, "end": s, "speaker": n}, …].
@@ -69,7 +71,7 @@ final class Diarization
                 continue;
             }
             $segments[$i]['speaker'] = $map[$raw[$i]];
-            if ($agent === null && self::hasPhrase(is_string($seg['text'] ?? null) ? $seg['text'] : '', $phrases)) {
+            if ($agent === null && (float) ($seg['start'] ?? 0) < self::MARKER_WINDOW && self::hasPhrase(is_string($seg['text'] ?? null) ? $seg['text'] : '', $phrases)) {
                 $agent = $map[$raw[$i]];
             }
         }
