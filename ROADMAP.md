@@ -5,6 +5,7 @@ Kun DEV indtil videre (DECISIONS #4). Rækkefølgen er ejerens (DECISIONS #1).
 ## Nu
 - F001: Brugere og login — administrator opretter og fjerner brugere, roller administrator/bruger — plan: 2026-11 — P1
 - F005: Nyt UI — moderne, tilgængeligt redesign efter ui-ux/F005_design_v1.md og graphic-design/F005_visual_v1.md — plan: 2026-11 — P1
+- F007: Zendesk og Adversus hver for sig + moderne redesign — faner, kort, chatbobler, afspiller, statusfiltre, find i samtalen, skala til 100k+ opkald — plan: 2026-11 — P1
 - F006: Claude custom connector — OAuth 2.1 på /mcp, så Whisper tilføjes i Claude med URL og login (ingen nøgle, Node eller mcp-remote) — plan: 2026-11 — P1
 
 ## Næste
