@@ -4,8 +4,12 @@ declare(strict_types=1);
 /**
  * F004a: read-only måling af Adversus' API. Køres manuelt af ejeren på DEV, efter [adversus] er skrevet i config.ini:
  *
- *   php ~/cron/adversus-probe.php              auth, endpoints, felter, sideinddeling, optællinger, én optagelse
+ *   php ~/cron/adversus-probe.php              auth, endpoints, felter, sideinddeling, optællinger, én optagelse og
+ *                                              "Leads med succes" (status, antal siden since, opkald og optagelser
+ *                                              for op til 5 succes-leads, overslag) — højst 40 kald pr. kørsel
  *   php ~/cron/adversus-probe.php --call=123   ét opkalds tal og optagelsens statuskæde
+ *
+ * Valgfrit i [adversus]: success_status = success (lead-status for en succesfuld registrering).
  *
  * Udskriver KUN HTTP-status, værtsnavne, antal, feltnavne og dokumenterede enum-værdier — aldrig feltværdier,
  * brugernavn eller adgangskode. Gemmer intet; en hentet optagelse slettes straks. Logikken ligger i src/Adversus/Probe.php.

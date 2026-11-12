@@ -14,6 +14,7 @@ use DateTimeZone;
  *   password = <API-adgangskode>
  *   since = 2026-10-01
  *   recording_hosts = …        (valgfri; værter, optagelsens 307-redirect må gå til — hentes uden login)
+ *   success_status = success   (valgfri; lead-status for en succesfuld registrering — kun de leads transcriberes)
  */
 final class AdversusConfig
 {
@@ -23,6 +24,7 @@ final class AdversusConfig
         public readonly string $password,
         public readonly int $since,
         public readonly array $recordingHosts = [],
+        public readonly string $successStatus = 'success',
     ) {
     }
 
@@ -58,7 +60,12 @@ final class AdversusConfig
             }
             $hosts[] = $h;
         }
-        return new self($str('username'), $str('password'), $since->getTimestamp(), $hosts);
+        // Værdien sendes i et JSON-filter og vises i output, så kun et kort enum-lignende ord er tilladt
+        $success = $str('success_status') === '' ? 'success' : $str('success_status');
+        if (preg_match('/^[A-Za-z_-]{1,40}$/D', $success) !== 1) {
+            throw new AdversusError('[adversus] success_status er ugyldig (kun bogstaver, _ og -, højst 40 tegn)');
+        }
+        return new self($str('username'), $str('password'), $since->getTimestamp(), $hosts, $success);
     }
 
     /** Datoen som ISO 8601 til Adversus' filtre. */
