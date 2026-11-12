@@ -94,7 +94,7 @@ final class H008Engine implements BatchEngine
 }
 
 /**
- * $n ventende opkald med lyd i køens rækkefølge (hvert et minut senere end det forrige).
+ * $n ventende opkald med lyd i køens rækkefølge (køen tager nyeste først, H012: hvert et minut tidligere end det forrige).
  *
  * @param list<int> $durations
  * @return list<array{id: int, file: string}>
@@ -103,7 +103,7 @@ function h008_calls(array $durations): array
 {
     $out = [];
     foreach ($durations as $i => $d) {
-        $id = f002_insert(['started_at' => gmdate('Y-m-d H:i:s', 1790000000 + $i * 60), 'duration_sec' => $d]);
+        $id = f002_insert(['started_at' => gmdate('Y-m-d H:i:s', 1790000000 - $i * 60), 'duration_sec' => $d]);
         $out[] = ['id' => $id, 'file' => f002_audio($id)];
     }
     return $out;

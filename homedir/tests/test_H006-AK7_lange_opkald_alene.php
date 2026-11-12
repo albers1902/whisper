@@ -17,11 +17,11 @@ H006Check::that('AK7', ProcessEngine::timeoutFor(2400) === 9600, '40 min lyd: gr
 f002_setup();
 $clock = new stdClass();
 $clock->now = F002_NOW;
-$a = f002_insert(['started_at' => '2026-10-01 08:00:00', 'duration_sec' => 125]);
+$a = f002_insert(['started_at' => '2026-10-01 10:00:00', 'duration_sec' => 125]);   // nyeste først (H012): A, L, C
 $fa = f002_audio($a);
 $l = f002_insert(['started_at' => '2026-10-01 09:00:00', 'duration_sec' => 2400]);
 f002_audio($l);
-$c = f002_insert(['started_at' => '2026-10-01 10:00:00', 'duration_sec' => 125]);
+$c = f002_insert(['started_at' => '2026-10-01 08:00:00', 'duration_sec' => 125]);
 $fc = f002_audio($c);
 $engine = new FakeBatchEngine($clock);
 $t = new Transcriber($engine, static fn(): int => (int) $clock->now, static function (string $x): void {

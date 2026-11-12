@@ -47,6 +47,12 @@ function testConfig(): string
         'name = "Whisper test"',
         'env = "test"',
         '',
+        // H012: testdata har faste datoer, der bliver ældre end 30 dage; køens regler er derfor slået fra her, og
+        // H012-testene giver selv reglerne (QueueRules::override eller som parameter)
+        '[whisper]',
+        'min_seconds = 0',
+        'max_age_days = 0',
+        '',
     ]) . "\n";
 }
 

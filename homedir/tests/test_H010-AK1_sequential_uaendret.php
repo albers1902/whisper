@@ -11,7 +11,8 @@ use Whisper\Transcription\ProcessEngine;
 use Whisper\Transcription\WhisperSettings;
 
 $var = f002_setup();
-H010Check::that('AK1', Config::section('whisper') === [], 'testens config har ingen [whisper]-nøgler');
+H010Check::that('AK1', array_diff_key(Config::section('whisper'), ['min_seconds' => 1, 'max_age_days' => 1]) === [],
+    'testens config har ingen motor-nøgler i [whisper] (kun kø-reglerne fra H012, slået fra)');
 
 foreach ([[], ['engine_mode' => 'sequential'], ['engine_mode' => ' Sequential ', 'batched_size' => '8']] as $section) {
     $w = [];

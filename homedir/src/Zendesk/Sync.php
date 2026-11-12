@@ -362,8 +362,9 @@ final class Sync
     /** @return array{ok: int, failed: int} */
     public function downloadPending(): array
     {
+        // Nyeste først, som transcription-køen (H012)
         $rows = DB::all("SELECT id, recording_url, started_at FROM calls WHERE `source` = ? AND (audio_status = 'venter' "
-            . "OR (audio_status = 'fejlet' AND audio_attempts < ?)) ORDER BY started_at ASC, id ASC LIMIT " . self::MAX_DOWNLOADS,
+            . "OR (audio_status = 'fejlet' AND audio_attempts < ?)) ORDER BY started_at DESC, id DESC LIMIT " . self::MAX_DOWNLOADS,
             [self::SOURCE, self::MAX_AUDIO_ATTEMPTS]);
         $ok = 0;
         $failed = 0;

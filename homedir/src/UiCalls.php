@@ -8,6 +8,7 @@ use DateTimeZone;
 use Whisper\Adversus\Feature;
 use Whisper\Adversus\Sync as AdversusSync;
 use Whisper\Transcription\Diarization;
+use Whisper\Transcription\QueueRules;
 use Whisper\Zendesk\Sync;
 
 /**
@@ -401,6 +402,10 @@ final class UiCalls
         $tStatus = (string) $call['transcript_status'];
         $notChosen = $adv && $tStatus === 'ikke_valgt';
         $sourceName = $adv ? 'Adversus' : 'Zendesk';
+        // H012: sprunget over af køens regler (for kort, for gammelt) og klar til at blive valgt
+        $rules = QueueRules::fromConfig();
+        $skip = $rules->skipReason($call, time());
+        $skipped = $skip !== null && $audioStatus === 'hentet' && (!$adv || $featureOn);
 
         // Venstre: lyd
         if ($notChosen) {
@@ -438,7 +443,12 @@ final class UiCalls
         if ($notChosen) {
             $body = Ui::msg('info', '<p>Opkaldet er ikke på et succes-lead og bliver derfor ikke transcriberet automatisk.</p>'
                 . $button('Lyden hentes fra Adversus, og opkaldet sættes i kø. Det tager normalt under 15 minutter.'));
-        } elseif ($adv && CallPages::selectable($call)) {
+        } elseif ($skipped) {
+            $why = $skip === QueueRules::SKIP_SHORT ? 'kortere end ' . $rules->minSeconds . ' sekunder'
+                : 'ældre end ' . $rules->maxAgeDays . ' dage';
+            $body = Ui::msg('info', '<p>Opkaldet er ' . $why . ' og bliver derfor ikke transcriberet automatisk.</p>'
+                . $button('Opkaldet sættes i kø og transcriberes, når opkaldene foran det er færdige.'));
+        } elseif ($adv && CallPages::selectable($call, $skip)) {
             // Lyden er fejlet: knappen henter den igen med nulstillede forsøg (QA F-2)
             $body = Ui::msg('info', '<p>Der kan ikke laves et transcript uden lyd.</p>'
                 . $button('Lyden hentes igen fra Adversus, og opkaldet sættes i kø. Det tager normalt under 15 minutter.'));

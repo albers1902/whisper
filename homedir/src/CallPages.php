@@ -9,6 +9,7 @@ use Whisper\Adversus\AdversusError;
 use Whisper\Adversus\Feature;
 use Whisper\Transcription\EngineError;
 use Whisper\Transcription\ProcessEngine;
+use Whisper\Transcription\QueueRules;
 use Whisper\Zendesk\ZendeskConfig;
 use Whisper\Zendesk\ZendeskError;
 
@@ -227,7 +228,8 @@ final class CallPages
     }
 
     /**
-     * POST /opkald/{id}/transcriber (F004, AK7): sætter et Adversus-opkald, der er "ikke valgt", i kø. App har tjekket
+     * POST /opkald/{id}/transcriber (F004, AK7): sætter et Adversus-opkald, der er "ikke valgt", i kø, eller (H012) et
+     * opkald fra begge kilder, som køens regler springer over (for kort, for gammelt). App har tjekket
      * login og CSRF. Én atomisk UPDATE, så knappen er idempotent: et opkald i kø, under arbejde eller færdigt ændres ikke.
      * Svaret er altid en redirect (PRG) til detaljen med listens kontekst.
      *
@@ -237,7 +239,15 @@ final class CallPages
     public static function select(int $id, Request $req, array $user): array
     {
         $call = Calls::find($id);
-        if ($call === null || !Calls::isAdversus($call)) {
+        if ($call === null) {
+            return [404, '', ''];
+        }
+        $adv = Calls::isAdversus($call);
+        $now = time();
+        $skip = QueueRules::fromConfig()->skipReason($call, $now);
+        // H012: Zendesk-opkald har kun knappen, når køens regler springer dem over (eller de allerede er valgt);
+        // Adversus-opkald kun med F004 tændt, som før ruten blev åbnet for Zendesk
+        if ($adv ? !Feature::on() : ($skip === null && ($call['manual_at'] ?? null) === null)) {
             return [404, '', ''];
         }
         $ctx = $req->str('ctx');
@@ -246,11 +256,10 @@ final class CallPages
         $f = Calls::filter($q);
         $back = CallView::query($f, $f['side']);
         $url = '/opkald/' . $id . ($back !== '' ? '?' . $back : '');
-        $retry = $call['audio_status'] === 'fejlet' && $call['transcript_status'] === 'ventende';
-        if (!self::selectable($call)) {
+        $retry = $adv && $call['audio_status'] === 'fejlet' && $call['transcript_status'] === 'ventende';
+        if (!self::selectable($call, $skip)) {
             return [0, $url, $call['transcript_status'] === 'faerdig' ? 'faerdig' : 'koe'];
         }
-        $now = time();
         if ($retry) {
             // Genforsøg på fejlet lyd: ikke bag loftet (QA N-1), men højst én gang i timen pr. opkald (security N2).
             // Én atomisk UPDATE; lyd-felterne sættes før audio_status, fordi MariaDB evaluerer SET fra venstre.
@@ -268,33 +277,53 @@ final class CallPages
         // Loft over manuelt valgte opkald i gang (security S1): kun ikke-succes, og døde valg (lyd fejlet efter alle
         // forsøg) tæller ikke (QA N-1). Intet ændres ved loftet. To samtidige klik kan gå én over loftet; det er
         // accepteret (loftet er værn mod masse-valg, ikke et kvotesystem).
-        if ((int) $call['is_success'] === 0 && self::manualInProgress() >= self::MANUAL_MAX) {
+        if (($skip !== null || (int) $call['is_success'] === 0) && self::manualInProgress() >= self::MANUAL_MAX) {
             return [0, $url, 'fuld'];
         }
-        $n = DB::exec("UPDATE calls SET transcript_status = 'ventende', updated_at = ? WHERE id = ? AND `source` = 'adversus' "
-            . "AND transcript_status = 'ikke_valgt'", [gmdate('Y-m-d H:i:s', $now), $id]);
+        $at = gmdate('Y-m-d H:i:s', $now);
+        if ($skip !== null) {
+            // H012: sprunget over af køens regler. Status røres ikke; manual_at gør opkaldet claimbart (QueueRules)
+            $n = DB::exec("UPDATE calls SET manual_at = ?, updated_at = ? WHERE id = ? AND manual_at IS NULL AND audio_status = 'hentet' "
+                . "AND transcript_status IN ('ventende', 'fejlet')", [$at, $at, $id]);
+            $kind = 'valgt';
+        } else {
+            $n = DB::exec("UPDATE calls SET transcript_status = 'ventende', manual_at = ?, updated_at = ? WHERE id = ? AND `source` = 'adversus' "
+                . "AND transcript_status = 'ikke_valgt'", [$at, $at, $id]);
+            $kind = 'ok';
+        }
         if ($n === 1) {
             AccessLog::write((int) $user['id'], 'transcriber', ['opkald' => $id]);
-            return [0, $url, 'ok'];
+            return [0, $url, $kind];
         }
         return [0, $url, 'koe'];
     }
 
-    /** Manuelt valgte Adversus-opkald, der reelt er i gang (ikke succes, ikke døde efter alle lydforsøg). */
+    /**
+     * Manuelt valgte opkald, der reelt er i gang: valgt med knappen (manual_at) eller Adversus uden succes, og ikke døde
+     * efter alle lydforsøg.
+     */
     public static function manualInProgress(): int
     {
-        return (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus' AND is_success = 0 "
+        return (int) DB::scalar('SELECT COUNT(*) FROM calls WHERE ' . QueueRules::manualSql() . ' '
             . "AND transcript_status IN ('ventende', 'transcriberer') AND NOT (audio_status = 'fejlet' AND audio_attempts >= ?)",
             [Adversus\Sync::MAX_AUDIO_ATTEMPTS]);
     }
 
     /**
-     * Kan knappen bruges på opkaldet? "Ikke valgt", eller lyden er fejlet, før der blev lavet et transcript (QA F-2).
+     * Kan knappen bruges på opkaldet? Adversus: "ikke valgt", eller lyden er fejlet, før der blev lavet et transcript
+     * (QA F-2). Begge kilder (H012): køens regler springer det over, og lyden er hentet, så det kan transcriberes nu.
      *
      * @param array<string, mixed> $call
+     * @param string|false|null $skip QueueRules::skipReason, hvis kalderen allerede har den; false = regn den ud her
      */
-    public static function selectable(array $call): bool
+    public static function selectable(array $call, string|false|null $skip = false): bool
     {
+        if ($skip === false) {
+            $skip = QueueRules::fromConfig()->skipReason($call, time());
+        }
+        if ($skip !== null && $call['audio_status'] === 'hentet') {
+            return true;
+        }
         return Calls::isAdversus($call) && ($call['transcript_status'] === 'ikke_valgt'
             || ($call['audio_status'] === 'fejlet' && $call['transcript_status'] === 'ventende'));
     }
