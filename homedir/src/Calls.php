@@ -512,6 +512,32 @@ final class Calls
         return '[]';
     }
 
+    /**
+     * F007: kø-kortets tal — de samme som status() (waiting, audio_waiting), men talt pr. kilde med lighed på source og
+     * IN-lister, så H013's indeks calls_audio_queue (source, transcript_status, audio_status) bærer tællingen. status()
+     * med <> og uden kilde læser hele tabellen ved flere hundrede tusinde opkald (AK12: 1.048 ms efter H013).
+     *
+     * @return array{last_ok_at: ?string, last_error: ?string, waiting: int, audio_waiting: int}
+     */
+    public static function queueStatus(?QueueRules $rules = null, ?int $now = null): array
+    {
+        $s = DB::all('SELECT last_ok_at, last_error FROM sync_state WHERE `source` = ?', ['zendesk']);
+        [$rule, $params] = ($rules ?? QueueRules::fromConfig())->eligibleSql($now ?? time(), 'c');
+        $waiting = 0;
+        $audio = 0;
+        foreach (Feature::on() ? ['zendesk', 'adversus'] : ['zendesk'] as $source) {
+            $waiting += (int) DB::scalar("SELECT COUNT(*) FROM calls c WHERE c.`source` = ? AND c.transcript_status IN ('transcriberer', 'ventende') "
+                . "AND c.audio_status = 'hentet' AND (c.transcript_status = 'transcriberer' OR " . $rule . ')', array_merge([$source], $params));
+            // "Ikke valgt" (F004) venter ikke på lyd, som i status()
+            $audio += (int) DB::scalar("SELECT COUNT(*) FROM calls c WHERE c.`source` = ? "
+                . "AND c.transcript_status IN ('ventende', 'transcriberer', 'faerdig', 'fejlet') AND c.audio_status = 'venter'", [$source]);
+        }
+        $ok = $s[0]['last_ok_at'] ?? null;
+        $err = $s[0]['last_error'] ?? null;
+        return ['last_ok_at' => is_string($ok) ? $ok : null, 'last_error' => is_string($err) ? $err : null,
+            'waiting' => $waiting, 'audio_waiting' => $audio];
+    }
+
     /** @return array{last_ok_at: ?string, last_error: ?string, waiting: int, audio_waiting: int} */
     public static function status(?QueueRules $rules = null, ?int $now = null): array
     {

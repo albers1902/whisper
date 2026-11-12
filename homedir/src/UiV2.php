@@ -169,7 +169,7 @@ final class UiV2
         try {
             $file = Paths::dir('cache') . '/f007-queue.json';
         } catch (Throwable) {
-            return Calls::status();
+            return Calls::queueStatus();
         }
         $mtime = is_file($file) ? @filemtime($file) : false;
         if ($mtime !== false && $now - $mtime < self::QUEUE_TTL && $now >= $mtime) {
@@ -181,7 +181,7 @@ final class UiV2
                     'waiting' => $d['waiting'], 'audio_waiting' => $d['audio_waiting']];
             }
         }
-        $status = Calls::status();
+        $status = Calls::queueStatus();
         try {
             Paths::writePrivate($file, (string) json_encode($status));
         } catch (Throwable) {

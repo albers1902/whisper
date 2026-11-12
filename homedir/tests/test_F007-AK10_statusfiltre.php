@@ -39,6 +39,10 @@ $q = f007_get($c, '/', ['status' => 'koe']);
 F007Check::that('AK10', f007_ids($q) === [$queued, $busy], 'I kø: hentet og venter eller transcriberes');
 F007Check::that('AK10', Calls::count(Calls::uiFilter(['status' => 'koe'])) + Calls::count(Calls::uiFilter(['kilde' => 'adversus', 'status' => 'koe']))
     === Calls::status()['waiting'], 'I kø på begge faner = kø-tælleren');
+$qs = Calls::queueStatus();
+$st = Calls::status();
+F007Check::that('AK10', $qs['waiting'] === $st['waiting'] && $qs['audio_waiting'] === $st['audio_waiting'] && $qs['waiting'] > 0 && $qs['audio_waiting'] > 0,
+    sprintf('kø-kortets hurtige tælling = status() (i kø %d, venter på lyd %d)', $qs['waiting'], $qs['audio_waiting']));
 $aq = f007_get($c, '/', ['kilde' => 'adversus', 'status' => 'koe']);
 F007Check::that('AK10', f007_ids($aq) === [$aQueue], 'Adversus + I kø');
 $af = f007_get($c, '/', ['kilde' => 'adversus', 'status' => 'faerdig']);
