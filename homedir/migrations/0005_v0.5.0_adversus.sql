@@ -13,6 +13,7 @@ ALTER TABLE calls ADD COLUMN IF NOT EXISTS lead_id BIGINT UNSIGNED NULL AFTER ti
 ALTER TABLE calls ADD COLUMN IF NOT EXISTS campaign_id BIGINT UNSIGNED NULL AFTER lead_id;
 ALTER TABLE calls ADD COLUMN IF NOT EXISTS is_success TINYINT(1) NOT NULL DEFAULT 0 AFTER campaign_id;
 ALTER TABLE calls ADD COLUMN IF NOT EXISTS agent_ext_id VARCHAR(64) NULL AFTER agent_name;
+ALTER TABLE calls ADD COLUMN IF NOT EXISTS audio_reset_at DATETIME NULL AFTER audio_error;
 ALTER TABLE calls ADD INDEX IF NOT EXISTS calls_lead (lead_id);
 ALTER TABLE calls ADD INDEX IF NOT EXISTS calls_source_success (`source`, is_success, started_at);
 ALTER TABLE calls ADD INDEX IF NOT EXISTS calls_agent_ext (agent_ext_id);

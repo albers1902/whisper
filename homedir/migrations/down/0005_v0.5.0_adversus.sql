@@ -12,6 +12,7 @@ ALTER TABLE calls MODIFY `source` ENUM('zendesk') NOT NULL;
 ALTER TABLE calls DROP INDEX IF EXISTS calls_source_success;
 ALTER TABLE calls DROP INDEX IF EXISTS calls_lead;
 ALTER TABLE calls DROP INDEX IF EXISTS calls_agent_ext;
+ALTER TABLE calls DROP COLUMN IF EXISTS audio_reset_at;
 ALTER TABLE calls DROP COLUMN IF EXISTS is_success;
 ALTER TABLE calls DROP COLUMN IF EXISTS agent_ext_id;
 ALTER TABLE calls DROP COLUMN IF EXISTS campaign_id;

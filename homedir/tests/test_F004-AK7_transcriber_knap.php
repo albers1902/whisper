@@ -85,6 +85,34 @@ DB::exec("UPDATE calls SET is_success = 1 WHERE external_id IN ('46000', '46001'
 $c->post('/opkald/' . $extra . '/transcriber');
 F004Check::that('AK7', $status($extra) === 'ventende', 'under loftet igen (succes tæller ikke med): sat i kø');
 
+// Døde valg (QA N-1): lyd fejlet efter alle forsøg tæller ikke i loftet
+DB::exec("UPDATE calls SET audio_status = 'fejlet', audio_attempts = 5 WHERE `source` = 'adversus' AND is_success = 0 AND transcript_status = 'ventende'");
+$dead = (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus' AND is_success = 0 AND transcript_status = 'ventende'");
+F004Check::that('AK7', $dead >= \Whisper\CallPages::MANUAL_MAX && \Whisper\CallPages::manualInProgress() === 0, "$dead døde valg tæller ikke");
+$new = f004_insert(4105, false, 'ikke_valgt');
+$c->post('/opkald/' . $new . '/transcriber');
+F004Check::that('AK7', $status($new) === 'ventende', '50 døde valg blokerer ikke et nyt valg');
+
+// Genforsøg ved loftet (QA N-1): loftet er fuldt af levende valg, men genforsøget på et dødt valg går igennem
+for ($k = 0; $k < \Whisper\CallPages::MANUAL_MAX; $k++) {
+    f004_insert(47000 + $k, false, 'ventende');
+}
+F004Check::that('AK7', \Whisper\CallPages::manualInProgress() >= \Whisper\CallPages::MANUAL_MAX, '(loftet er fuldt)');
+$deadId = (int) DB::scalar("SELECT id FROM calls WHERE external_id = '46010' AND `source` = 'adversus'");
+$r = $c->post('/opkald/' . $deadId . '/transcriber');
+$audio = static fn(int $id): string => (string) DB::scalar('SELECT audio_status FROM calls WHERE id = ?', [$id]);
+F004Check::that('AK7', $r->status === 303 && $audio($deadId) === 'venter'
+    && str_contains(f002_get($c, '/opkald/' . $deadId)->body, 'Lyden hentes igen fra Adversus.'), 'genforsøg virker ved loftet');
+
+// Højst én nulstilling i timen pr. opkald (security N2)
+DB::exec("UPDATE calls SET audio_status = 'fejlet', audio_attempts = 5 WHERE id = ?", [$deadId]);
+$c->post('/opkald/' . $deadId . '/transcriber');
+F004Check::that('AK7', $audio($deadId) === 'fejlet' && (int) DB::scalar('SELECT audio_attempts FROM calls WHERE id = ?', [$deadId]) === 5
+    && str_contains(f002_get($c, '/opkald/' . $deadId)->body, 'Lyden blev prøvet for nylig. Prøv igen om lidt.'), 'inden for en time: intet ændres, besked');
+DB::exec('UPDATE calls SET audio_reset_at = ? WHERE id = ?', [gmdate('Y-m-d H:i:s', time() - 2 * 3600), $deadId]);
+$c->post('/opkald/' . $deadId . '/transcriber');
+F004Check::that('AK7', $audio($deadId) === 'venter', 'efter en time: genforsøg igen');
+
 // Kun Adversus-opkald; ukendt id → 404; GET → 405
 $r = $c->post('/opkald/' . $z . '/transcriber');
 F004Check::that('AK7', $r->status === 404 && $status($z) === 'ventende', 'Zendesk-opkald: 404');

@@ -25,6 +25,8 @@ final class CallPages
     private const ZIP_TMP_MAX_AGE = 3600;
     /** Højst så mange manuelt valgte Adversus-opkald (ikke succes) i kø eller under transcription ad gangen (security S1) */
     public const MANUAL_MAX = 50;
+    /** Et opkalds fejlede lyd kan hentes igen med knappen højst så ofte (security N2) */
+    public const RESET_COOLDOWN = 3600;
 
     /** @param array<string, mixed> $user */
     public static function list(Request $req, array $user, string $csrf, ?string $flash): Response
@@ -248,23 +250,42 @@ final class CallPages
         if (!self::selectable($call)) {
             return [0, $url, $call['transcript_status'] === 'faerdig' ? 'faerdig' : 'koe'];
         }
-        // Loft over manuelt valgte opkald i gang (security S1): kun ikke-succes tæller, og intet ændres ved loftet.
-        // To samtidige klik kan gå én over loftet; det er accepteret (loftet er værn mod masse-valg, ikke et kvotesystem).
-        if ((int) $call['is_success'] === 0 && (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus' AND is_success = 0 "
-            . "AND transcript_status IN ('ventende', 'transcriberer')") >= self::MANUAL_MAX) {
+        $now = time();
+        if ($retry) {
+            // Genforsøg på fejlet lyd: ikke bag loftet (QA N-1), men højst én gang i timen pr. opkald (security N2).
+            // Én atomisk UPDATE; lyd-felterne sættes før audio_status, fordi MariaDB evaluerer SET fra venstre.
+            $n = DB::exec("UPDATE calls SET audio_attempts = 0, audio_error = NULL, audio_reset_at = ?, audio_status = 'venter', updated_at = ? "
+                . "WHERE id = ? AND `source` = 'adversus' AND audio_status = 'fejlet' AND transcript_status = 'ventende' "
+                . 'AND (audio_reset_at IS NULL OR audio_reset_at <= ?)',
+                [gmdate('Y-m-d H:i:s', $now), gmdate('Y-m-d H:i:s', $now), $id, gmdate('Y-m-d H:i:s', $now - self::RESET_COOLDOWN)]);
+            if ($n === 1) {
+                AccessLog::write((int) $user['id'], 'transcriber', ['opkald' => $id]);
+                return [0, $url, 'igen'];
+            }
+            $again = Calls::find($id);
+            return [0, $url, $again !== null && $again['audio_status'] === 'fejlet' ? 'nylig' : 'koe'];
+        }
+        // Loft over manuelt valgte opkald i gang (security S1): kun ikke-succes, og døde valg (lyd fejlet efter alle
+        // forsøg) tæller ikke (QA N-1). Intet ændres ved loftet. To samtidige klik kan gå én over loftet; det er
+        // accepteret (loftet er værn mod masse-valg, ikke et kvotesystem).
+        if ((int) $call['is_success'] === 0 && self::manualInProgress() >= self::MANUAL_MAX) {
             return [0, $url, 'fuld'];
         }
-        // Én atomisk UPDATE (idempotent). Lyd-felterne sættes før audio_status, fordi MariaDB evaluerer SET fra venstre.
-        $n = DB::exec("UPDATE calls SET audio_attempts = IF(audio_status = 'fejlet', 0, audio_attempts), "
-            . "audio_error = IF(audio_status = 'fejlet', NULL, audio_error), "
-            . "audio_status = IF(audio_status = 'fejlet', 'venter', audio_status), transcript_status = 'ventende', updated_at = ? "
-            . "WHERE id = ? AND `source` = 'adversus' AND (transcript_status = 'ikke_valgt' "
-            . "OR (audio_status = 'fejlet' AND transcript_status = 'ventende'))", [gmdate('Y-m-d H:i:s'), $id]);
+        $n = DB::exec("UPDATE calls SET transcript_status = 'ventende', updated_at = ? WHERE id = ? AND `source` = 'adversus' "
+            . "AND transcript_status = 'ikke_valgt'", [gmdate('Y-m-d H:i:s', $now), $id]);
         if ($n === 1) {
             AccessLog::write((int) $user['id'], 'transcriber', ['opkald' => $id]);
-            return [0, $url, $retry ? 'igen' : 'ok'];
+            return [0, $url, 'ok'];
         }
         return [0, $url, 'koe'];
+    }
+
+    /** Manuelt valgte Adversus-opkald, der reelt er i gang (ikke succes, ikke døde efter alle lydforsøg). */
+    public static function manualInProgress(): int
+    {
+        return (int) DB::scalar("SELECT COUNT(*) FROM calls WHERE `source` = 'adversus' AND is_success = 0 "
+            . "AND transcript_status IN ('ventende', 'transcriberer') AND NOT (audio_status = 'fejlet' AND audio_attempts >= ?)",
+            [Adversus\Sync::MAX_AUDIO_ATTEMPTS]);
     }
 
     /**

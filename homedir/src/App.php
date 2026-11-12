@@ -460,6 +460,7 @@ final class App
             'igen'    => ['flash', 'Lyden hentes igen fra Adversus. Transcriptet laves, når lyden er hentet.'],
             'faerdig' => ['flash_info', 'Opkaldet er allerede transcriberet.'],
             'fuld'    => ['flash_info', 'Der er allerede mange opkald i kø. Prøv igen senere.'],
+            'nylig'   => ['flash_info', 'Lyden blev prøvet for nylig. Prøv igen om lidt.'],
             'koe'     => ['flash_info', 'Opkaldet er allerede i kø.'],
         ];
         [$key, $text] = $texts[$kind] ?? $texts['koe'];
