@@ -18,12 +18,21 @@ final class Flags
         if (array_key_exists($flag, self::$overrides)) {
             return self::$overrides[$flag];
         }
-        // Kun under testløberen (run.php sætter WHISPER_TEST): et cron-script, som en test starter i en ny proces,
-        // kan få flag tændt via WHISPER_TEST_FLAGS (F002-AK2). På serverne er WHISPER_TEST aldrig sat.
-        if (getenv('WHISPER_TEST') === '1' && in_array($flag, explode(',', (string) getenv('WHISPER_TEST_FLAGS')), true)) {
+        if (self::testHook($flag, PHP_SAPI)) {
             return true;
         }
         return self::enabledIn($flag, self::env());
+    }
+
+    /**
+     * Kun under testløberen (run.php sætter WHISPER_TEST) og kun i CLI: et cron-script, som en test starter i en ny
+     * proces, kan få flag tændt via WHISPER_TEST_FLAGS (F002-AK2). Et miljø i PHP-FPM kan aldrig tænde et flag
+     * (DECISIONS #17). $sapi er en parameter, så testen kan vise, at andre SAPI'er ignorerer hooken.
+     */
+    public static function testHook(string $flag, string $sapi): bool
+    {
+        return $sapi === 'cli' && getenv('WHISPER_TEST') === '1'
+            && in_array($flag, explode(',', (string) getenv('WHISPER_TEST_FLAGS')), true);
     }
 
     public static function enabledIn(string $flag, string $env): bool

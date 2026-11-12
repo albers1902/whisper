@@ -81,15 +81,18 @@ $after = $c->get('/konto');
 F003Check::that('AK6', str_contains($after->body, 'Nøglen «Claude Desktop – laptop» er tilbagekaldt. Claude Desktop med den nøgle har ikke længere adgang.'),
     'flash med nøglens navn');
 F003Check::that('AK6', (new F003Mcp($token))->rpc('tools/list')->status === 401, 'en tilbagekaldt nøgle virker ikke længere');
-F003Check::that('AK6', $c->post('/konto/mcp-noegle/' . $tid . '/tilbagekald')->status === 404, 'tilbagekald to gange: 404');
+// H004: dobbelt tilbagekald giver redirect med samme flash som en andens nøgle (ikke længere en 404-fejlside)
+$twice = $c->post('/konto/mcp-noegle/' . $tid . '/tilbagekald');
+F003Check::that('AK6', $twice->status === 303 && $twice->header('Location') === '/konto'
+    && str_contains($c->get('/konto')->body, 'Nøglen er allerede tilbagekaldt.'), 'tilbagekald to gange: redirect og flash');
 F003Check::that('AK6', $c->post('/konto/mcp-noegle', ['name' => 'Ny efter tilbagekald'])->status === 200, 'plads til en ny efter tilbagekald');
 
 // En andens nøgle kan ikke tilbagekaldes
 $other = f001_user('anden@f003.test');
 Tokens::create($other, 'Anden', F003_NOW);
 $otherId = (int) DB::scalar('SELECT id FROM mcp_tokens WHERE user_id = ?', [$other]);
-F003Check::that('AK6', $c->post('/konto/mcp-noegle/' . $otherId . '/tilbagekald')->status === 404
-    && DB::scalar('SELECT revoked_at FROM mcp_tokens WHERE id = ?', [$otherId]) === null, 'en andens nøgle: 404 og uændret');
+F003Check::that('AK6', $c->post('/konto/mcp-noegle/' . $otherId . '/tilbagekald')->status === 303
+    && DB::scalar('SELECT revoked_at FROM mcp_tokens WHERE id = ?', [$otherId]) === null, 'en andens nøgle: redirect og uændret');
 $noCsrfRevoke = $c->post('/konto/mcp-noegle/' . $otherId . '/tilbagekald', [], false);
 F003Check::that('AK6', $noCsrfRevoke->status === 403, 'tilbagekald uden CSRF: 403');
 F003Check::that('AK6', $c->get('/konto/mcp-noegle')->status === 405, 'GET på opret-ruten: 405');

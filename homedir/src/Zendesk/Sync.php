@@ -22,7 +22,7 @@ use Whisper\Paths;
  * 2. Optagelsens URL står ikke i exporten, kun i ticketens VoiceComment (data.recording_url). Opkald og kommentar
  *    matches på data.call_id; findes den ikke, på started_at ±2 min og varighed ±5 s (Team Lead, F002 v0).
  * 3. Opkald uden optagelse gemmes ikke (F002 v0, punkt 1b.4). Hvem der slås op: recordingHint() (H002).
- * 4. En HTTP-fejl på ét ticket (fx 403 eller 500) springer kun det opkald over (logges med id) — 429 og netværksfejl
+ * 4. En HTTP-fejl på ét ticket (fx 403 eller 500) springer kun det opkald over (logges med id, højst én gang i døgnet) — 429 og netværksfejl
  *    stopper kørslen pænt (QA F-1). Optagelserne hentes også, når opkaldshentningen er stoppet.
  * 5. Lydfilen hentes til var/recordings/ÅÅÅÅ/MM/<id>.<ext> (0600) via en .part-fil, højst 5 forsøg pr. opkald.
  *
@@ -41,6 +41,7 @@ final class Sync
     private const CURSOR_BATCH = 25;
     private const MATCH_SECONDS = 120;
     private const MATCH_DURATION = 5;
+    private const SKIP_FILE = 'zendesk-skip.json';
 
     /** @var Closure(): int */
     private Closure $clock;
@@ -50,6 +51,8 @@ final class Sync
     private array $commentCache = [];
     /** @var array<int, string> */
     private array $agentCache = [];
+    /** @var array<string, int>|null external_id → tidspunkt for seneste logline om overspring */
+    private ?array $skipLogged = null;
     private int $storedCursor = 0;
     private int $runCursor = 0;
 
@@ -137,8 +140,10 @@ final class Sync
                     if ($e->getCode() < 400) {
                         throw $e;   // netværksfejl eller afvist token: hele kørslen stopper
                     }
-                    ($this->log)('zendesk-sync: opkald ' . (is_scalar($call['id'] ?? null) ? (string) $call['id'] : '?')
-                        . ': springes over (' . $e->getMessage() . ')');
+                    $ext = is_scalar($call['id'] ?? null) ? (string) $call['id'] : '?';
+                    if ($this->firstSkipToday($ext)) {
+                        ($this->log)('zendesk-sync: opkald ' . $ext . ': springes over (' . $e->getMessage() . ')');
+                    }
                 }
                 $u = strtotime(is_string($call['updated_at'] ?? null) ? $call['updated_at'] : '');
                 $progress = max($progress, $u === false ? 0 : min($u, $end));
@@ -343,7 +348,9 @@ final class Sync
                 $user = is_array($data['user'] ?? null) ? $data['user'] : [];
                 $this->agentCache[$agentId] = is_string($user['name'] ?? null) ? $user['name'] : '';
             } catch (ZendeskError $e) {
-                if ($e->getCode() !== 404 && $e->getCode() !== 403) {
+                // Navnet er pynt: en HTTP-fejl (4xx/5xx) gemmer opkaldet med tomt agent_name, og lookback retter det
+                // senere (QA F002 N-2). Rate limit og netværksfejl stopper stadig kørslen som alle andre kald.
+                if ($e instanceof RateLimited || $e->getCode() < 400) {
                     throw $e;
                 }
                 $this->agentCache[$agentId] = '';
@@ -444,6 +451,37 @@ final class Sync
         } catch (\Exception) {
             return null;
         }
+    }
+
+    /**
+     * Et opkald, der springes over pga. en HTTP-fejl, prøves igen hver kørsel i lookback-døgnet. Loggen får det højst
+     * én gang pr. 24 timer pr. opkald (QA F002 N-3). Markørerne ligger i var/ (ingen migration), og en markør, der ikke
+     * kan læses eller skrives, giver bare en logline for meget.
+     */
+    public function firstSkipToday(string $extId): bool
+    {
+        $now = ($this->clock)();
+        $file = Paths::varDir() . '/' . self::SKIP_FILE;
+        if ($this->skipLogged === null) {
+            $raw = is_readable($file) ? json_decode((string) file_get_contents($file), true) : null;
+            $this->skipLogged = [];
+            foreach (is_array($raw) ? $raw : [] as $id => $t) {
+                if (is_int($t) && $t > $now - self::LOOKBACK) {
+                    $this->skipLogged[(string) $id] = $t;
+                }
+            }
+        }
+        if (isset($this->skipLogged[$extId])) {
+            return false;
+        }
+        $this->skipLogged[$extId] = $now;
+        try {
+            Paths::dir('');
+            Paths::writePrivate($file, (string) json_encode($this->skipLogged, JSON_FORCE_OBJECT));
+        } catch (Throwable) {
+            // kun støj i loggen, ingen datatab
+        }
+        return true;
     }
 
     private function now(): string

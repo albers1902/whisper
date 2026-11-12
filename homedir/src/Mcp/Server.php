@@ -60,7 +60,29 @@ final class Server
         return preg_match('/^[a-z0-9]([a-z0-9.-]{0,251}[a-z0-9])?(:[0-9]{1,5})?$/', $host) === 1 ? 'https://' . $host : '';
     }
 
+    /**
+     * Hele kæden i én catch: en intern fejl (fx databasen nede under authenticate) giver JSON-RPC -32603 og aldrig
+     * index.php's HTML-fejlside. Kun klasse og sted logges, for en PDO-besked kan indeholde SQL med værdier.
+     */
     public function handle(Request $req): Response
+    {
+        try {
+            return $this->dispatch($req);
+        } catch (Throwable $e) {
+            error_log('whisper mcp: ' . get_class($e) . ' i ' . $e->getFile() . ':' . $e->getLine());
+            return self::rpcError(500, self::requestId($req->body), -32603, 'Intern fejl.');
+        }
+    }
+
+    /** id fra en request, der kan læses som et JSON-RPC-objekt; ellers null. */
+    private static function requestId(string $body): int|string|null
+    {
+        $msg = strlen($body) <= self::MAX_BODY ? json_decode($body, true, 64) : null;
+        $id = is_array($msg) && !array_is_list($msg) ? ($msg['id'] ?? null) : null;
+        return is_string($id) || is_int($id) ? $id : null;
+    }
+
+    private function dispatch(Request $req): Response
     {
         if (!self::enabled()) {
             return App::notFound();
@@ -108,8 +130,10 @@ final class Server
         if (!is_array($msg)) {
             return self::rpcError(400, null, -32700, 'Ugyldig JSON.');
         }
-        if ($msg === [] || array_is_list($msg)) {
-            return self::rpcError(400, null, -32600, 'Batches understøttes ikke: send én JSON-RPC-besked pr. forespørgsel.');
+        if (array_is_list($msg)) {
+            // json_decode(..., true) gør {} (og {"0": …}) til en liste: kun en body, der ER en JSON-liste, er en batch
+            return self::rpcError(400, null, -32600, str_starts_with(ltrim($req->body), '[')
+                ? 'Batches understøttes ikke: send én JSON-RPC-besked pr. forespørgsel.' : 'Ugyldig JSON-RPC-besked.');
         }
         if (($msg['jsonrpc'] ?? null) !== '2.0') {
             return self::rpcError(400, null, -32600, 'Ugyldig JSON-RPC-besked.');
@@ -153,7 +177,7 @@ final class Server
             'serverInfo'      => ['name' => 'whisper', 'title' => 'Whisper', 'version' => App::VERSION],
             'instructions'    => 'Whisper har opkald fra Zendesk Talk med transcripts på dansk. Brug search_calls til at finde '
                 . 'opkald, get_transcript til at læse ét, list_recent_calls til de nyeste og call_stats til antal. Datoer er '
-                . 'ÅÅÅÅ-MM-DD i dansk tid. Alt er kun til læsning.',
+                . 'ÅÅÅÅ-MM-DD i dansk tid. Alt er kun til læsning. ' . Tools::RULE,
         ];
     }
 
@@ -164,11 +188,13 @@ final class Server
     private function toolsCall(int|string $id, array $params, array $user, string $site, int $now): Response
     {
         $name = $params['name'] ?? null;
+        $uid = (int) $user['id'];
         if (!is_string($name) || !in_array($name, Tools::names(), true)) {
+            // Revisionssporet får forsøget med, men aldrig klientens navn (det er frit input)
+            AccessLog::write($uid, 'mcp_ukendt', ['antal' => 0]);
             return self::rpcError(200, $id, -32602, 'Ukendt værktøj.');
         }
         $args = $params['arguments'] ?? [];
-        $uid = (int) $user['id'];
         $action = 'mcp_' . $name;
         if (!is_array($args) || ($args !== [] && array_is_list($args))) {
             AccessLog::write($uid, $action, ['antal' => 0]);

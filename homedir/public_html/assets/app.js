@@ -18,7 +18,9 @@
   var audio = d.getElementById('afspiller');
   var stamps = Array.prototype.slice.call(d.querySelectorAll('.ts[data-start]'));
   function setStamps(on) { stamps.forEach(function (b) { b.disabled = !on; }); }
-  if (audio && !audio.error) {
+  /* networkState 3 = NETWORK_NO_SOURCE: lyden kan være fejlet, før dette defer-script kørte, og så er audio.error
+     ikke altid sat, og error-hændelsen er allerede gået forbi. */
+  if (audio && audio.networkState !== 3 && !audio.error) {
     setStamps(true);
     audio.addEventListener('error', function () { setStamps(false); });
     d.addEventListener('click', function (ev) {
@@ -26,7 +28,13 @@
       if (!b || b.disabled) { return; }
       audio.currentTime = parseFloat(b.getAttribute('data-start')) || 0;
       var p = audio.play();
-      if (p && p.catch) { p.catch(function () {}); }
+      if (p && p.catch) {
+        p.catch(function (err) {
+          if (err && err.name === 'AbortError') { return; }   /* afbrudt af et nyt klik, ikke en fejl */
+          say('Lyden kunne ikke afspilles.');
+          setStamps(false);
+        });
+      }
     });
 
     /* 3. Markér den aktuelle linje (ingen automatisk rulning). */

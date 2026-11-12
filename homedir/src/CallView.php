@@ -140,6 +140,8 @@ final class CallView
             }
             $tr = '<div class="row"><h2>Transcript</h2><a class="button" href="/opkald/' . $id . '/transcript">Download transcript (.txt)</a></div>'
                 . '<div class="transcript">' . $lines . '</div>';
+        } elseif ($status === 'faerdig') {
+            $tr = '<h2>Transcript</h2><p class="msg info">' . $e(UiCalls::TRANSCRIPT_MISSING) . '</p>';
         } elseif ($status === 'fejlet') {
             $tr = '<h2>Transcript</h2><p class="msg error">Transcription fejlede: ' . $e((string) ($call['transcript_error'] ?? '')) . '</p>';
         } else {
