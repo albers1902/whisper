@@ -6,6 +6,7 @@ namespace Whisper;
 use DateTimeImmutable;
 use DateTimeZone;
 use Whisper\Adversus\Feature;
+use Whisper\Transcription\Diarization;
 
 /**
  * Opkald og transcripts til siderne (F002). Tider gemmes i UTC og vises i dansk tid; filtrenes datoer er danske.
@@ -242,17 +243,40 @@ final class Calls
         return ['text' => (string) $rows[0]['text'], 'segments' => self::segments((string) $rows[0]['segments_json'])];
     }
 
-    /** @return list<array{start: float, end: float, text: string}> */
+    /**
+     * Segmenterne med taleren, når diarization (H011) har lagt den på: "speaker" (0, 1, …) og evt. "role" (agent|kunde).
+     * Ugyldige taler-nøgler udelades, så segmentet vises som før H011.
+     *
+     * @return list<array{start: float, end: float, text: string, speaker?: int, role?: string}>
+     */
     public static function segments(string $json): array
     {
         $out = [];
         $data = json_decode($json, true);
         foreach (is_array($data) ? $data : [] as $s) {
             if (is_array($s) && is_numeric($s['start'] ?? null) && is_string($s['text'] ?? null)) {
-                $out[] = ['start' => (float) $s['start'], 'end' => (float) ($s['end'] ?? $s['start']), 'text' => $s['text']];
+                $seg = ['start' => (float) $s['start'], 'end' => (float) ($s['end'] ?? $s['start']), 'text' => $s['text']];
+                if (is_int($s['speaker'] ?? null) && $s['speaker'] >= 0 && $s['speaker'] < Diarization::MAX_SPEAKERS) {
+                    $seg['speaker'] = $s['speaker'];
+                    if (in_array($s['role'] ?? null, ['agent', 'kunde'], true)) {
+                        $seg['role'] = (string) $s['role'];
+                    }
+                }
+                $out[] = $seg;
             }
         }
         return $out;
+    }
+
+    /**
+     * "[00:12] Agent: tekst", eller "[00:12] tekst" uden taler (.txt, zip og MCP).
+     *
+     * @param array{start: float, end: float, text: string, speaker?: int, role?: string} $segment
+     */
+    public static function segmentLine(array $segment): string
+    {
+        $label = Diarization::label($segment);
+        return '[' . self::stamp((float) $segment['start']) . '] ' . ($label !== null ? $label . ': ' : '') . (string) $segment['text'];
     }
 
     /** @return list<string> */
@@ -384,7 +408,7 @@ final class Calls
      * Transcriptet som tekst med hoved-blok (spec: dato, retning, nummer, agent, ticket).
      *
      * @param array<string, mixed> $call
-     * @param list<array{start: float, end: float, text: string}> $segments
+     * @param list<array{start: float, end: float, text: string, speaker?: int, role?: string}> $segments
      */
     public static function transcriptText(array $call, array $segments, string $text, ?string $ticketUrl): string
     {
@@ -406,7 +430,7 @@ final class Calls
         }
         $body = [];
         foreach ($segments as $s) {
-            $body[] = '[' . self::stamp($s['start']) . '] ' . $s['text'];
+            $body[] = self::segmentLine($s);
         }
         if ($body === []) {
             $body[] = $text;
