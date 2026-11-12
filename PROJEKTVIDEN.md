@@ -44,6 +44,15 @@ Målt viden om kodebasen og miljøerne. Kurateret.
 - Fejlede opkald sendes tilbage i køen med `php ~/cron/whisper-requeue.php [--id=N]`.
 - Hvem der har hentet lyd, transcripts og zip, står i `~/logs/adgang.log`.
 
+## Transcription-hastighed og kvalitet (H005)
+- Før H005 tog et opkald ca. 8 min. (120 opkald på 16 timer, 2026-11-12) med faster-whispers standarder (4 tråde,
+  beam 5, ingen VAD).
+- Efter H005 er standarden kerner−1 tråde (5 på DEV), `beam_size = 1` og `vad = on`. Loggen viser lyd, tid og RTF pr.
+  opkald.
+- Kvalitet måles ikke automatisk. Efter en ændring stikprøvekontrolleres 3–5 opkald: lyt og læs. Mangler der tale,
+  sættes `vad = off`, og er teksten mærkbart dårligere, sættes `beam_size = 5`, begge under `[whisper]` i
+  `~/config/config.ini`. Det kræver ingen deploy.
+
 ## Sessioner (F001)
 - PHP-sessionerne ligger i `~/var/sessions` (0700, oprettes af appen). `var/` er projektets efter SERVERKONTRAKT §2,
   står i `open_basedir` (S-20261111-3), og deploy rører den ikke.
