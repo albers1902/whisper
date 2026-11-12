@@ -86,7 +86,7 @@ final class CallPages
         $status = ['last_ok_at' => is_string($z['last_ok_at'] ?? null) ? $z['last_ok_at'] : null,
             'last_error' => is_string($z['last_error'] ?? null) ? $z['last_error'] : null];
         $config = $cfgError === null ? 'ok' : ($cfgError === self::CFG_INVALID ? 'invalid' : 'missing');
-        return Response::html(UiCallsV2::list($user, $csrf, $flash, $f, $res['rows'], $res['total'], Calls::agents((string) ($f['kilde'] ?? '')),
+        return Response::html(UiCallsV2::list($user, $csrf, $flash, $f, $res['rows'], $res['total'], UiV2::agents((string) ($f['kilde'] ?? '')),
             ['last_ok_at' => $status['last_ok_at'], 'last_error' => $status['last_error']], $config, $cfg?->subdomain, $snippets, $excerpts, time(),
             $adversus, $other));
     }

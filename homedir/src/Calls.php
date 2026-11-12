@@ -263,8 +263,11 @@ final class Calls
             $rows = DB::all('SELECT c.* FROM calls c JOIN (SELECT c.id, c.started_at FROM calls c WHERE ' . $w . ' LIMIT ' . (self::COUNT_CAP + 1)
                 . ') x ON x.id = c.id ORDER BY x.started_at DESC, x.id DESC' . $page, $p);
         } else {
-            // Mange træf: tidsindekset (source, started_at, id, …) leverer rækkefølgen og stopper efter siden
-            $rows = DB::all('SELECT c.* FROM calls c WHERE ' . $w . ' ORDER BY c.started_at DESC, c.id DESC' . $page, $p);
+            // Mange træf: tidsindekset (source, started_at, id, …) leverer rækkefølgen og stopper efter siden. FORCE, fordi
+            // optimizeren ellers kan vælge index_merge + filesort over alle træf (målt 166 ms ved 61.000, AK12). Indekset
+            // findes altid her: deploy kører migration 0010, før filerne skiftes.
+            $force = in_array($f['kilde'] ?? '', ['zendesk', 'adversus'], true) ? ' FORCE INDEX (calls_source_started)' : '';
+            $rows = DB::all('SELECT c.* FROM calls c' . $force . ' WHERE ' . $w . ' ORDER BY c.started_at DESC, c.id DESC' . $page, $p);
         }
         return ['rows' => $rows, 'total' => $total, 'side' => $side];
     }

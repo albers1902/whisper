@@ -31,7 +31,9 @@ final class UiV2
     {
         self::$queue = null;
         if ($cache) {
-            @unlink(Paths::varDir() . '/cache/f007-queue.json');
+            foreach (['queue', 'agents-zendesk', 'agents-adversus'] as $name) {
+                @unlink(Paths::varDir() . '/cache/f007-' . $name . '.json');
+            }
         }
     }
 
@@ -126,6 +128,37 @@ final class UiV2
     }
 
     public const QUEUE_TTL = 60;
+    public const AGENTS_TTL = 300;
+
+    /**
+     * Agentlisten pr. fane, cachet AGENTS_TTL sekunder i var/cache (den læser hele kildens indeks, og agenter kommer
+     * sjældent til). Kan cachen ikke bruges, hentes listen direkte.
+     *
+     * @return list<string>
+     */
+    public static function agents(string $source): array
+    {
+        try {
+            $file = Paths::dir('cache') . '/f007-agents-' . ($source === 'adversus' ? 'adversus' : 'zendesk') . '.json';
+            $mtime = is_file($file) ? @filemtime($file) : false;
+            if ($mtime !== false && time() - $mtime < self::AGENTS_TTL && time() >= $mtime) {
+                $d = json_decode((string) @file_get_contents($file), true);
+                if (is_array($d) && array_is_list($d) && count($d) <= 100000) {
+                    return array_values(array_filter($d, 'is_string'));
+                }
+            }
+        } catch (Throwable) {
+            return Calls::agents($source);
+        }
+        $list = Calls::agents($source);
+        try {
+            Paths::writePrivate(Paths::dir('cache') . '/f007-agents-' . ($source === 'adversus' ? 'adversus' : 'zendesk') . '.json',
+                (string) json_encode($list));
+        } catch (Throwable) {
+            // næste visning henter igen
+        }
+        return $list;
+    }
     /** Tal over dette i cachefilen er ikke troværdige og tælles igen (security S3) */
     public const QUEUE_SANE = 10000000;
 

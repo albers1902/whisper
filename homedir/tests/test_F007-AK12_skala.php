@@ -65,7 +65,7 @@ $listSql = static function (array $f, int $n) use ($where): array {
     $sql = $n <= Calls::COUNT_CAP
         ? 'SELECT c.* FROM calls c JOIN (SELECT c.id, c.started_at FROM calls c WHERE ' . $w . ' LIMIT ' . (Calls::COUNT_CAP + 1)
             . ') x ON x.id = c.id ORDER BY x.started_at DESC, x.id DESC LIMIT 50'
-        : 'SELECT c.* FROM calls c WHERE ' . $w . ' ORDER BY c.started_at DESC, c.id DESC LIMIT 50';
+        : 'SELECT c.* FROM calls c FORCE INDEX (calls_source_started) WHERE ' . $w . ' ORDER BY c.started_at DESC, c.id DESC LIMIT 50';
     return [$sql, $p];
 };
 $run = static function (string $name, array $f, ?int $maxRows, float $maxSec) use ($time, $explain, $listSql, $where): void {
@@ -87,13 +87,13 @@ $run = static function (string $name, array $f, ?int $maxRows, float $maxSec) us
 };
 
 // A. Mange træf
-$run('A Zendesk, alle', Calls::uiFilter([]), null, 1.0);
-$run('A Adversus, succes og valgte', Calls::uiFilter(['kilde' => 'adversus']), null, 1.0);
-$run('A Adversus, alle opkald', Calls::uiFilter(['kilde' => 'adversus', 'vis' => 'alle']), null, 1.0);
-$run('A Adversus, alle, Færdige', Calls::uiFilter(['kilde' => 'adversus', 'vis' => 'alle', 'status' => 'faerdig']), null, 1.0);
-$run('A Zendesk, I kø', Calls::uiFilter(['status' => 'koe']), null, 1.0);
-$run('A Zendesk, periode + agent', Calls::uiFilter(['fra' => '2026-11-01', 'til' => '2026-12-31', 'agent' => 'Agent 5']), null, 1.0);
-$run('A Adversus, alle, side 200', Calls::uiFilter(['kilde' => 'adversus', 'vis' => 'alle', 'side' => '200']), null, 1.0);
+$run('A Zendesk, alle', Calls::uiFilter([]), null, 0.3);
+$run('A Adversus, succes og valgte', Calls::uiFilter(['kilde' => 'adversus']), null, 0.3);
+$run('A Adversus, alle opkald', Calls::uiFilter(['kilde' => 'adversus', 'vis' => 'alle']), null, 0.3);
+$run('A Adversus, alle, Færdige', Calls::uiFilter(['kilde' => 'adversus', 'vis' => 'alle', 'status' => 'faerdig']), null, 0.3);
+$run('A Zendesk, I kø', Calls::uiFilter(['status' => 'koe']), null, 0.3);
+$run('A Zendesk, periode + agent', Calls::uiFilter(['fra' => '2026-11-01', 'til' => '2026-12-31', 'agent' => 'Agent 5']), null, 0.3);
+$run('A Adversus, alle, side 200', Calls::uiFilter(['kilde' => 'adversus', 'vis' => 'alle', 'side' => '200']), null, 0.3);
 [$sec, $n] = $time(static fn(): int => Calls::count(Calls::uiFilter(['kilde' => 'adversus', 'vis' => 'alle'])));
 printf("A anden fanes antal %.1f ms (%d)\n", $sec * 1000, $n);
 F007Check::that('AK12', $n === Calls::COUNT_CAP + 1 && $sec < 0.5, sprintf('den anden fanes antal har loft (%d) på %.0f ms', $n, $sec * 1000));
@@ -102,6 +102,10 @@ F007Check::that('AK12', $n === Calls::COUNT_CAP + 1 && $sec < 0.5, sprintf('den 
 printf("A agenter (Adversus) %.1f ms: %s\n", $sec * 1000, $planAgents);
 F007Check::that('AK12', count($agents) === 32 && $sec < 0.3 && str_contains($planAgents, 'calls_source_agent'),
     sprintf('agentlisten pr. fane: %d agenter på %.0f ms, indeks', count($agents), $sec * 1000));
+UiV2::reset();
+UiV2::agents('adversus');
+[$secA] = $time(static fn(): array => UiV2::agents('adversus'));
+F007Check::that('AK12', $secA < 0.01 && UiV2::agents('adversus') === $agents, sprintf('agentlisten fra cache: %.1f ms', $secA * 1000));
 UiV2::reset();
 [$secQ, $q] = $time(static fn(): array => UiV2::queue());
 UiV2::reset(false);
@@ -151,5 +155,4 @@ DB::exec('DELETE FROM transcripts');
 DB::exec('DELETE FROM calls');
 $GLOBALS['f007_sum'][] = sprintf('agenter (Adversus): %s', $planAgents);
 echo "== RESUME\n" . implode("\n", $GLOBALS['f007_sum']) . "\n";
-F007Check::that('AK12', false, 'MIDLERTIDIG: rød for at få planerne i DEV-kommentaren');
 F007Check::done();
