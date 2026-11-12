@@ -177,12 +177,14 @@ final class CallView
         return '<span class="badge s-' . View::e($t) . '">' . View::e(Calls::statusName($t)) . '</span>';
     }
 
-    /** @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string} $f */
+    /** @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string, kilde?: string, status?: string} $f */
     public static function query(array $f, int $side = 1): string
     {
         // vis (F004) er kun sat, når flaget er tændt og "Alle opkald" er valgt, så den gamle query er uændret ellers
         $q = array_filter(['fra' => $f['fra'], 'til' => $f['til'], 'retning' => $f['retning'], 'agent' => $f['agent'], 'q' => $f['q'],
-            'vis' => $f['vis'] ?? ''], static fn(string $v): bool => $v !== '');
+            'vis' => $f['vis'] ?? '',
+            // F007 (kun med flaget sat): fanen — standarden Zendesk skrives aldrig — og statusfiltret
+            'kilde' => ($f['kilde'] ?? '') === 'adversus' ? 'adversus' : '', 'status' => $f['status'] ?? ''], static fn(string $v): bool => $v !== '');
         if ($side > 1) {
             $q['side'] = (string) $side;
         }

@@ -152,7 +152,7 @@ final class UiCalls
     }
 
     /** Én kildes linje med prik (samme regler for Zendesk og Adversus). $name er fast tekst. */
-    private static function sourceLine(string $name, ?string $ok, ?string $err, bool $rateLimited, int $now): string
+    public static function sourceLine(string $name, ?string $ok, ?string $err, bool $rateLimited, int $now): string
     {
         $okTs = $ok !== null ? (int) strtotime($ok . ' UTC') : 0;
         if ($rateLimited) {

@@ -32,6 +32,9 @@ final class CallPages
     /** @param array<string, mixed> $user */
     public static function list(Request $req, array $user, string $csrf, ?string $flash): Response
     {
+        if (UiV2::on()) {
+            return self::listV2($req, $user, $csrf, $flash);
+        }
         $f = Calls::filter($req->query);
         $res = Calls::search($f);
         $f['side'] = $res['side'];   // klemt til sidste side (QA F-9)
@@ -57,6 +60,38 @@ final class CallPages
     }
 
     /**
+     * F007: én fane ad gangen. Ud over listen selv: den anden fanes antal (én COUNT med fanelinkets filtre), den aktive
+     * fanes agenter og begyndelsen af sidens transcripts til uddragene (kun uden søgning; med søgning vinder søgeuddraget).
+     * Kø-kortets tal hentes af rammen (UiV2).
+     *
+     * @param array<string, mixed> $user
+     */
+    private static function listV2(Request $req, array $user, string $csrf, ?string $flash): Response
+    {
+        $f = Calls::uiFilter($req->query);
+        $res = Calls::searchCapped($f);
+        $f['side'] = $res['side'];
+        [$cfg, $cfgError] = self::zendesk();
+        $ids = array_map(static fn(array $r): int => (int) $r['id'], $res['rows']);
+        $snippets = $f['q'] !== '' && $ids !== [] ? Calls::snippets($ids, $f['q']) : [];
+        $excerpts = $f['q'] === '' && $ids !== [] ? Calls::excerpts($ids) : [];
+        $adversus = null;
+        $other = null;
+        if (Feature::on()) {
+            $adversus = ['config' => self::adversusConfig(), 'status' => Calls::adversusStatus(), 'warning' => Calls::adversusWarning(time())];
+            $other = Calls::count(['kilde' => ($f['kilde'] ?? '') === 'adversus' ? 'zendesk' : 'adversus', 'agent' => '', 'vis' => ''] + $f);
+        }
+        // Zendesk' linje læses frisk (én række); kø-tallene kommer fra kortets cache
+        $z = DB::all('SELECT last_ok_at, last_error FROM sync_state WHERE `source` = ?', ['zendesk'])[0] ?? [];
+        $status = ['last_ok_at' => is_string($z['last_ok_at'] ?? null) ? $z['last_ok_at'] : null,
+            'last_error' => is_string($z['last_error'] ?? null) ? $z['last_error'] : null];
+        $config = $cfgError === null ? 'ok' : ($cfgError === self::CFG_INVALID ? 'invalid' : 'missing');
+        return Response::html(UiCallsV2::list($user, $csrf, $flash, $f, $res['rows'], $res['total'], UiV2::agents((string) ($f['kilde'] ?? '')),
+            ['last_ok_at' => $status['last_ok_at'], 'last_error' => $status['last_error']], $config, $cfg?->subdomain, $snippets, $excerpts, time(),
+            $adversus, $other));
+    }
+
+    /**
      * Listens filtre og side kommer med i query-strengen (F005), så detaljen kan linke tilbage til samme liste.
      *
      * @param array<string, mixed> $user
@@ -66,7 +101,7 @@ final class CallPages
     {
         $call = Calls::find($id);
         $modern = Ui::modern();
-        $f = Calls::filter($req->query);
+        $f = Calls::uiFilter($req->query);
         if ($call === null) {
             $ctx = CallView::query($f, $f['side']);
             return Response::html($modern ? UiPages::error(404, 'Opkaldet findes ikke.', $csrf, $user, $ctx !== '' ? '/?' . $ctx : '/')
@@ -74,6 +109,9 @@ final class CallPages
         }
         [$cfg] = self::zendesk();
         $onDisk = Calls::audioFile(is_string($call['audio_path'] ?? null) ? $call['audio_path'] : null) !== null;
+        if (UiV2::on()) {
+            return Response::html(UiCallsV2::show($user, $csrf, $call, Calls::transcript($id), $onDisk, $cfg?->subdomain, $f, $flash[0], $flash[1]));
+        }
         if ($modern) {
             return Response::html(UiCalls::show($user, $csrf, $call, Calls::transcript($id), $onDisk, $cfg?->subdomain, $f, $flash[0], $flash[1]));
         }
@@ -165,7 +203,7 @@ final class CallPages
      */
     public static function zip(Request $req, array $user, string $csrf): Response
     {
-        $f = Calls::filter($req->query);
+        $f = Calls::uiFilter($req->query);   // F007: kun den aktive fane
         $ids = Calls::zipIds($f);
         if ($ids === []) {
             return Response::html(View::layout('Download', '<section class="card narrow"><h1>Download</h1>'
@@ -253,7 +291,7 @@ final class CallPages
         $ctx = $req->str('ctx');
         // Konteksten er listens egen query; den renses gennem filter() igen, så intet andet kan smugles ind i redirecten
         parse_str($ctx, $q);
-        $f = Calls::filter($q);
+        $f = Calls::uiFilter($q);
         $back = CallView::query($f, $f['side']);
         $url = '/opkald/' . $id . ($back !== '' ? '?' . $back : '');
         $retry = $adv && $call['audio_status'] === 'fejlet' && $call['transcript_status'] === 'ventende';
@@ -293,6 +331,9 @@ final class CallPages
         }
         if ($n === 1) {
             AccessLog::write((int) $user['id'], 'transcriber', ['opkald' => $id]);
+            if (UiV2::on()) {
+                UiV2::reset();   // kø-kortet viser det valgte opkald med det samme (QA F-7)
+            }
             return [0, $url, $kind];
         }
         return [0, $url, 'koe'];
