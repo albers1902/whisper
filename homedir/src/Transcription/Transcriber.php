@@ -114,10 +114,13 @@ final class Transcriber
         return $jobs;
     }
 
-    /** Langt = over LONG_AUDIO, 4 × varighed over batchens loft, eller ukendt længde: kører alene med den gamle grænse. */
+    /**
+     * Langt = over LONG_AUDIO eller ukendt længde: kører alene med den gamle grænse. (4 × LONG_AUDIO er under
+     * BATCH_LIMIT, så et kort opkald kan altid nå sin egen grænse inden for batchens loft.)
+     */
     public static function isLong(int $durationSec): bool
     {
-        return $durationSec <= 0 || $durationSec > self::LONG_AUDIO || 4 * $durationSec > self::BATCH_LIMIT;
+        return $durationSec <= 0 || $durationSec > self::LONG_AUDIO;
     }
 
     /**
