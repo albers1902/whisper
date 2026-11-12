@@ -164,6 +164,27 @@ H005 · Accepteret risiko: en ugyldig værdi i `[whisper]` giver standarden og �
 opkald i køen (LOW, security-critic H005_v1). Funktionelt sikkert.
 Udløber: 2027-02-10
 
+## #31 — 2026-11-12 — F004: kun opkald på leads med succes transcriberes
+Ejeren: Adversus har ca. 1,44 mio. opkald og ca. 278.000 optagelser (F004a-probe 2026-11-12). Der transcriberes ikke
+alle automatisk.
+- Alle Adversus-opkald med optagelse må vises i Whisper (metadata hentes).
+- Kun opkald, der hører til et lead med en succesfuld registrering (status "succes" i Adversus), transcriberes
+  automatisk, og lyden hentes kun for dem.
+- Opkaldslisten viser som standard kun opkald på succes-leads. Filteret kan skiftes til "Alle opkald".
+- Andre opkald kan transcriberes manuelt med en knap "Transcribér dette opkald", som henter lyden og sætter
+  opkaldet i kø (ejeren 2026-11-12).
+- Hentningen starter fra i dag (2026-11-12) og er derefter inkrementel. Der hentes ingen historik bagud nu
+  (ejeren 2026-11-12).
+Den præcise status-værdi, filtrene i API'et og vejen fra lead til optagelse afklares med probe v2 (F004a v2), før F004
+specificeres.
+
+## #32 — 2026-11-12 — Whisper må køre 2 opkald samtidig (ændrer #3)
+Ejeren: whisper må køre 2 opkald samtidig i stedet for ét ad gangen (#3). Måling på DEV 2026-11-12: AMD EPYC, 6
+vCPU med AVX2 og FMA, men uden AVX-512. Whisper-processen brugte ca. 2,3 kerner med 5 tråde, og maskinen var 39 %
+idle. RTF var 1,47 på et opkald på 7:27, fordi tekstgenereringen med beam 1 er sekventiel. Det bygges som 2 processer
+med 3 tråde hver, stadig under `nice 19` og `ionice -c3`, så de andre sites får forrang. Det skal kunne slås tilbage
+til 1 i config.
+
 ## #5 — 2026-11-11 — H001: /health uden rate limit eller cache
 H001 · Accepteret risiko: `/health` er offentlig og laver en DB-skriveprøve ved hvert kald uden rate limit eller cache.
 Samtidige kald kan give falsk `degraded` (LOW, security-critic H001_v1 og v2). Kun driftsforstyrrelse, og der er ingen
@@ -176,3 +197,17 @@ H001 · Accepteret risiko: rækker i `launched/compliance/ACCESS.md` står som "
 pladsholdere (LOW, security-critic H001_v1). De udfyldes med rigtige konti og datoer i docs-PR'en efter
 serveropsætningen af DEV.
 Udløber: 2027-02-09
+
+## #33 — 2026-11-12 — H006: kørselsrammen på 50 min er ikke en garanti
+H006 · Accepteret risiko: Resttiden begrænser kun summen for en batch. Batchens gulv (op til 2400 s) og et langt opkalds
+egen grænse (max(2 t, 4 × varighed)) kan overskride kørslens ramme på 50 min. Det er samme grænse som før H006, og låsen
+forhindrer parallelle motorer. Konsekvensen er kun, at de næste cron-kørsler udskydes (LOW, security-critic H006_v2,
+fund 1, rest efter H006-LOW-3 fra v1). H006-LOW-1 og LOW-2 fra v1 er lukket i v2.
+Udløber: 2027-02-10
+
+## #34 — 2026-11-12 — H006: undtagelse efter claim frigives uden forbrugt forsøg
+H006 · Accepteret risiko: En deterministisk undtagelse efter claim og uden for motoren frigiver opkaldene med refunderet
+forsøg. Den logges kun som fast tekst og kan gentages hvert minut, indtil undtagelsen forsvinder (LOW, security-critic
+H006_v2, fund 2). Sandsynligheden er lav. Rettes i H007, som alligevel ændrer `runBatch`: undtagelsens klasse og linje
+logges i `sidste-fejl.log`, og løkken stopper til næste minut.
+Udløber: 2027-02-10
