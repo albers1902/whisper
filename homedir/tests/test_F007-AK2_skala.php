@@ -65,7 +65,7 @@ $cases = [
     'Zendesk, periode + agent'   => Calls::uiFilter(['fra' => '2026-11-01', 'til' => '2026-12-31', 'agent' => 'Agent 5']),
     'Adversus, side 200'         => Calls::uiFilter(['kilde' => 'adversus', 'vis' => 'alle', 'side' => '200']),
 ];
-$okKeys = ['calls_source_started', 'calls_source_status', 'calls_agent', 'calls_source_agent', 'calls_source_success', 'calls_audio_queue'];
+$okKeys = ['calls_started', 'calls_source_started', 'calls_source_status', 'calls_agent', 'calls_source_agent', 'calls_source_success', 'calls_audio_queue'];
 foreach ($cases as $name => $f) {
     [$w, $p] = $where($f);
     $planList = $explain('SELECT c.* FROM calls c WHERE ' . $w . ' ORDER BY c.started_at DESC, c.id DESC LIMIT 50', $p);
@@ -83,16 +83,20 @@ foreach ($cases as $name => $f) {
 [$sec, $n] = $time(static fn(): int => Calls::count(Calls::uiFilter(['kilde' => 'adversus', 'vis' => 'alle'])));
 F007Check::that('AK2', $n === Calls::COUNT_CAP + 1 && $sec < 0.5, sprintf('den anden fanes antal har loft (%d) på %.0f ms', $n, $sec * 1000));
 [$sec, $agents] = $time(static fn(): array => Calls::agents('adversus'));
-$planAgents = $explain("SELECT DISTINCT c.agent_name FROM calls c WHERE c.agent_name <> '' AND " . Calls::sourceSql('alle') . " AND c.`source` = 'adversus' ORDER BY c.agent_name", []);
+$planAgents = $explain("SELECT c.agent_name FROM calls c WHERE c.`source` = 'adversus' GROUP BY c.agent_name ORDER BY c.agent_name", []);
 printf("agenter (Adversus) %6.1f ms: %s\n", $sec * 1000, $planAgents);
-F007Check::that('AK2', count($agents) === 40 && $sec < 0.5 && str_contains($planAgents, 'calls_source_agent'), sprintf('agentlisten pr. fane: %.0f ms, indeks', $sec * 1000));
+F007Check::that('AK2', count($agents) === 32 && $sec < 0.3 && str_contains($planAgents, 'calls_source_agent'),
+    sprintf('agentlisten pr. fane: %d agenter på %.0f ms, indeks', count($agents), $sec * 1000));
 
 // Kø-kortet: højst én tælling pr. minut (cache), og selve tællingen måles
 UiV2::reset();
 [$secQ, $q] = $time(static fn(): array => UiV2::queue());
-[$secQ2] = $time(static fn(): array => (static function (): array { UiV2::reset(); return UiV2::queue(); })());
+[$secQ2] = $time(static fn(): array => (static function (): array {
+    UiV2::reset(false);   // ny request, samme cachefil
+    return UiV2::queue();
+})());
 printf("kø-kort: første %.1f ms (tæller, i kø=%d), næste request %.1f ms (cache)\n", $secQ * 1000, $q['status']['waiting'], $secQ2 * 1000);
-F007Check::that('AK2', $secQ < 2.0, sprintf('kø-kortets tælling: %.0f ms', $secQ * 1000));
+F007Check::that('AK2', $secQ < 2.0 && $secQ2 < 0.05, sprintf('kø-kortets tælling: %.0f ms, fra cache %.1f ms', $secQ * 1000, $secQ2 * 1000));
 
 // Uddrag: én forespørgsel for en side, skåret i SQL
 $ids = array_map(static fn(array $r): int => (int) $r['id'], Calls::searchCapped(Calls::uiFilter([]))['rows']);

@@ -74,11 +74,12 @@ F007Check::that('AK2', $bad->status === 200 && str_contains($bad->body, 'aria-cu
 $sel = f004_insert(5999, false, 'ikke_valgt', '2026-11-12 12:00:00');
 $c->get('/');
 $p = $c->post('/opkald/' . $sel . '/transcriber', ['ctx' => 'kilde=adversus&vis=alle&q=hej&evil=1']);
-F007Check::that('AK2', $p->status === 302 && ($p->headers['Location'] ?? '') === '/opkald/' . $sel . '?q=hej&vis=alle&kilde=adversus',
+F007Check::that('AK2', $p->status === 303 && ($p->headers['Location'] ?? '') === '/opkald/' . $sel . '?q=hej&vis=alle&kilde=adversus',
     'Transcribér: redirect med fane og visning, intet andet (' . ($p->headers['Location'] ?? '') . ')');
 
 // Loftet: over COUNT_CAP står "10.000+", og siderne stopper ved loftet
-F007Check::that('AK2', Calls::count(Calls::uiFilter(['kilde' => 'adversus'])) === 55, 'count() under loftet er præcist');
+// 55 succes + det netop valgte (manuelt valgt hører til "Succes og valgte")
+F007Check::that('AK2', Calls::count(Calls::uiFilter(['kilde' => 'adversus'])) === 56, 'count() under loftet er præcist');
 F007Check::that('AK2', \Whisper\UiCallsV2::countText(Calls::COUNT_CAP + 1) === '10.000+' && \Whisper\UiCallsV2::countText(1234) === '1.234',
     'antal over loftet vises som 10.000+');
 $deep = f007_get($c, '/', ['kilde' => 'adversus', 'side' => '99999']);

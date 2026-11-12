@@ -371,7 +371,14 @@ final class Calls
      */
     public static function agents(string $source = ''): array
     {
-        $only = in_array($source, ['zendesk', 'adversus'], true) ? " AND c.`source` = '" . $source . "'" : '';
+        if (in_array($source, ['zendesk', 'adversus'], true) && Feature::on()) {
+            // F007: GROUP BY på indekset (source, agent_name) med lighed på source — et "loose index scan", der kun læser én
+            // post pr. agent i stedet for alle opkald. Tomme navne fjernes her, ikke i SQL, så planen bevares.
+            $rows = DB::all('SELECT c.agent_name FROM calls c WHERE c.`source` = ? GROUP BY c.agent_name ORDER BY c.agent_name', [$source]);
+            return array_values(array_filter(array_map(static fn(array $r): string => (string) $r['agent_name'], $rows),
+                static fn(string $a): bool => $a !== ''));
+        }
+        $only = $source === 'zendesk' ? " AND c.`source` = 'zendesk'" : '';
         $rows = DB::all("SELECT DISTINCT c.agent_name FROM calls c WHERE c.agent_name <> '' AND " . self::sourceSql('alle') . $only
             . ' ORDER BY c.agent_name');
         return array_map(static fn(array $r): string => (string) $r['agent_name'], $rows);

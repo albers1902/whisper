@@ -177,7 +177,7 @@ final class CallView
         return '<span class="badge s-' . View::e($t) . '">' . View::e(Calls::statusName($t)) . '</span>';
     }
 
-    /** @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string} $f */
+    /** @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string, kilde?: string, status?: string} $f */
     public static function query(array $f, int $side = 1): string
     {
         // vis (F004) er kun sat, når flaget er tændt og "Alle opkald" er valgt, så den gamle query er uændret ellers

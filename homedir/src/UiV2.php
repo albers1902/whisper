@@ -27,10 +27,12 @@ final class UiV2
     }
 
     /** Kun tests: glem kø-kortets tal mellem to requests i samme proces. */
-    public static function reset(): void
+    public static function reset(bool $cache = true): void
     {
         self::$queue = null;
-        @unlink(Paths::varDir() . '/cache/f007-queue.json');
+        if ($cache) {
+            @unlink(Paths::varDir() . '/cache/f007-queue.json');
+        }
     }
 
     /**

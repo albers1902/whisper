@@ -46,8 +46,8 @@ F007Check::that('AK5', isset($m[0]) && !str_contains($m[0], 'cc-excerpt'), 'inte
 $plainText = f005_plain(UiCallsV2::excerpt($x[$plain]));
 F007Check::that('AK5', mb_strlen($plainText) <= 201 && str_ends_with($plainText, '…'), 'højst ca. 200 tegn og "…" ved klip');
 
-$s = f007_get($c, '/', ['q' => 'faktura']);
-F007Check::that('AK5', str_contains($s->body, '<mark>faktura</mark>') && !str_contains($s->body, 'who-agent'), 'med søgning: søgeuddraget vinder');
+$s = f007_get($c, '/', ['q' => 'lang']);
+F007Check::that('AK5', str_contains($s->body, '<mark>Lang</mark>') && !str_contains($s->body, 'who-agent'), 'med søgning: søgeuddraget vinder');
 
 $css = (string) file_get_contents(__DIR__ . '/../public_html/assets/app-v2.css');
 F007Check::that('AK5', preg_match('/\.cc-excerpt \{[^}]*-webkit-line-clamp: 2;[^}]*line-clamp: 2;/', $css) === 1, 'CSS: to linjer');
