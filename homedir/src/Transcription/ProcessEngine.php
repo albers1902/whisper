@@ -13,6 +13,7 @@ use Whisper\Paths;
  *     --threads N --beam N --vad 0|1 <fil>
  * eller i batch (H006), hvor modellen indlæses én gang for flere filer, og svaret er JSON Lines:
  *     … --vad 0|1 --batch-max N -- <fil> <fil> …
+ * og med [whisper] engine_mode = batched (H010) desuden `--mode batched --batched-size N` efter --vad.
  * med proc_open og et argv-array: ingen shell, og intet argument kommer fra brugeren eller Zendesk (filstien bygges af
  * appen ud fra opkaldets id, modellen fra en fast liste, threads/beam/vad/batch fra config.ini som validerede heltal,
  * se WhisperSettings). ionice bruges kun, hvis den findes.

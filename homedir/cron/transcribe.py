@@ -5,12 +5,18 @@ Kaldes kun af cron/transcribe.php (src/Transcription/ProcessEngine.php) med venv
 
     transcribe.py --model turbo|large-v3 --models <var/whisper/models> --threads N --beam N --vad 0|1 <lydfil>
     transcribe.py ... --vad 0|1 --batch-max N -- <lydfil> [<lydfil> ...]
+    transcribe.py ... --vad 1 --mode batched --batched-size N [--batch-max N --] <lydfil> ...
 
 DECISIONS #2: lokal transcription, CPU med compute_type="int8", language="da". Lyden afkodes af PyAV, som har
 FFmpeg-bibliotekerne med, så en separat ffmpeg ikke er nødvendig (F002 v0).
 --threads/--beam/--vad går til faster-whisper 1.2.1's WhisperModel(cpu_threads=) og transcribe(beam_size=, vad_filter=)
 (H005). Udelades de, gælder faster-whispers egne standarder (4 tråde, beam 5, ingen VAD). VAD bruger onnxruntime og
 silero-modellen i pakken, så intet hentes. Ugyldige værdier afvises af argparse (exit 2), før faster_whisper importeres.
+--mode batched --batched-size N (H010) bruger faster-whisper 1.2.1's BatchedInferencePipeline(model).transcribe(...,
+batch_size=N): VAD-stykker på højst 30 s køres N ad gangen gennem modellen. Den kræver VAD (uden VAD og med lyd over
+30 s kaster den RuntimeError), så --vad 0 afvises sammen med batched. without_timestamps=False, fordi pipelinens standard
+(True) gør hvert segment til et helt VAD-stykke; med False deles der ved Whispers tidsstempler som i sequential.
+Uddata er det samme JSON i begge tilstande.
 
 Én fil (uden --batch-max) giver ét JSON-objekt:
     {"text": ..., "segments": [{"start": s, "end": s, "text": ...}], "duration": s, "model": ..., "language": "da"}
@@ -41,7 +47,11 @@ def safe_path(v: str) -> bool:
 
 
 def transcribe_one(model, audio: str, a) -> dict:
-    segments, info = model.transcribe(audio, language="da", beam_size=a.beam, vad_filter=a.vad == "1")
+    if a.mode == "batched":
+        segments, info = model.transcribe(audio, language="da", beam_size=a.beam, vad_filter=True,
+                                          batch_size=a.batched_size, without_timestamps=False)
+    else:
+        segments, info = model.transcribe(audio, language="da", beam_size=a.beam, vad_filter=a.vad == "1")
     segs = [{"start": round(s.start, 2), "end": round(s.end, 2), "text": s.text.strip()} for s in segments]
     return {
         "text": " ".join(s["text"] for s in segs if s["text"]).strip(),
@@ -60,8 +70,17 @@ def main() -> int:
     p.add_argument("--beam", type=int_range(1, 10), default=5)
     p.add_argument("--vad", choices=["0", "1"], default="0")
     p.add_argument("--batch-max", type=int_range(1, 50), default=None)
+    p.add_argument("--mode", choices=["sequential", "batched"], default="sequential")
+    p.add_argument("--batched-size", type=int_range(1, 32), default=None)
     p.add_argument("audio", nargs="+")
     a = p.parse_args()
+    if a.mode == "batched":
+        if a.vad != "1":
+            p.error("--mode batched kræver --vad 1")
+        if a.batched_size is None:
+            a.batched_size = 4
+    elif a.batched_size is not None:
+        p.error("--batched-size kun med --mode batched")
     if a.batch_max is None:
         if len(a.audio) != 1:
             p.error("præcis én lydfil uden --batch-max")
@@ -77,6 +96,11 @@ def main() -> int:
 
     t0 = time.monotonic()
     model = WhisperModel(a.model, device="cpu", compute_type="int8", download_root=a.models, cpu_threads=a.threads)
+    if a.mode == "batched":
+        from faster_whisper import BatchedInferencePipeline
+
+        # Én pipeline pr. proces, genbrugt til alle filer i batchen (den holder ingen tilstand mellem filer)
+        model = BatchedInferencePipeline(model)
     load = time.monotonic() - t0
 
     if a.batch_max is None:

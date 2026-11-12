@@ -34,7 +34,7 @@ H007Check::that('AK5', preg_match('/^' . $ts . ' transcribe\[1\]: 1 hængende op
     'stale-linjen: ' . ($l[0] ?? ''));
 foreach ($calls as $c) {
     $hit = array_filter($l, static fn(string $x): bool => preg_match('/^' . $ts . ' transcribe\[1\]: opkald ' . $c['id']
-        . ': færdig \(lyd 2:05, tid [0-9:]+, RTF [0-9,]+, threads [0-9]+, beam 1, vad on\)$/', $x) === 1);
+        . ': færdig \(lyd 2:05, tid [0-9:]+, RTF [0-9,]+, threads [0-9]+, beam 1, vad on, mode sequential\)$/', $x) === 1);
     H007Check::that('AK5', count($hit) === 1, 'opkald ' . $c['id'] . ' har sin færdig-linje med slot 1');
 }
 H007Check::that('AK5', count(array_filter($l, static fn(string $x): bool => preg_match('/^' . $ts . ' transcribe\[1\]: batch: /', $x) === 1)) >= 1,
