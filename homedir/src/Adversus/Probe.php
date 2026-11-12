@@ -18,6 +18,11 @@ final class Probe
 {
     public const PAGES = 5;
     public const PAGE_SIZE = 100;
+    /** Loft over kald pr. kørsel (Adversus: 60/min, 1000/time). Overblikket bruger højst 19, succes-sektionen resten. */
+    public const MAX_REQUESTS = 40;
+    /** Højst 5 succes-leads måles, og højst 8 opkald slås op i /calls/{id}/recording. */
+    public const SAMPLE_LEADS = 5;
+    public const MAX_RECORDING_CHECKS = 8;
     private const FIRST_PAGE_SIZE = 10;
 
     /**
@@ -61,7 +66,7 @@ final class Probe
             $say('Adversus er ikke sat op ([adversus] mangler i config/config.ini) — intet at måle.');
             return 0;
         }
-        $c = new Client($cfg, $http, $sleep);
+        $c = new Client($cfg, $http, $sleep, self::MAX_REQUESTS);
         $say('API: ' . Client::BASE . ' · auth: HTTP Basic (API-bruger) · since: ' . gmdate('Y-m-d', $cfg->since)
             . ' · godkendte optagelsesværter: ' . ($cfg->recordingHosts === [] ? '(ingen)' : implode(', ', $cfg->recordingHosts)));
 
@@ -81,7 +86,7 @@ final class Probe
         } catch (RateLimited $e) {
             return self::stopped($c, $e, $say);
         }
-        $say('Kald til Adversus i denne kørsel: ' . $c->requests . ' (grænse: 60/min, 1000/time)');
+        $say('Kald til Adversus i denne kørsel: ' . $c->requests . ' (loft for kørslen: ' . self::MAX_REQUESTS . ' · Adversus: 60/min, 1000/time)');
         $say('PROBE: FÆRDIG');
         return $code;
     }
@@ -121,12 +126,13 @@ final class Probe
         // 2. Optagelser (anbefalet til eksport), filtreret på upload-tid
         $recs = self::scan($c, '/recordings', 'recordings', ['timestamp' => ['$gt' => $cfg->sinceIso()]], null, $say);
         $pick = null;
+        /** @var array<int, true> $recorded opkalds-id'er (cdr.id) med en optagelse i de skannede sider */
+        $recorded = [];
         if ($recs !== null) {
             $withDl = 0;
             $clips = 0;
             $matched = 0;
             $dlHosts = [];
-            $seen = [];
             foreach ($recs['items'] as $r) {
                 $cdr = is_array($r['cdr'] ?? null) ? $r['cdr'] : [];
                 $rec = is_array($r['recording'] ?? null) ? $r['recording'] : [];
@@ -139,10 +145,10 @@ final class Probe
                 }
                 $clips += is_array($r['clips'] ?? null) ? count($r['clips']) : 0;
                 if (is_int($cdr['id'] ?? null)) {
-                    if (isset($ids[$cdr['id']]) && !isset($seen[$cdr['id']])) {
+                    if (isset($ids[$cdr['id']]) && !isset($recorded[$cdr['id']])) {
                         $matched++;
                     }
-                    $seen[$cdr['id']] = true;
+                    $recorded[$cdr['id']] = true;
                     $pick ??= $cdr['id'];
                 }
             }
@@ -158,7 +164,7 @@ final class Probe
             }
         }
 
-        // 3. Sessioner, kampagner og leads: kun feltnavne, antal og sideinddeling på første side
+        // 3. Sessioner og kampagner: kun feltnavne, antal og sideinddeling på første side (leads: afsnit 5)
         $sess = self::scan($c, '/sessions', 'sessions', ['startTime' => ['$gt' => $cfg->sinceIso()]], 'startTime', $say, 1, self::FIRST_PAGE_SIZE);
         if ($sess !== null) {
             $st = [];
@@ -169,16 +175,228 @@ final class Probe
             $say('/sessions: status (første side): ' . self::counts($st) . ' · cdr-felter: ' . self::fieldList($sess['items'][0]['cdr'] ?? null));
         }
         self::scan($c, '/campaigns', 'campaigns', null, null, $say, 1, self::FIRST_PAGE_SIZE);
-        self::scan($c, '/leads', 'leads', null, null, $say, 1, self::FIRST_PAGE_SIZE);
 
         // 4. Én optagelse: /calls/{id}/recording → 307 → fil
         if ($pick === null) {
             $say('! ingen optagelse med cdr.id i de skannede sider — kør med --call=<id> for et kendt optaget opkald');
-            return 0;
+        } else {
+            $say('Optagelse for ét opkald fra /recordings:');
+            self::tryDownload($c, $pick, $say);
         }
-        $say('Optagelse for ét opkald fra /recordings:');
-        self::tryDownload($c, $pick, $say);
+
+        // 5. Leads med succes: kun de leads transcriberes, så vejen fra succes-lead til optagelse og antallet måles
+        self::successLeads($c, $cfg, $recorded, $say);
         return 0;
+    }
+
+    /**
+     * "Leads med succes": status-fordeling, antal succes-leads siden since, opkald og optagelser for op til 5 af dem og
+     * et overslag. Filtrene prøves af: et filter "virker" kun, når alle returnerede elementer opfylder det — et API kan
+     * ignorere et filter, det ikke kender, og svare med alt. Lead- og opkalds-id'er vises aldrig.
+     *
+     * @param array<int, true> $recorded cdr.id'er med optagelse fra afsnit 2
+     * @param Closure(string): void $say
+     * @throws RateLimited
+     */
+    private static function successLeads(Client $c, AdversusConfig $cfg, array $recorded, Closure $say): void
+    {
+        $succ = $cfg->successStatus;
+        $since = gmdate('Y-m-d', $cfg->since);
+        $say("Leads med succes (success_status = $succ, since = $since):");
+        // Adversus har $gt, men ikke $gte: ét sekund før since giver "fra og med since"
+        $timeFilter = ['lastUpdatedTime' => ['$gt' => gmdate('Y-m-d\TH:i:s\Z', $cfg->since - 1)]];
+
+        // 5.1 Status uden filter og med tidsfilter (spec'en: /leads kan filtreres på lastUpdatedTime og status)
+        $all = self::scan($c, '/leads', 'leads', null, null, $say);
+        if ($all !== null) {
+            $say(sprintf('/leads: status (uden filter, %d lead(s) på %d side(r)): %s', count($all['items']), $all['pages'],
+                self::statusCounts($all['items'])));
+        }
+        $recent = self::scan($c, '/leads', 'leads', $timeFilter, null, $say, self::PAGES, self::PAGE_SIZE, '/leads [lastUpdatedTime ≥ since]');
+        $timeOk = false;
+        if ($recent === null) {
+            $say('/leads: tidsfilteret (lastUpdatedTime) kan ikke filtreres — Adversus afviste det');
+        } else {
+            $v = self::verdict($recent['items'], static fn(array $l): ?bool => self::modifiedSince($l, $cfg->since),
+                ($all['items'] ?? []) !== []);
+            $timeOk = $v === 'virker';
+            $say("/leads: tidsfilteret (lastUpdatedTime): $v · total " . self::int($recent['total'])
+                . ' (uden filter: ' . self::int($all['total'] ?? null) . ')');
+            $say(sprintf('/leads: status (siden since, %d lead(s) på %d side(r)): %s', count($recent['items']), $recent['pages'],
+                self::statusCounts($recent['items'])));
+        }
+
+        // 5.2 Antal succes-leads (meta.pagination.total) og op til 5 af dem
+        $filter = ['status' => ['$eq' => $succ]] + ($timeOk ? $timeFilter : []);
+        $label = '/leads [status = ' . $succ . ($timeOk ? ', lastUpdatedTime ≥ since' : '') . ']';
+        $hit = self::scan($c, '/leads', 'leads', $filter, null, $say, 1, self::SAMPLE_LEADS, $label);
+        $isSucc = static fn(array $l): bool => ($l['status'] ?? null) === $succ;
+        $v = $hit === null ? 'kan ikke filtreres (Adversus afviste filteret)' : self::verdict($hit['items'], $isSucc, true);
+        // Fem elementer kan tilfældigvis alle have succes-status. Samme total som uden statusfilter, mens de skannede
+        // sider har andre statusser, betyder, at filteret ignoreres.
+        $base = $timeOk ? $recent : $all;
+        if ($hit !== null && $v === 'virker' && $base !== null && $hit['total'] !== null && $hit['total'] === $base['total']) {
+            foreach ($base['items'] as $l) {
+                if ($isSucc($l) !== true) {
+                    $v = 'kan ikke filtreres (filteret ignoreres — samme total som uden statusfilter)';
+                    break;
+                }
+            }
+        }
+        $successTotal = null;
+        $sample = [];
+        if ($hit !== null && $v === 'virker') {
+            $successTotal = $hit['total'] ?? count($hit['items']);
+            $sample = $hit['items'];
+            $say(($timeOk ? "Succes-leads siden $since: " : 'Succes-leads i alt (alle tider — tidsfilteret virker ikke): ')
+                . $successTotal . ($hit['total'] === null ? ' (talt på siden — ingen meta.pagination.total)' : ' (meta.pagination.total)'));
+        } else {
+            $say("Succes-leads: status $v — antallet kan ikke tælles");
+            // Proben fortsætter med succes-leads fra de skannede sider, så vejen til optagelserne stadig kan måles
+            foreach ([...($recent['items'] ?? []), ...($all['items'] ?? [])] as $l) {
+                if ($isSucc($l) === true && count($sample) < self::SAMPLE_LEADS) {
+                    $sample[] = $l;
+                }
+            }
+            $say('Succes-leads fundet i de skannede sider: ' . count($sample) . ' (bruges til målingen herunder)');
+        }
+
+        // 5.3 Opkald og optagelser pr. succes-lead
+        $leadFilter = null;   // null = ikke prøvet, true = virker, false = kan ikke filtreres
+        $measured = 0;
+        $recSum = 0;
+        $unchecked = 0;
+        $checks = 0;
+        foreach (array_values($sample) as $i => $lead) {
+            // Opslag i /calls/{id}/recording må ikke tage de kald, de resterende leads skal bruge på /calls
+            $reserve = count($sample) - $i - 1;
+            $leadId = $lead['id'] ?? null;
+            if (!is_int($leadId)) {
+                continue;
+            }
+            try {
+                $data = $c->getJson('/calls', ['page' => 1, 'pageSize' => self::PAGE_SIZE, 'includeMeta' => 'true',
+                    'filters' => (string) json_encode(['leadId' => ['$eq' => $leadId]]), 'sortProperty' => 'start', 'sortDirection' => 'ASC']);
+            } catch (RateLimited $e) {
+                throw $e;
+            } catch (AdversusError $e) {
+                $say('/calls [leadId]: ' . $e->getMessage() . ' — kan ikke filtreres (opkald pr. lead)');
+                $leadFilter = false;
+                break;
+            }
+            $calls = array_values(array_filter(self::items($data, 'calls'), 'is_array'));
+            if (self::verdict($calls, static fn(array $x): bool => ($x['leadId'] ?? null) === $leadId, true) !== 'virker') {
+                $say('/calls [leadId]: kan ikke filtreres — filteret ignoreres af Adversus (svaret har opkald på andre leads)');
+                $leadFilter = false;
+                break;
+            }
+            $leadFilter = true;
+            $measured++;
+            $total = is_int($data['meta']['pagination']['total'] ?? null) ? $data['meta']['pagination']['total'] : null;
+            // Længste samtaler først: de har størst sandsynlighed for en optagelse, så opslagene bruges bedst
+            usort($calls, static fn(array $a, array $b): int => self::seconds($b['conversation'] ?? null) <=> self::seconds($a['conversation'] ?? null));
+            $fromScan = 0;
+            $from307 = 0;
+            $notChecked = 0;
+            $conv = [];
+            foreach ($calls as $call) {
+                $conv[] = self::seconds($call['conversation'] ?? null);
+                $id = $call['id'] ?? null;
+                if (is_int($id) && isset($recorded[$id])) {
+                    $fromScan++;
+                } elseif (is_int($id) && $checks < self::MAX_RECORDING_CHECKS && $c->remaining() > $reserve) {
+                    $checks++;
+                    try {
+                        $from307 += $c->hasRecording($id) ? 1 : 0;
+                    } catch (RateLimited $e) {
+                        throw $e;
+                    } catch (AdversusError $e) {
+                        $notChecked++;
+                    }
+                } else {
+                    $notChecked++;
+                }
+            }
+            $recSum += $fromScan + $from307;
+            $unchecked += $notChecked;
+            $shown = array_slice($conv, 0, 10);
+            $say(sprintf('  Succes-lead %d: opkald %d%s · samtale (s): %s · optaget: %d (%d fra /recordings, %d via /calls/{id}/recording)%s',
+                $measured, count($calls), $total !== null && $total !== count($calls) ? " (total $total, kun side 1 målt)" : '',
+                $shown === [] ? '(ingen)' : implode(', ', $shown) . (count($conv) > 10 ? ', …' : ''),
+                $fromScan + $from307, $fromScan, $from307, $notChecked > 0 ? " · ikke tjekket: $notChecked" : ''));
+        }
+        if ($sample === []) {
+            $say('  (ingen succes-leads at måle på)');
+        }
+
+        // 5.4 Overslag: succes-leads × gennemsnitligt antal optagede opkald pr. målt lead
+        if ($successTotal === null) {
+            $say('OVERSLAG: kan ikke beregnes — antallet af succes-leads kan ikke tælles');
+        } elseif ($leadFilter !== true) {
+            $say('OVERSLAG: kan ikke beregnes — ' . ($leadFilter === false ? 'opkald kan ikke filtreres på lead' : 'ingen succes-leads at måle på'));
+        } else {
+            $avg = $recSum / $measured;
+            $say(sprintf('OVERSLAG (ikke en optælling): ca. %d optagelser at transcribere %s = %d succes-leads × %s optagede opkald pr. lead (gennemsnit af %d lead(s))%s',
+                (int) round($successTotal * $avg), $timeOk ? "siden $since" : '(alle tider)', $successTotal,
+                number_format($avg, 2, ',', ''), $measured, $unchecked > 0 ? " — mindst: $unchecked opkald blev ikke tjekket" : ''));
+        }
+    }
+
+    /**
+     * Virker et filter? Et element, $test siger false til, betyder, at filteret ignoreres. Mindst ét true og intet false =
+     * "virker". En tom side er "virker", når $emptyOk (et ignoreret filter ville have givet elementer).
+     *
+     * @param list<array<mixed>> $items
+     * @param Closure(array<mixed>): ?bool $test
+     */
+    private static function verdict(array $items, Closure $test, bool $emptyOk = false): string
+    {
+        $ok = 0;
+        foreach ($items as $it) {
+            $r = $test($it);
+            if ($r === false) {
+                return 'kan ikke filtreres (filteret ignoreres — svaret har elementer, der ikke opfylder det)';
+            }
+            $ok += $r === true ? 1 : 0;
+        }
+        if ($ok > 0 || ($items === [] && $emptyOk)) {
+            return 'virker';
+        }
+        return $items === [] ? 'kan ikke afgøres (ingen elementer)' : 'kan ikke afgøres (tidsfelterne mangler)';
+    }
+
+    /**
+     * Er leadet ændret siden since? Filteret hedder lastUpdatedTime i spec'en, men elementet har lastModifiedTime og
+     * updated (målt af v1) — det nyeste af dem tæller. null = intet af dem kan læses.
+     *
+     * @param array<mixed> $lead
+     */
+    private static function modifiedSince(array $lead, int $since): ?bool
+    {
+        $latest = null;
+        foreach (['lastUpdatedTime', 'lastModifiedTime', 'updated'] as $k) {
+            $t = is_string($lead[$k] ?? null) ? strtotime($lead[$k]) : false;
+            if ($t !== false) {
+                $latest = max($latest ?? $t, $t);
+            }
+        }
+        return $latest === null ? null : $latest >= $since;
+    }
+
+    /** @param list<array<mixed>> $leads */
+    private static function statusCounts(array $leads): string
+    {
+        $st = [];
+        foreach ($leads as $l) {
+            $v = self::enum('status', $l['status'] ?? null);
+            $st[$v] = ($st[$v] ?? 0) + 1;
+        }
+        return self::counts($st);
+    }
+
+    private static function seconds(mixed $v): int
+    {
+        return is_int($v) || is_float($v) ? max(0, (int) $v) : 0;
     }
 
     /**
@@ -211,12 +429,13 @@ final class Probe
      *
      * @param array<string, mixed>|null $filters
      * @param Closure(string): void $say
-     * @return array{pages: int, items: list<array<mixed>>}|null
+     * @return array{pages: int, items: list<array<mixed>>, total: ?int}|null
      * @throws RateLimited
      */
     public static function scan(Client $c, string $path, string $key, ?array $filters, ?string $sort, Closure $say,
-        int $pages = self::PAGES, int $pageSize = self::PAGE_SIZE): ?array
+        int $pages = self::PAGES, int $pageSize = self::PAGE_SIZE, ?string $label = null): ?array
     {
+        $label ??= $path;
         $items = [];
         $done = 0;
         $meta = null;
@@ -234,19 +453,19 @@ final class Probe
             } catch (RateLimited $e) {
                 throw $e;
             } catch (AdversusError $e) {
-                $say("✘ $path (side $p): " . $e->getMessage());
-                return $done === 0 ? null : ['pages' => $done, 'items' => $items];
+                $say("✘ $label (side $p): " . $e->getMessage());
+                return $done === 0 ? null : ['pages' => $done, 'items' => $items, 'total' => self::total($meta)];
             }
             $done++;
             $list = self::items($data, $key);
             if ($p === 1) {
                 $meta = is_array($data['meta']['pagination'] ?? null) ? $data['meta']['pagination'] : null;
-                $say("$path: HTTP 200 · svar-felter: " . (array_is_list($data) ? '(liste)' : self::fieldList($data))
+                $say("$label: HTTP 200 · svar-felter: " . (array_is_list($data) ? '(liste)' : self::fieldList($data))
                     . " · antal på side 1: " . count($list));
-                $say("$path: sideinddeling: page/pageSize=$pageSize · meta.pagination: "
+                $say("$label: sideinddeling: page/pageSize=$pageSize · meta.pagination: "
                     . ($meta === null ? '(ingen)' : self::fieldList($meta) . ' · pageCount ' . self::int($meta['pageCount'] ?? null)
                         . ' · total ' . self::int($meta['total'] ?? null)));
-                $say("$path: felter: " . self::fieldList($list[0] ?? null));
+                $say("$label: felter: " . self::fieldList($list[0] ?? null));
             }
             foreach ($list as $it) {
                 if (is_array($it)) {
@@ -258,7 +477,13 @@ final class Probe
                 break;
             }
         }
-        return ['pages' => $done, 'items' => $items];
+        return ['pages' => $done, 'items' => $items, 'total' => self::total($meta)];
+    }
+
+    /** @param array<mixed>|null $meta */
+    private static function total(?array $meta): ?int
+    {
+        return is_int($meta['total'] ?? null) ? $meta['total'] : null;
     }
 
     /**

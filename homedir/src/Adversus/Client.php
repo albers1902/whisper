@@ -18,6 +18,8 @@ use Whisper\Zendesk\ZendeskError;
  *   headeren) højst 3 gange; over 60 s eller fortsat 429 = RateLimited.
  * - Optagelser: /calls/{id}/recording svarer 307 til en tidsbegrænset URL. Redirects følges her, så hver vært tjekkes,
  *   og Authorization sendes ALDRIG til andre værter end api.adversus.io. Andre værter skal stå i recording_hosts.
+ * - $maxRequests er et loft over kald pr. kørsel (også gentagne forsøg ved 429); nås det, kastes RateLimited, så
+ *   kalderen stopper pænt i stedet for at bruge timekvoten (1000/time) op.
  */
 final class Client
 {
@@ -40,6 +42,7 @@ final class Client
         private readonly AdversusConfig $cfg,
         private readonly HttpTransport $http,
         ?Closure $sleep = null,
+        private readonly int $maxRequests = PHP_INT_MAX,
     ) {
         $this->sleep = $sleep ?? static function (int $s): void {
             sleep($s);
@@ -114,6 +117,30 @@ final class Client
         throw new AdversusError('for mange redirects ved hentning af optagelsen');
     }
 
+    /** Kald tilbage under loftet. */
+    public function remaining(): int
+    {
+        return max(0, $this->maxRequests - $this->requests);
+    }
+
+    /**
+     * Har opkaldet en optagelse? /calls/{id}/recording svarer 307 (ja) eller 404 (nej). Redirecten følges IKKE — intet
+     * hentes, og Location-URL'en (signeret) bruges ikke.
+     *
+     * @throws AdversusError ved andre svar
+     */
+    public function hasRecording(int $callId): bool
+    {
+        $res = $this->get('/calls/' . $callId . '/recording');
+        if (in_array($res->status, [301, 302, 303, 307, 308], true)) {
+            return true;
+        }
+        if ($res->status === 404) {
+            return false;
+        }
+        throw new AdversusError('optagelsens status kunne ikke ses (HTTP ' . $res->status . ')', $res->status);
+    }
+
     /** @return array<string, string> */
     private function authHeaders(): array
     {
@@ -133,6 +160,9 @@ final class Client
     private function send(Closure $call): HttpResult
     {
         for ($try = 1; ; $try++) {
+            if ($this->requests >= $this->maxRequests) {
+                throw new RateLimited('kaldsgrænsen for kørslen (' . $this->maxRequests . ' kald) er nået — proben stopper', 429);
+            }
             $this->requests++;
             try {
                 $res = $call();
