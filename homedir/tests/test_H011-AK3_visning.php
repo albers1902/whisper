@@ -2,16 +2,20 @@
 declare(strict_types=1);
 
 // H011-AK3: UI (nyt og gammelt), .txt, zip og MCP viser rollen ("Agent:"/"Kunde:", ellers "Taler 1:"); UI'et kun ved
-// skift. Transcripts uden taler vises præcis som før.
+// skift, og kun med flaget H011_diarization tændt. Transcripts uden taler, og alle transcripts med flaget slukket,
+// vises præcis som før.
 
 require_once __DIR__ . '/h011_lib.php';
 require_once __DIR__ . '/f003_lib.php';
+
+use Whisper\Transcription\DiarizationSettings;
 
 use Whisper\Calls;
 use Whisper\Flags;
 use Whisper\Ui;
 
 f003_setup();
+Flags::override(DiarizationSettings::FLAG, true);   // testmiljøet har env = test, hvor flaget er off
 [$c, $uid] = f003_login();
 $m = new F003Mcp(f003_token($uid));
 
@@ -83,5 +87,23 @@ $bad = Calls::segments((string) json_encode([['start' => 0, 'end' => 1, 'text' =
     ['start' => 1, 'end' => 2, 'text' => 'y', 'speaker' => 1, 'role' => '<script>']]));
 H011Check::that('AK3', !isset($bad[0]['speaker']) && !isset($bad[0]['role']) && $bad[1]['speaker'] === 1 && !isset($bad[1]['role']),
     'ugyldig speaker/role i segments_json vises ikke');
+
+// Flaget slukket: al visning er som før H011, også for transcripts, der allerede har talere
+Flags::override(DiarizationSettings::FLAG, false);
+$t = f002_get($c, '/opkald/' . $id . '/transcript');
+H011Check::that('AK3', str_contains($t->body, "\n\n[00:00] Hej, du taler med Mette.\n[00:02] Hej, det er om regningen.\n")
+    && !str_contains($t->body, 'Agent: Hej'), 'flag off: .txt uden taler');
+[, $text] = f003_result($m->tool('get_transcript', ['call_id' => $id]));
+H011Check::that('AK3', str_contains($text, "[00:00] Hej, du taler med Mette.\n") && !str_contains($text, 'Kunde:'), 'flag off: MCP uden taler');
+$z = f002_get($c, '/opkald/download');
+$all = implode("\n", array_column($z->status === 200 ? f002_unzip($z->fileContents()) : [], 'data'));
+H011Check::that('AK3', $all !== '' && !str_contains($all, 'Kunde:') && !str_contains($all, 'Taler 1:'), 'flag off: zip uden taler');
+Flags::override(Ui::FLAG, true);
+$r = f002_get($c, '/opkald/' . $id);
+H011Check::that('AK3', !str_contains($r->body, 'class="speaker"') && str_contains($r->body, '<p>Hej, du taler med Mette.</p>'), 'flag off: nyt UI uden taler');
+Flags::override(Ui::FLAG, false);
+$r = f002_get($c, '/opkald/' . $id);
+H011Check::that('AK3', !str_contains($r->body, 'class="speaker"') && str_contains($r->body, '[00:00]</span> Hej, du taler med Mette.</p>'),
+    'flag off: gammelt UI uden taler');
 
 H011Check::done();

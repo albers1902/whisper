@@ -30,6 +30,14 @@ H011Check::that('AK6', str_contains($setup, 'rm -f var/whisper/ready-diarization
     && strpos($setup, 'date -u +%Y-%m-%dT%H:%M:%SZ > var/whisper/ready-diarization') > strpos($setup, 'd.diarize(d.create(root, 2)'),
     'markøren ready-diarization skrives først efter selvtesten');
 
+H011Check::that('AK6', str_contains($setup, "rm -f \"var/whisper/ready-\$model\"   # en afbrudt kørsel må ikke efterlade en gammel markør\nrm -f var/whisper/ready-diarization"),
+    'ready-diarization fjernes samtidig med ready-$model, før venv\'et ændres');
+H011Check::that('AK6', str_contains($setup, "extra() { comm -23 <(have) <(printf '%s\\n' \"\$want\"); }")
+    && str_contains($setup, '|| [ -n "$(extra)" ]; }; then') && !str_contains($setup, '|| [ "$(have)" != "$want" ]; }; then'),
+    'venv\'et bygges kun forfra, når det har pakker uden for låsen; nye pakker installeres oveni');
+H011Check::that('AK6', str_contains($setup, '"$H/cron/diarize.py" 2>"$derr"') && str_contains($setup, 'Fejlen: $(grep -v'),
+    'ved DIARIZATION: FEJL står selve fejlen sidst på linjen');
+
 $lock = (string) file_get_contents(dirname(__DIR__) . '/cron/whisper-requirements.txt');
 H011Check::that('AK6', str_contains($lock, "sherpa-onnx==2.0.1 --hash=sha256:c7780d8af6921c18e8e920376b32d7707294e5cd3838f4762cf746ab919bcc40\n")
     && str_contains($lock, "sherpa-onnx-core==2.0.1 --hash=sha256:f4ee0ab91c4ae596e0e49d7de32522a946295e038a652f1c1884d89014ee4ec2\n"),

@@ -58,6 +58,21 @@ $s = DiarizationSettings::fromSection(['agent_phrases' => ' | | '], true, 3, sta
 H011Check::that('AK2', $s->phrases === $def && count($warn) === 1, 'tom agent_phrases: standardlisten og én advarsel');
 H011Check::that('AK2', DiarizationSettings::fromSection([], true)->phrases === $def, 'uden config: standardlisten');
 
+// Kun de første 60 s: en markør senere i samtalen tæller ikke
+$late = [['start' => 0.0, 'end' => 4.0, 'text' => 'Hallo?'], ['start' => 61.0, 'end' => 65.0, 'text' => 'Du taler med Ole fra Tryg Energi.']];
+$r = Diarization::apply($late, [['start' => 0.0, 'end' => 4.0, 'speaker' => 0], ['start' => 61.0, 'end' => 65.0, 'speaker' => 1]], $def);
+H011Check::that('AK2', $labels($r) === ['Taler 1', 'Taler 2'] && !$r['agent'], 'markør efter 60 s tæller ikke: Taler 1/2');
+$early = [['start' => 0.0, 'end' => 4.0, 'text' => 'Hallo?'], ['start' => 59.0, 'end' => 65.0, 'text' => 'Du taler med Ole.']];
+$r = Diarization::apply($early, [['start' => 0.0, 'end' => 4.0, 'speaker' => 0], ['start' => 59.0, 'end' => 65.0, 'speaker' => 1]], $def);
+H011Check::that('AK2', $labels($r) === ['Kunde', 'Agent'], 'markør inden for 60 s tæller');
+
+// "mit navn er" er ikke en standardmarkør: en kunde, der præsenterer sig først, bliver ikke Agent
+H011Check::that('AK2', !in_array('mit navn er', $def, true), '"mit navn er" er ikke i standardlisten');
+$segs = [['start' => 0.0, 'end' => 4.0, 'text' => 'Ja hej, mit navn er Jens.'], ['start' => 4.5, 'end' => 9.0, 'text' => 'Hej Jens, velkommen til Tryg Energi.'],
+    ['start' => 9.5, 'end' => 12.0, 'text' => 'Tak.']];
+$r = Diarization::apply($segs, $iv, $def);
+H011Check::that('AK2', $labels($r) === ['Kunde', 'Agent', 'Kunde'], 'kunden siger "mit navn er" først: stadig Kunde');
+
 H011Check::that('AK2', Diarization::label(['speaker' => 0]) === 'Taler 1' && Diarization::label(['speaker' => 1, 'role' => 'kunde']) === 'Kunde'
     && Diarization::label([]) === null && Diarization::label(['speaker' => '0']) === null, 'etiketter');
 

@@ -35,16 +35,20 @@ final class H011Check
 
 /**
  * En falsk diarization-motor i PHP (ingen proces). Svaret pr. fil står i $answers (intervaller eller EngineError);
- * en fil uden svar giver ingen intervaller. Med $throwAt kaster motoren, når den når den fil (som en motor, der dør),
- * og med $busyAt lægges et ventende opkald i transcription-køen, når den fil nås, hvorefter $stop() spørges.
+ * en fil uden svar giver ingen intervaller, og en fil i $silent får slet intet svar (exit 0). Med $throwAt kaster
+ * motoren, når den når den fil, og med $throwAlways ved start (en motor, der dør). Med $busyAt lægges et ventende
+ * opkald i transcription-køen, når den fil nås, hvorefter $stop() spørges.
  */
 final class FakeDiarizer implements DiarizationEngine
 {
     /** @var array<string, list<mixed>|EngineError> */
     public array $answers = [];
+    /** @var list<string> */
+    public array $silent = [];
     /** @var list<list<string>> */
     public array $calls = [];
     public ?string $throwAt = null;
+    public bool $throwAlways = false;
     public ?string $busyAt = null;
     public bool $ready = true;
     /** @var (Closure(string): void)|null kaldes med filen, lige før dens svar afleveres */
@@ -55,15 +59,18 @@ final class FakeDiarizer implements DiarizationEngine
         return $this->ready;
     }
 
-    public function diarize(array $files, int $limitSec, Closure $onResult, Closure $stop): bool
+    public function diarize(array $files, int $limitSec, Closure $onResult, Closure $stop): ?float
     {
         $this->calls[] = $files;
+        if ($this->throwAlways) {
+            throw new EngineError('diarization fejlede (exit 1)');
+        }
         foreach ($files as $f) {
             if ($f === $this->busyAt) {
                 h011_new_call();
-                if ($stop()) {
-                    return true;
-                }
+            }
+            if (($f === $this->busyAt || $this->busyAt === '*') && $stop()) {
+                return 0.1;
             }
             if ($this->before !== null) {
                 ($this->before)($f);
@@ -71,9 +78,12 @@ final class FakeDiarizer implements DiarizationEngine
             if ($f === $this->throwAt) {
                 throw new EngineError('diarization fejlede (exit 1)');
             }
+            if (in_array($f, $this->silent, true)) {
+                continue;
+            }
             $onResult($f, $this->answers[$f] ?? [], 1.5);
         }
-        return false;
+        return null;
     }
 }
 
@@ -88,12 +98,12 @@ function h011_new_call(): int
 /**
  * Et færdigt opkald med transcript og lyd.
  *
- * @param list<array{start: float, end: float, text: string}> $segments
+ * @param list<array<string, mixed>> $segments
  * @return array{id: int, file: string}
  */
-function h011_done_call(array $segments, string $startedAt = '2026-10-05 10:00:00'): array
+function h011_done_call(array $segments, string $startedAt = '2026-10-05 10:00:00', int $duration = 125): array
 {
-    $id = f002_insert(['started_at' => $startedAt]);
+    $id = f002_insert(['started_at' => $startedAt, 'duration_sec' => $duration]);
     $file = f002_audio($id);
     f002_transcript($id, implode(' ', array_column($segments, 'text')), $segments);
     return ['id' => $id, 'file' => (string) realpath($file)];
@@ -109,14 +119,26 @@ function h011_row(int $id): array
         'attempts' => (int) ($r['diar_attempts'] ?? -1), 'json' => $json];
 }
 
+/** Testens ur (sekunder); flyttes med $clock->now += … */
+function h011_clock(): stdClass
+{
+    $c = new stdClass();
+    $c->now = time();
+    return $c;
+}
+
 /**
  * @param list<string> $log
+ * @param (Closure(): bool)|null $halt
  */
-function h011_diarizer(FakeDiarizer $engine, array &$log, ?DiarizationSettings $settings = null): Diarizer
+function h011_diarizer(FakeDiarizer $engine, array &$log, ?stdClass $clock = null, ?Closure $halt = null,
+    ?DiarizationSettings $settings = null): Diarizer
 {
-    return new Diarizer($engine, $settings ?? new DiarizationSettings(true), null, static function (string $l) use (&$log): void {
-        $log[] = $l;
-    });
+    $clock ??= h011_clock();
+    return new Diarizer($engine, $settings ?? new DiarizationSettings(true), static fn(): int => (int) $clock->now,
+        static function (string $l) use (&$log): void {
+            $log[] = $l;
+        }, $halt);
 }
 
 /** Tre segmenter: agenten præsenterer sig, kunden svarer, agenten igen. */
