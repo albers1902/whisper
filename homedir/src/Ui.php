@@ -5,6 +5,7 @@ namespace Whisper;
 
 use DateTimeImmutable;
 use DateTimeZone;
+use Whisper\Transcription\QueueRules;
 
 /**
  * Det nye UI (F005) bag flaget F005_ui: fælles ramme, ikoner, badges, beskeder og fremhævning af søgeord.
@@ -94,9 +95,11 @@ final class Ui
      * Statusbadge efter UX §3.2 — samme kortlægning i liste og detalje. Lyden afgøres først: uden hentet lyd kan
      * intet transcriberes. $audioOnDisk = false (kun detaljen ved det) giver "Lyd mangler".
      *
+     * $skip (H012, QueueRules::skipReason) giver det neutrale "For kort" / "Ikke automatisk", når lyden er hentet.
+     *
      * @return array{0: string, 1: string} [klasse, tekst]
      */
-    public static function status(string $audio, string $transcript, ?bool $audioOnDisk = null): array
+    public static function status(string $audio, string $transcript, ?bool $audioOnDisk = null, ?string $skip = null): array
     {
         if ($transcript === 'ikke_valgt') {
             return ['s-ikke-valgt', 'Ikke valgt'];   // F004: afgøres før lyden, som aldrig hentes for et fravalgt opkald
@@ -110,6 +113,9 @@ final class Ui
         if ($audio !== 'hentet') {
             return ['s-ukendt', 'Ukendt'];
         }
+        if ($skip !== null) {
+            return ['s-ikke-valgt', QueueRules::label($skip)];
+        }
         return [
             'ventende'      => ['s-ventende', 'Venter'],
             'transcriberer' => ['s-transcriberer', 'Transcriberer'],
@@ -121,7 +127,8 @@ final class Ui
     /** @param array<string, mixed> $call */
     public static function badge(array $call, ?bool $audioOnDisk = null): string
     {
-        [$class, $text] = self::status((string) ($call['audio_status'] ?? ''), (string) ($call['transcript_status'] ?? ''), $audioOnDisk);
+        [$class, $text] = self::status((string) ($call['audio_status'] ?? ''), (string) ($call['transcript_status'] ?? ''), $audioOnDisk,
+            QueueRules::fromConfig()->skipReason($call, time()));
         return '<span class="badge ' . $class . '">' . self::e($text) . '</span>';
     }
 

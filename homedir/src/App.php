@@ -4,7 +4,6 @@ declare(strict_types=1);
 namespace Whisper;
 
 use Closure;
-use Whisper\Adversus\Feature;
 use Whisper\Mcp\Server;
 use Whisper\Mcp\Tokens;
 use Whisper\OAuth\Authorize;
@@ -148,9 +147,10 @@ final class App
         return match ($route) {
             'home'      => Flags::enabled(CallPages::FLAG) ? CallPages::list($req, $user, $csrf, $this->flash($s))
                 : Response::html(View::home($user, $csrf, $this->flash($s))),
-            // F004: detaljen viser kvitteringen fra "Transcribér dette opkald"; slukket røres sessionen ikke (AK9)
+            // F004: detaljen viser kvitteringen fra "Transcribér dette opkald" (H012: knappen findes i hele det nye UI);
+            // uden det nye UI røres sessionen ikke (F004-AK9)
             'call_show'  => CallPages::show($id, $req, $user, $csrf,
-                Feature::on() ? [$this->flash($s), $this->flash($s, 'flash_info')] : [null, null]),
+                Ui::modern() ? [$this->flash($s), $this->flash($s, 'flash_info')] : [null, null]),
             'call_select' => $this->callSelect($req, $s, $user, $id, $csrf),
             'call_audio' => CallPages::audio($id, $req, $user),
             'call_txt'   => CallPages::transcript($id, $user),
@@ -202,8 +202,9 @@ final class App
             if ($path === '/opkald/download') {
                 return ['call_zip', 0, ''];
             }
-            // F004: "Transcribér dette opkald" findes kun med F004_adversus (og F005_ui) tændt
-            if (Feature::on() && preg_match('#^/opkald/([1-9][0-9]{0,9})/transcriber$#', $path, $m) === 1) {
+            // "Transcribér dette opkald" findes kun i det nye UI (F005_ui). Adversus-opkald kræver desuden F004_adversus,
+            // Zendesk-opkald at køens regler har sprunget dem over (H012); det afgør CallPages::select
+            if (Ui::modern() && preg_match('#^/opkald/([1-9][0-9]{0,9})/transcriber$#', $path, $m) === 1) {
                 return ['call_select', (int) $m[1], ''];
             }
             if (preg_match('#^/opkald/([1-9][0-9]{0,9})(/lyd|/transcript)?$#', $path, $m) === 1) {
@@ -636,6 +637,7 @@ final class App
         $texts = [
             'ok'      => ['flash', 'Opkaldet er sat i kø. Lyden hentes fra Adversus, og transcriptet laves derefter.'],
             'igen'    => ['flash', 'Lyden hentes igen fra Adversus. Transcriptet laves, når lyden er hentet.'],
+            'valgt'   => ['flash', 'Opkaldet er sat i kø. Transcriptet laves, når opkaldene foran det er færdige.'],
             'faerdig' => ['flash_info', 'Opkaldet er allerede transcriberet.'],
             'fuld'    => ['flash_info', 'Der er allerede mange opkald i kø. Prøv igen senere.'],
             'nylig'   => ['flash_info', 'Lyden blev prøvet for nylig. Prøv igen om lidt.'],

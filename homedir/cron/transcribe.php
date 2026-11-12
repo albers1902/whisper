@@ -15,6 +15,7 @@ declare(strict_types=1);
 
 use Whisper\Transcription\EngineError;
 use Whisper\Transcription\ProcessEngine;
+use Whisper\Transcription\QueueRules;
 use Whisper\Transcription\Slots;
 use Whisper\Transcription\Transcriber;
 use Whisper\Transcription\WhisperSettings;
@@ -39,10 +40,12 @@ if (!\Whisper\Flags::enabled(\Whisper\App::FLAG) || !\Whisper\Flags::enabled(\Wh
 // Advarsler om ugyldige [whisper]-værdier skrives først sammen med kørslens første opkald, så en tom kø ikke giver
 // en linje hvert minut. Indstillingerne læses før slotvalget, fordi workers bestemmer antallet af slots.
 $warnings = [];
-$settings = WhisperSettings::fromSection(\Whisper\Config::section('whisper'), WhisperSettings::cores(),
-    static function (string $w) use (&$warnings): void {
-        $warnings[] = $w;
-    });
+$collect = static function (string $w) use (&$warnings): void {
+    $warnings[] = $w;
+};
+$settings = WhisperSettings::fromSection(\Whisper\Config::section('whisper'), WhisperSettings::cores(), $collect);
+// H012: nyeste først; korte og gamle opkald kun, når en bruger har valgt dem
+$rules = QueueRules::fromSection(\Whisper\Config::section('whisper'), $collect);
 
 $acquired = Slots::acquire($settings->workers);
 if ($acquired === null) {
@@ -74,14 +77,23 @@ $jobLog = static function (string $line) use (&$warnings, $log): void {
 };
 $t = new Transcriber($engine, null, $jobLog, $engine->errorFile(), static function (array $ids) use ($lock): void {
     $lock->write(Slots::format($ids));
-}, $settings->rtf);
+}, $settings->rtf, $rules);
 $reset = $t->resetStale(Slots::heldByOthers($slot));
 if ($reset > 0) {
     $log('transcribe: ' . $reset . ' hængende opkald sat tilbage');
 }
+// Hvad reglerne springer over: én linje i timen (minut 0) fra slot 1, ikke hvert minut
+if ($slot === 1 && (int) gmdate('i') === 0) {
+    $skipped = $rules->skippedLine(time());
+    if ($skipped !== null) {
+        $log($skipped);
+    }
+}
 if (!$engine->available()) {
     // Motor ikke klar (setup ikke kørt færdig for den konfigurerede model): intet opkald tages, intet forsøg bruges
-    $waiting = (int) \Whisper\DB::scalar("SELECT COUNT(*) FROM calls WHERE transcript_status = 'ventende' AND audio_status = 'hentet'");
+    [$rule, $ruleParams] = $rules->eligibleSql(time());
+    $waiting = (int) \Whisper\DB::scalar("SELECT COUNT(*) FROM calls WHERE transcript_status = 'ventende' AND audio_status = 'hentet' AND "
+        . $rule, $ruleParams);
     if ($waiting > 0 && (int) gmdate('i') === 0) {   // én linje i timen, ikke hvert minut
         $log('transcribe: motoren er ikke klar (kør cron/whisper-setup.sh) — ' . $waiting . ' opkald venter');
     }

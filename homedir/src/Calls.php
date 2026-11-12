@@ -6,6 +6,7 @@ namespace Whisper;
 use DateTimeImmutable;
 use DateTimeZone;
 use Whisper\Adversus\Feature;
+use Whisper\Transcription\QueueRules;
 
 /**
  * Opkald og transcripts til siderne (F002). Tider gemmes i UTC og vises i dansk tid; filtrenes datoer er danske.
@@ -263,13 +264,14 @@ final class Calls
     }
 
     /** @return array{last_ok_at: ?string, last_error: ?string, waiting: int, audio_waiting: int} */
-    public static function status(): array
+    public static function status(?QueueRules $rules = null, ?int $now = null): array
     {
         $s = DB::all('SELECT last_ok_at, last_error FROM sync_state WHERE `source` = ?', ['zendesk']);
-        // Kun opkald, hvis lyd er hentet, venter reelt på transcription (QA F-6)
+        // Kun opkald, hvis lyd er hentet, venter reelt på transcription (QA F-6), og kun dem, køens regler tager (H012)
         $src = self::sourceSql('alle');
+        [$rule, $params] = ($rules ?? QueueRules::fromConfig())->eligibleSql($now ?? time(), 'c');
         $waiting = (int) DB::scalar("SELECT COUNT(*) FROM calls c WHERE c.audio_status = 'hentet' "
-            . "AND c.transcript_status IN ('ventende', 'transcriberer') AND " . $src);
+            . "AND (c.transcript_status = 'transcriberer' OR (c.transcript_status = 'ventende' AND " . $rule . ')) AND ' . $src, $params);
         // "Ikke valgt" (F004) venter ikke på lyd: den hentes først, når nogen vælger opkaldet
         $audio = (int) DB::scalar("SELECT COUNT(*) FROM calls c WHERE c.audio_status = 'venter' AND c.transcript_status <> 'ikke_valgt' AND " . $src);
         $ok = $s[0]['last_ok_at'] ?? null;

@@ -642,10 +642,10 @@ final class Sync
     /** @return array{ok: int, failed: int} */
     public function downloadPending(): array
     {
-        // Succes-opkald før manuelt valgte (security S1), derefter ældste først
+        // Succes-opkald før manuelt valgte (security S1), derefter nyeste først, som transcription-køen (H012)
         $rows = DB::all("SELECT id, external_id, started_at FROM calls WHERE `source` = ? AND transcript_status <> 'ikke_valgt' "
             . "AND (audio_status = 'venter' OR (audio_status = 'fejlet' AND audio_attempts < ?)) "
-            . 'ORDER BY is_success DESC, started_at ASC, id ASC LIMIT ' . self::MAX_DOWNLOADS, [self::SOURCE, self::MAX_AUDIO_ATTEMPTS]);
+            . 'ORDER BY is_success DESC, started_at DESC, id DESC LIMIT ' . self::MAX_DOWNLOADS, [self::SOURCE, self::MAX_AUDIO_ATTEMPTS]);
         $ok = 0;
         $failed = 0;
         foreach ($rows as $r) {

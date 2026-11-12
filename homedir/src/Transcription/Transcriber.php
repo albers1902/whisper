@@ -28,6 +28,7 @@ use Whisper\Paths;
  * kørslens tid, der slap op: så sættes alle uafsluttede opkald tilbage uden brugt forsøg.
  * Kun korte opkald batches: et langt (over 10 min lyd, eller ukendt længde) kører alene med den gamle grænse
  * max(2 t, 4 × varighed), for med en målt RTF over 1 kan det ikke nå at blive færdigt inden for batchens loft.
+ * Køens rækkefølge, og hvilke opkald der kun tages ved et manuelt valg, står i QueueRules.
  */
 final class Transcriber
 {
@@ -52,6 +53,7 @@ final class Transcriber
     private Closure $log;
     /** @var list<int> opkald, denne kørsel har claimet og endnu ikke afgjort */
     private array $held = [];
+    private QueueRules $rules;
 
     /**
      * @param (Closure(): int)|null $clock
@@ -59,11 +61,14 @@ final class Transcriber
      * @param string|null $errorFile hvor detaljen om en afbrudt batch skrives (0600); null = ingen detalje
      * @param (Closure(list<int>): void)|null $holding får de claimede id'er, hver gang de ændres
      * @param float $rtf [whisper] rtf_estimate: forventede sekunder motortid pr. sekund lyd, når en batch claimes
+     * @param QueueRules|null $rules køens regler (H012); null = ingen regler, kun rækkefølgen (transcribe.php giver altid
+     *                               reglerne fra config)
      */
     public function __construct(private readonly Engine $engine, ?Closure $clock = null, ?Closure $log = null,
         private readonly ?string $errorFile = null, private readonly ?Closure $holding = null,
-        private readonly float $rtf = WhisperSettings::DEFAULT_RTF)
+        private readonly float $rtf = WhisperSettings::DEFAULT_RTF, ?QueueRules $rules = null)
     {
+        $this->rules = $rules ?? QueueRules::off();
         $this->clock = $clock ?? static fn(): int => time();
         $this->log = $log ?? static function (string $line): void {
             echo $line, "\n";
@@ -115,11 +120,14 @@ final class Transcriber
             $cond .= ' AND duration_sec > 0 AND duration_sec <= ?';
             $params[] = $maxAudio;
         }
-        // Lidt flere kandidater end nødvendigt: en samtidig kørsel kan have taget nogle af dem. Manuelt valgte
-        // Adversus-opkald (ikke succes) kommer efter Zendesk og succes-opkald (F004, security S1)
-        $ids = DB::all('SELECT id, duration_sec FROM calls WHERE ' . $cond . ' ORDER BY (transcript_status = \'fejlet\'), '
-            . "(`source` = 'adversus' AND is_success = 0), started_at ASC, id ASC LIMIT "
-            . ($max + 4), $params);
+        // Reglerne står også i den atomiske UPDATE nedenfor, så et opkald, der er blevet for gammelt imellem, ikke tages
+        [$rule, $ruleParams] = $this->rules->eligibleSql(($this->clock)());
+        $cond .= ' AND ' . $rule;
+        $params = array_merge($params, $ruleParams);
+        // Lidt flere kandidater end nødvendigt: en samtidig kørsel kan have taget nogle af dem. Manuelle valg kommer
+        // efter de automatiske (F004, security S1)
+        $ids = DB::all('SELECT id, duration_sec FROM calls WHERE ' . $cond . ' ORDER BY ' . $this->rules->orderSql()
+            . ' LIMIT ' . ($max + 4), $params);
         $jobs = [];
         foreach ($ids as $row) {
             $id = (int) $row['id'];
