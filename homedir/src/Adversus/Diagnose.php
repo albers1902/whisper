@@ -4,40 +4,47 @@ declare(strict_types=1);
 namespace Whisper\Adversus;
 
 use Closure;
+use Throwable;
+use Whisper\Zendesk\HttpTransport;
 
 /**
- * Read-only diagnose af, hvorfor sync ikke finder opkaldet til en optagelse (H009). Køres manuelt af ejeren på DEV:
+ * Read-only diagnose af matchet mellem Adversus-optagelser og opkald (H009). Køres manuelt af ejeren på DEV:
  * `php ~/cron/adversus-diagnose.php`. Skriver intet (hverken database eller disk) og bruger højst MAX_REQUESTS kald.
  *
- * For op til SAMPLES friske optagelser og op til SAMPLES rækker fra adversus_pending prøves:
- *  - /calls med id-filter ($eq og interval) — udokumenteret, så svaret afgør det;
- *  - /calls med start-vindue omkring cdr.timestamp, forskudt 0, −1 t, +1 t, −2 t og +2 t (tidszone-hypotesen);
- *  - /calls med timestamp-filter omkring cdr.timestamp (er /calls.timestamp det samme tidsstempel?).
- * De rå tidsstempler udskrives side om side. Af opkaldet vises kun tidsfelter, varigheder og feltnavne — aldrig nummer,
- * navne, URL'er eller anden fri tekst (F004 security S5). En fejltekst fra Adversus er renset af Client::errorText.
+ * Alle tidsfiltre skrives som sync skriver dem (AdversusConfig::filterTime: væg-tid i filter_tz), så diagnosen viser,
+ * om sync's opslag rammer:
+ *  1. én side /recordings i det seneste lukkede vindue — ligger upload-tiderne inden for det vindue, vi bad om?
+ *  2. formatprøve: samme vindue med suffikset Z, med zonens offset og uden suffiks (accepteret, og inden for vinduet?);
+ *  3. for op til SAMPLES optagelser: /calls med start i [cdr.timestamp − 15 min, + 5 min], ALLE sider (højst MAX_PAGES);
+ *  4. /calls med timestamp = cdr.timestamp ± 2 s (er det udokumenterede /calls.timestamp det samme?);
+ *  5. én ventende række fra adversus_pending, slået op som i 3;
+ *  6. fundne opkald side om side med de rå tidsstempler; 7. antal opkald i den seneste time.
+ * Af opkaldet vises kun tidsstempler, varigheder og feltnavne — aldrig nummer, navne, URL'er eller anden fri tekst ud
+ * over Adversus' fejltekst renset af Client::errorText (DECISIONS #53).
  */
 final class Diagnose
 {
     public const MAX_REQUESTS = 40;
     public const SAMPLES = 3;
-    /** Forskydninger (s), som start-vinduet prøves med; den første er den, sync bruger i dag */
-    public const SHIFTS = [0, -3600, 3600, -7200, 7200];
-    /** Start-vinduet går så langt før og efter cdr.timestamp + forskydning */
     public const BEFORE = 900;
     public const AFTER = 300;
-    public const PAGES = 2;
+    /** Sider à PAGE pr. start-vindue; målt op til 467 opkald pr. 20 min ved spidsbelastning */
+    public const MAX_PAGES = 6;
     public const PAGE = 100;
     /** Optagelser tages fra så lang tid før nu − lag */
     public const REC_SPAN = 7200;
-    /** Opkaldsfelter, hvis værdi må vises (kun tider og tal) */
+    /** Formatprøvens vindue (de seneste minutter før nu − lag) */
+    public const FORMAT_SPAN = 1800;
     private const TIME_FIELDS = ['start', 'answer', 'connect', 'end', 'timestamp'];
     private const NUM_FIELDS = ['duration', 'conversation', 'dialing', 'queued'];
+    /** Kun et rigtigt tidsstempel vises råt (security H009_v1 S1: en tegnklasse slap telefonnumre igennem) */
+    private const TIMESTAMP = '/^[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]{1,6})?(Z|[+-][0-9]{2}:?[0-9]{2})?$/D';
 
     /** @var Closure(string): void */
     private Closure $say;
     /** @var array<int, array<mixed>> fundne opkald efter id */
     private array $found = [];
-    /** @var array<string, string> konklusioner */
+    /** @var array<string, string> */
     private array $verdict = [];
 
     /** @param Closure(string): void $say */
@@ -47,25 +54,63 @@ final class Diagnose
     }
 
     /**
+     * Hele kommandoen (cron/adversus-diagnose.php er kun en skal om denne): deploy-stop, config, ventende rækker og
+     * kørsel. Enhver uventet fejl bliver til én linje med klassens korte navn (security H009_v1 S2: aldrig PHP's egen
+     * fejludskrift med stakspor).
+     *
+     * @param array<string, mixed> $section [adversus] fra config.ini
+     * @param Closure(): list<array<string, mixed>> $pending læser adversus_pending (kun SELECT)
+     * @param Closure(string): void $say
+     */
+    public static function cli(string $home, array $section, HttpTransport $http, Closure $pending, int $now, Closure $say): int
+    {
+        if (file_exists($home . '/logs/deploying')) {
+            $say('✘ deploy kører — prøv igen om lidt');   // security H009_v1 S4: aldrig tavs
+            return 1;
+        }
+        try {
+            $cfg = AdversusConfig::fromSection($section);
+            if ($cfg === null) {
+                $say('✘ [adversus] mangler i config.ini');
+                return 1;
+            }
+            $client = new Client($cfg, $http, null, self::MAX_REQUESTS);
+            return self::run($client, $cfg, $pending(), $now, $say);
+        } catch (AdversusError $e) {
+            $say('✘ ' . $e->getMessage());
+            return 1;
+        } catch (Throwable $e) {
+            $say('✘ uventet fejl (' . self::shortClass($e) . ')');
+            return 1;
+        }
+    }
+
+    /**
      * @param list<array<string, mixed>> $pending rækker fra adversus_pending (cdr_id, cdr_at, tries, first_seen)
      * @param Closure(string): void $say
-     * @return int exitkode (0 = diagnosen kørte, også når loftet eller 429 stoppede den undervejs)
+     * @return int 0 = kørt (også når loftet eller 429 stoppede den undervejs), 1 = uventet fejl
      */
     public static function run(Client $c, AdversusConfig $cfg, array $pending, int $now, Closure $say): int
     {
         $d = new self($c, $cfg, $now, $say);
-        $say('Adversus-diagnose (H009, read-only) · nu ' . Sync::iso($now) . ' · højst ' . self::MAX_REQUESTS . ' kald');
+        $say('Adversus-diagnose (H009, read-only) · nu ' . Sync::iso($now) . ' · filter_tz ' . $cfg->filterTz->getName()
+            . ' · højst ' . self::MAX_REQUESTS . ' kald');
+        $code = 0;
         try {
-            $d->diagnose(array_slice($pending, 0, self::SAMPLES));
+            $d->diagnose(array_slice($pending, 0, 1));
         } catch (RateLimited $e) {
             $say('✘ ' . $e->getMessage());
+        } catch (Throwable $e) {
+            $say('✘ uventet fejl (' . self::shortClass($e) . ')');
+            $code = 1;
         }
-        foreach (['id-filter', 'start-forskydning', 'timestamp-filter', 'recordings-filter', 'cdr.timestamp har offset', 'start har offset'] as $k) {
+        foreach (['recordings-filter', 'format Z', 'format offset', 'format uden suffiks', 'opkald fundet', 'timestamp-filter',
+            'cdr.timestamp har offset', 'start har offset', 'cdr.timestamp − start'] as $k) {
             $say('KONKLUSION ' . $k . ': ' . ($d->verdict[$k] ?? 'ikke afgjort'));
         }
         $say('Kald til Adversus i denne kørsel: ' . $c->requests . ' (loft ' . self::MAX_REQUESTS . ')');
         $say('DIAGNOSE: FÆRDIG');
-        return 0;
+        return $code;
     }
 
     /**
@@ -76,86 +121,56 @@ final class Diagnose
     {
         $say = $this->say;
         $samples = $this->recordings();
+        $this->formats();
 
-        // 2. id-filter: én optagelse (ellers en ventende) som prøve; virker $eq, slås resten også op på id
-        $probeId = $samples[0]['id'] ?? (isset($pending[0]) ? self::posInt($pending[0]['cdr_id'] ?? null) : null);
-        $idWorks = false;
-        if ($probeId !== null) {
-            $say('2. /calls med id-filter (cdr.id ' . $probeId . ')');
-            $eq = $this->idLookup($probeId, ['$eq' => $probeId]);
-            $range = $this->idLookup($probeId, ['$gt' => $probeId - 1, '$lt' => $probeId + 1]);
-            $idWorks = $eq === 'virker';
-            $this->verdict['id-filter'] = '$eq ' . $eq . ' · interval ' . $range;
-        }
-
-        // 3. start-vindue forskudt; alle forskydninger for første optagelse, derefter kun 0 og den, der fandt den
-        $best = null;
+        // 3. start-vinduet, som sync søger det, alle sider
+        $hits = 0;
         foreach ($samples as $i => $s) {
             if ($s['t'] === null) {
-                $say('3. optagelse ' . ($i + 1) . ': cdr.timestamp kan ikke læses som tid — start-vinduer springes over');
+                $say('3. optagelse ' . ($i + 1) . ': cdr.timestamp kan ikke læses som tid — springes over');
                 continue;
             }
-            $shifts = $i === 0 ? self::SHIFTS : array_values(array_unique([0, $best ?? 0]));
-            $say('3. optagelse ' . ($i + 1) . ' (cdr.id ' . $s['id'] . '): /calls med start i [cdr.timestamp − '
-                . intdiv(self::BEFORE, 60) . ' min, + ' . intdiv(self::AFTER, 60) . ' min], forskudt:');
-            $hits = [];
-            foreach ($shifts as $shift) {
-                $r = $this->startWindow($s['id'], $s['t'] + $shift);
-                $say('   ' . self::hours($shift) . ': ' . ($r['page'] !== null ? 'fundet på side ' . $r['page'] : 'ikke fundet på '
-                    . $r['pages'] . ' side(r)') . ' (total i vinduet ' . self::num($r['total']) . ')');
-                if ($r['page'] !== null) {
-                    $hits[] = $shift;
-                }
-            }
-            if ($i === 0) {
-                $best = $hits[0] ?? null;
-                $this->verdict['start-forskydning'] = $hits === [] ? 'ingen forskydning fandt opkaldet'
-                    : implode(', ', array_map([self::class, 'hours'], $hits)) . ' fandt opkaldet';
-            } elseif ($best !== null) {
-                $this->verdict['start-forskydning'] .= ' · optagelse ' . ($i + 1) . ': ' . (in_array($best, $hits, true) ? 'samme' : 'afviger');
-            }
+            $r = $this->startWindow($s['id'], $s['t']);
+            $hits += $r['page'] !== null ? 1 : 0;
+            $say('3. optagelse ' . ($i + 1) . ' (cdr.id ' . $s['id'] . '): /calls med start i [cdr.timestamp − ' . intdiv(self::BEFORE, 60)
+                . ' min, + ' . intdiv(self::AFTER, 60) . ' min]: ' . $r['text']);
+        }
+        if ($samples !== []) {
+            $this->verdict['opkald fundet'] = $hits . ' af ' . count($samples) . ' optagelser';
         }
 
-        // 4. timestamp-filter på /calls omkring cdr.timestamp (±2 s), og som rå streng med $eq, hvis den ikke er Z-tid
-        $tsHits = [];
+        // 4. timestamp-filter på /calls omkring cdr.timestamp
+        $ts = [];
         foreach ($samples as $i => $s) {
             if ($s['t'] === null) {
                 continue;
             }
-            $r = $this->callsWith(['timestamp' => ['$gt' => Sync::iso($s['t'] - 3), '$lt' => Sync::iso($s['t'] + 3)]], $s['id'], 1, 'timestamp');
-            $line = '4. optagelse ' . ($i + 1) . ': /calls med timestamp = cdr.timestamp ± 2 s: ' . $r['text'];
-            if (is_string($s['raw']) && $s['raw'] !== Sync::iso($s['t'])) {
-                $raw = $this->callsWith(['timestamp' => ['$eq' => $s['raw']]], $s['id'], 1, null);
-                $line .= ' · som rå streng ($eq): ' . $raw['text'];
-                $r['page'] ??= $raw['page'];
-            }
-            $say($line);
-            $tsHits[] = $r['page'] !== null;
+            $r = $this->callsWith(['timestamp' => ['$gt' => $this->cfg->filterTime($s['t'] - 3), '$lt' => $this->cfg->filterTime($s['t'] + 3)]],
+                $s['id'], 1, 'timestamp');
+            $say('4. optagelse ' . ($i + 1) . ': /calls med timestamp = cdr.timestamp ± 2 s: ' . $r['text']);
+            $ts[] = $r['page'] !== null;
         }
-        if ($tsHits !== []) {
-            $this->verdict['timestamp-filter'] = count(array_filter($tsHits)) . ' af ' . count($tsHits) . ' optagelser fundet';
+        if ($ts !== []) {
+            $this->verdict['timestamp-filter'] = count(array_filter($ts)) . ' af ' . count($ts) . ' optagelser fundet';
         }
 
-        // 5. ventende optagelser (som sync gemte dem: cdr_at i UTC)
-        foreach ($pending as $i => $p) {
+        // 5. én ventende optagelse (cdr_at er gemt i UTC)
+        foreach ($pending as $p) {
             $id = self::posInt($p['cdr_id'] ?? null);
             if ($id === null) {
                 continue;
             }
             $at = is_string($p['cdr_at'] ?? null) ? (int) strtotime($p['cdr_at'] . ' UTC') : null;
-            $text = '5. ventende ' . ($i + 1) . ': cdr.id ' . $id . ' · cdr_at (gemt, UTC) ' . ($at === null ? 'null' : Sync::iso($at))
-                . ' · forsøg ' . (int) ($p['tries'] ?? 0) . ' · først set ' . (is_string($p['first_seen'] ?? null) ? $p['first_seen'] : '?');
-            if ($idWorks) {
-                $text .= ' · id $eq: ' . $this->idLookup($id, ['$eq' => $id], false);
-            } elseif ($at !== null) {
-                $r = $this->startWindow($id, $at + ($best ?? 0));
-                $text .= ' · start-vindue ' . self::hours($best ?? 0) . ': ' . ($r['page'] !== null ? 'fundet' : 'ikke fundet');
+            $text = '5. ventende: cdr.id ' . $id . ' · cdr_at (gemt, UTC) ' . ($at === null ? 'null' : Sync::iso($at))
+                . ' · forsøg ' . (int) ($p['tries'] ?? 0);
+            if ($at !== null) {
+                $text .= ' · start-vindue: ' . $this->startWindow($id, $at)['text'];
             }
             $say($text);
         }
 
         // 6. side om side
-        $say('6. Fundne opkald (kun tidsfelter, varigheder og feltnavne):');
+        $say('6. Fundne opkald (kun tidsstempler, varigheder og feltnavne):');
         if ($this->found === []) {
             $say('   (intet opkald fundet)');
         }
@@ -163,6 +178,7 @@ final class Diagnose
         foreach ($samples as $s) {
             $byId[$s['id']] = $s;
         }
+        $diffs = [];
         foreach ($this->found as $id => $call) {
             $s = $byId[$id] ?? null;
             $parts = ['cdr.id ' . $id];
@@ -177,27 +193,33 @@ final class Diagnose
             }
             foreach (self::NUM_FIELDS as $f) {
                 if (array_key_exists($f, $call)) {
-                    $parts[] = $f . ' ' . (is_int($call[$f]) ? $call[$f] . ' s' : self::raw($call[$f]));
+                    $parts[] = $f . ' ' . self::number($call[$f]);
                 }
             }
             $say('   ' . implode(' · ', $parts));
             if ($s !== null && $s['t'] !== null) {
-                $diff = [];
+                $line = [];
                 foreach (['start', 'end'] as $f) {
                     $t = Sync::epoch($call[$f] ?? null);
                     if ($t !== null) {
-                        $diff[] = 'cdr.timestamp − ' . $f . ' = ' . self::signed($s['t'] - $t) . ' s';
+                        $line[] = 'cdr.timestamp − ' . $f . ' = ' . self::signed($s['t'] - $t) . ' s';
+                        if ($f === 'start') {
+                            $diffs[] = self::signed($s['t'] - $t) . ' s';
+                        }
                     }
                 }
-                $say('   ' . ($diff === [] ? 'forskel: kan ikke beregnes' : implode(' · ', $diff)));
+                $say('   ' . ($line === [] ? 'forskel: kan ikke beregnes' : implode(' · ', $line)));
             }
             $say('   felter: ' . self::fieldList($call));
             $this->verdict['start har offset'] ??= self::offsetText($call['start'] ?? null);
         }
+        if ($diffs !== []) {
+            $this->verdict['cdr.timestamp − start'] = implode(', ', $diffs);
+        }
 
-        // 7. volumen: hvor mange opkald dækker en time (hypotese c: det brede opslag på 1000 opkald)
+        // 7. volumen
         $to = $this->now - $this->cfg->lag;
-        $r = $this->callsWith(['start' => ['$gt' => Sync::iso($to - 3601), '$lt' => Sync::iso($to)]], null, 1, 'start', 1);
+        $r = $this->callsWith(['start' => ['$gt' => $this->cfg->filterTime($to - 3601), '$lt' => $this->cfg->filterTime($to)]], null, 1, 'start', 1);
         $say('7. /calls med start i den seneste time før nu − lag: total ' . self::num($r['total']));
     }
 
@@ -211,29 +233,18 @@ final class Diagnose
     {
         $to = $this->now - $this->cfg->lag;
         $from = $to - self::REC_SPAN;
-        try {
-            $data = $this->c->getJson('/recordings', [
-                'filters' => (string) json_encode(['timestamp' => ['$gt' => Sync::iso($from - 1), '$lt' => Sync::iso($to)]]),
-                'page' => 1, 'pageSize' => self::PAGE, 'includeMeta' => 'true',
-            ]);
-        } catch (RateLimited $e) {
-            throw $e;
-        } catch (AdversusError $e) {
-            ($this->say)('1. /recordings: ✘ ' . $e->getMessage());
+        $r = $this->recordingsPage($from, $to, $this->cfg->filterTime($from - 1), $this->cfg->filterTime($to), self::PAGE);
+        if ($r['items'] === null) {
+            ($this->say)('1. /recordings: ✘ ' . $r['text']);
             return [];
         }
-        $items = self::items($data, 'recordings');
-        ($this->say)('1. /recordings med timestamp i [' . Sync::iso($from) . ', ' . Sync::iso($to) . '): total '
-            . self::num(self::total($data)) . ' · på side 1: ' . count($items));
-        // Ligger upload-tiderne uden for det vindue, vi bad om, tolker Adversus også /recordings-filtret forskudt
-        $ups = array_values(array_filter(array_map(static fn(array $r): ?int => Sync::epoch($r['timestamp'] ?? null), $items),
-            static fn(?int $t): bool => $t !== null));
-        if ($ups !== []) {
-            $inside = count(array_filter($ups, static fn(int $t): bool => $t >= $from && $t < $to));
-            ($this->say)('   upload-tider på side 1 (som sync læser dem): ' . Sync::iso(min($ups)) . ' – ' . Sync::iso(max($ups))
-                . ' · inden for vinduet: ' . $inside . ' af ' . count($ups));
-            $this->verdict['recordings-filter'] = $inside === count($ups) ? 'som sync forventer'
-                : (count($ups) - $inside) . ' af ' . count($ups) . ' upload-tider uden for vinduet (forskudt fortolkning?)';
+        $items = $r['items'];
+        ($this->say)('1. /recordings med timestamp i [' . Sync::iso($from) . ', ' . Sync::iso($to) . ') (filter ' . $this->cfg->filterTime($from - 1)
+            . ' … ' . $this->cfg->filterTime($to) . '): total ' . self::num($r['total']) . ' · på side 1: ' . count($items));
+        if ($r['ups'] > 0) {
+            ($this->say)('   upload-tider på side 1: ' . $r['range'] . ' · inden for vinduet: ' . $r['inside'] . ' af ' . $r['ups']);
+            $this->verdict['recordings-filter'] = $r['inside'] === $r['ups'] ? 'alle ' . $r['ups'] . ' upload-tider inden for vinduet'
+                : ($r['ups'] - $r['inside']) . ' af ' . $r['ups'] . ' upload-tider uden for vinduet';
         }
         $n = count($items);
         $picks = $n === 0 ? [] : array_values(array_unique([0, intdiv($n, 2), $n - 1]));
@@ -250,63 +261,70 @@ final class Diagnose
             $up = Sync::epoch($rec['timestamp'] ?? null);
             $out[] = ['id' => $id, 'raw' => $raw, 't' => $t, 'upload' => $rec['timestamp'] ?? null];
             ($this->say)('   optagelse ' . count($out) . ': cdr.id ' . $id . ' · cdr.timestamp ' . self::raw($raw)
-                . ($t === null ? '' : ' (sync læser ' . Sync::iso($t) . ')') . ' · timestamp (upload) ' . self::raw($rec['timestamp'] ?? null)
+                . ' · timestamp (upload) ' . self::raw($rec['timestamp'] ?? null)
                 . ($t !== null && $up !== null ? ' · upload − cdr.timestamp = ' . self::signed($up - $t) . ' s' : ''));
             $this->verdict['cdr.timestamp har offset'] ??= self::offsetText($raw);
         }
         if ($out === []) {
-            ($this->say)('   ingen optagelser i perioden — diagnosen bruger kun ventende rækker');
+            ($this->say)('   ingen optagelser i perioden');
         }
         return $out;
     }
 
     /**
-     * /calls med {"id": $ops}: "virker" (kun opkaldet selv), "afvist (…)", "ignoreret (…)" eller "0 opkald".
+     * 2. Formatprøve: samme korte vindue med tre skrivemåder af væg-tiden. Viser, hvilke Adversus accepterer, og om
+     * upload-tiderne så ligger i vinduet.
      *
-     * @param array<string, int> $ops
      * @throws RateLimited
      */
-    private function idLookup(int $id, array $ops, bool $print = true): string
+    private function formats(): void
     {
-        $label = '{"id":' . (string) json_encode($ops) . '}';
-        try {
-            $data = $this->c->getJson('/calls', ['filters' => (string) json_encode(['id' => $ops]), 'page' => 1, 'pageSize' => 5,
-                'includeMeta' => 'true']);
-        } catch (RateLimited $e) {
-            throw $e;
-        } catch (AdversusError $e) {
-            $text = 'afvist (' . $e->getMessage() . ')';
-            if ($print) {
-                ($this->say)('   ' . $label . ': ' . $text);
-            }
-            return $text;
+        $to = $this->now - $this->cfg->lag;
+        $from = $to - self::FORMAT_SPAN;
+        $z = fn(int $t): string => $this->cfg->filterTime($t);
+        $bare = fn(int $t): string => substr($this->cfg->filterTime($t), 0, -1);
+        $offset = fn(int $t): string => $bare($t) . (new \DateTimeImmutable('@' . $t))->setTimezone($this->cfg->filterTz)->format('P');
+        foreach (['format Z' => $z, 'format offset' => $offset, 'format uden suffiks' => $bare] as $name => $fmt) {
+            $r = $this->recordingsPage($from, $to, $fmt($from - 1), $fmt($to), 10);
+            $text = $r['items'] === null ? $r['text'] : ($r['ups'] === 0 ? 'accepteret, 0 optagelser'
+                : 'accepteret, ' . $r['inside'] . ' af ' . $r['ups'] . ' inden for vinduet');
+            ($this->say)('2. ' . $name . ' (' . $fmt($from - 1) . '): ' . $text);
+            $this->verdict[$name] = $text;
         }
-        $items = self::items($data, 'calls');
-        $ids = array_map(static fn(array $c): ?int => self::posInt($c['id'] ?? null), $items);
-        if ($items === []) {
-            $text = '0 opkald (total ' . self::num(self::total($data)) . ')';
-        } elseif (array_unique($ids) === [$id]) {
-            $text = 'virker';
-            $this->found[$id] ??= $items[0];
-        } else {
-            $text = 'ignoreret (' . count($items) . ' opkald på side 1 med andre id\'er, total ' . self::num(self::total($data)) . ')';
-        }
-        if ($print) {
-            ($this->say)('   ' . $label . ': ' . $text);
-        }
-        return $text;
     }
 
     /**
-     * /calls med start i [t − BEFORE, t + AFTER], sorteret på start, højst PAGES sider; leder efter opkaldet $id.
+     * @return array{items: ?list<array<mixed>>, total: ?int, ups: int, inside: int, range: string, text: string}
+     * @throws RateLimited
+     */
+    private function recordingsPage(int $from, int $to, string $gt, string $lt, int $size): array
+    {
+        try {
+            $data = $this->c->getJson('/recordings', ['filters' => (string) json_encode(['timestamp' => ['$gt' => $gt, '$lt' => $lt]]),
+                'page' => 1, 'pageSize' => $size, 'includeMeta' => 'true']);
+        } catch (RateLimited $e) {
+            throw $e;
+        } catch (AdversusError $e) {
+            return ['items' => null, 'total' => null, 'ups' => 0, 'inside' => 0, 'range' => '', 'text' => 'afvist (' . $e->getMessage() . ')'];
+        }
+        $items = self::items($data, 'recordings');
+        $ups = array_values(array_filter(array_map(static fn(array $r): ?int => Sync::epoch($r['timestamp'] ?? null), $items),
+            static fn(?int $t): bool => $t !== null));
+        $inside = count(array_filter($ups, static fn(int $t): bool => $t >= $from && $t < $to));
+        return ['items' => $items, 'total' => self::total($data), 'ups' => count($ups), 'inside' => $inside,
+            'range' => $ups === [] ? '' : Sync::iso(min($ups)) . ' – ' . Sync::iso(max($ups)), 'text' => ''];
+    }
+
+    /**
+     * /calls med start i [t − BEFORE, t + AFTER], sorteret på start, alle sider (højst MAX_PAGES); leder efter $id.
      *
      * @return array{page: ?int, pages: int, total: ?int, text: string}
      * @throws RateLimited
      */
     private function startWindow(int $id, int $t): array
     {
-        return $this->callsWith(['start' => ['$gt' => Sync::iso($t - self::BEFORE - 1), '$lt' => Sync::iso($t + self::AFTER)]], $id,
-            self::PAGES, 'start');
+        return $this->callsWith(['start' => ['$gt' => $this->cfg->filterTime($t - self::BEFORE - 1), '$lt' => $this->cfg->filterTime($t + self::AFTER)]],
+            $id, self::MAX_PAGES, 'start');
     }
 
     /**
@@ -337,30 +355,38 @@ final class Diagnose
             foreach ($items as $call) {
                 if ($id !== null && self::posInt($call['id'] ?? null) === $id) {
                     $this->found[$id] ??= $call;
-                    return ['page' => $p, 'pages' => $p, 'total' => $total, 'text' => 'fundet (total ' . self::num($total) . ')'];
+                    return ['page' => $p, 'pages' => $p, 'total' => $total, 'text' => 'fundet på side ' . $p . ' (total ' . self::num($total) . ')'];
                 }
             }
             if (count($items) < $pageSize) {
-                break;
+                return ['page' => null, 'pages' => $p, 'total' => $total, 'text' => 'ikke fundet på alle ' . $p . ' side(r) (total ' . self::num($total) . ')'];
             }
         }
-        return ['page' => null, 'pages' => $p, 'total' => $total, 'text' => 'ikke fundet (total ' . self::num($total) . ')'];
+        return ['page' => null, 'pages' => $p, 'total' => $total, 'text' => 'ikke fundet på de første ' . $p . ' sider (total ' . self::num($total) . ')'];
     }
 
     // ---------------------------------------------------------------- hjælpere
 
-    /** En rå værdi fra Adversus, kun hvis den ligner et tidsstempel eller et tal; ellers kun typen og længden. */
+    /** En rå værdi fra Adversus vises kun, hvis den er et rigtigt tidsstempel; ellers kun typen og længden. */
     public static function raw(mixed $v): string
     {
         if ($v === null) {
             return 'null';
         }
-        if (is_int($v) || is_float($v)) {
-            return 'tal ' . $v;
-        }
-        if (is_string($v) && preg_match('/^[0-9TZ:+\-. ]{1,40}$/', $v) === 1) {
+        if (is_string($v) && preg_match(self::TIMESTAMP, $v) === 1) {
             return '"' . $v . '"';
         }
+        return self::unexpected($v);
+    }
+
+    /** En varighed vises kun, hvis den er et tal (ikke en tekst med cifre). */
+    public static function number(mixed $v): string
+    {
+        return is_int($v) || is_float($v) ? $v . ' s' : self::unexpected($v);
+    }
+
+    private static function unexpected(mixed $v): string
+    {
         return '(uventet format' . (is_string($v) ? ', ' . strlen($v) . ' tegn' : ', ' . get_debug_type($v)) . ')';
     }
 
@@ -375,9 +401,9 @@ final class Diagnose
         return 'nej — sync læser den som UTC';
     }
 
-    private static function hours(int $s): string
+    private static function shortClass(Throwable $e): string
     {
-        return ($s === 0 ? '±' : ($s > 0 ? '+' : '−')) . abs(intdiv($s, 3600)) . ' t';
+        return (new \ReflectionClass($e))->getShortName();
     }
 
     private static function signed(int $n): string
@@ -400,7 +426,7 @@ final class Diagnose
     /** @param array<mixed> $a */
     private static function fieldList(array $a): string
     {
-        $keys = array_filter(array_map('strval', array_keys($a)), static fn(string $k): bool => preg_match('/^[A-Za-z0-9_]{1,40}$/', $k) === 1);
+        $keys = array_filter(array_map('strval', array_keys($a)), static fn(string $k): bool => preg_match('/^[A-Za-z_][A-Za-z0-9_]{0,39}$/', $k) === 1);
         return implode(', ', $keys);
     }
 
