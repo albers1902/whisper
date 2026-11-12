@@ -309,3 +309,42 @@ H008 · Accepteret risiko (LOW, security-critic H008_v1):
 - Standard-`rtf_estimate` 1,5 ligger under den målte spidsværdi 2,7. Batches kan stadig løbe tør for tid, men uden at
   opkald mister forsøg. Værdien justeres i config efter DEV-loggen.
 Udløber: 2027-02-10
+
+## #51 — 2026-11-12 — H009: diagnosens output kan i sjældne tilfælde indeholde fri tekst
+H009 · Accepteret risiko (LOW, security-critic H009_v1, S1–S4):
+- S1: `Diagnose::raw()` slipper strenge med kun cifre, +, - og mellemrum igennem, fx et nummer i et felt, der burde være
+  et tal.
+- S2: `cron/adversus-diagnose.php` fanger ikke Throwable, så en DB- eller programfejl giver PHP's egen fejludskrift.
+- S3: den rensede fejltekst fra Adversus (op til 200 tegn) kan indeholde navne eller korte numre.
+- S4: der er ingen meddelelse ved `logs/deploying` og ingen kvote på tværs af kørsler.
+S1, S2 og S4 rettes i H009 PR 2. Ejeren ser linjerne med "afvist (" og "✘" igennem, før outputtet sendes.
+Udløber: 2027-02-10
+
+## #52 — 2026-11-12 — H009-S2: diagnosen fanger ikke Throwable
+H009-S2 · Accepteret risiko (LOW, security-critic H009_v1): `cron/adversus-diagnose.php` fanger ikke Throwable. En DB-
+eller programfejl giver derfor PHP's egen fejludskrift. Rettes i H009 PR 2. (#51 dækker S1. Fundene står her i hvert
+sit afsnit, fordi CI kræver ét afsnit pr. fund.)
+Udløber: 2027-02-10
+
+## #53 — 2026-11-12 — H009-S3: renset fejltekst fra Adversus kan indeholde fri tekst
+H009-S3 · Accepteret risiko (LOW, security-critic H009_v1): den rensede fejltekst fra Adversus (op til 200 tegn) kan
+indeholde navne eller korte numre. Ejeren gennemser linjerne med "afvist (" og "✘", før outputtet sendes.
+Udløber: 2027-02-10
+
+## #54 — 2026-11-12 — H009-S4: ingen meddelelse ved deploying og ingen kvote på tværs af kørsler
+H009-S4 · Accepteret risiko (LOW, security-critic H009_v1): diagnosen har ingen lås eller meddelelse ved
+`logs/deploying` og ingen kvote på tværs af kørsler. Rettes i H009 PR 2 (meddelelse ved deploying).
+Udløber: 2027-02-10
+
+## #55 — 2026-11-12 — H010-F1: batched_size kan give OOM ved høj config
+H010-F1 · Accepteret risiko (LOW, security-critic H010_v1): `[whisper] batched_size` kan sættes op til 32. Med 2 workers
+kan det estimerede forbrug nå ca. 21 GB, mod ca. 4,7 GB ledig på DEV. Værdien styres af admin, standarden 4 er sikker,
+og rollback er `engine_mode = sequential`. Smoke-testen tjekker `free -m`. Grænsen sænkes, eller der kommer en advarsel,
+hvis målingen viser behov.
+Udløber: 2027-02-10
+
+## #56 — 2026-11-12 — H010-F2: batched-indhold kan afvige fra sequential
+H010-F2 · Accepteret risiko (LOW, security-critic H010_v1): batched giver samme JSON-form, men tekst og segmentgrænser
+kan afvige, fordi der ikke er kontekst mellem VAD-stykkerne. Det accepteres under målingen. Ejeren sammenligner
+kvaliteten (smoke trin 7) og vælger derefter tilstand.
+Udløber: 2027-02-10
