@@ -46,6 +46,9 @@ f002_transcript($long, str_repeat('ø', 300000), $segs);
 [$le, $lt] = f003_result($m->tool('get_transcript', ['call_id' => $long]));
 $body = substr($lt, (int) strpos($lt, "\n\n") + 2);
 $body = substr($body, 0, (int) strpos($body, "\n[… AFKORTET"));
+// H004: loftet gælder kundetalen; rammens to faste linjer tæller ikke med
+$body = substr($body, strlen(Tools::FRAME_START . "\n"));
+$body = substr($body, 0, (int) strrpos($body, "\n" . Tools::FRAME_END));
 F003Check::that('AK4', !$le && str_contains($lt, '[… AFKORTET: transcriptet er længere end 200.000 tegn'), 'afkortning markeres');
 F003Check::that('AK4', mb_strlen($body, 'UTF-8') <= Tools::MAX_CHARS + 1, 'teksten er højst 200 000 tegn');
 F003Check::that('AK4', mb_check_encoding($lt, 'UTF-8'), 'afkortet midt i et tegn giver stadig gyldig UTF-8');
