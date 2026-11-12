@@ -11,6 +11,7 @@ Kun DEV indtil videre (DECISIONS #4). Rækkefølgen er ejerens (DECISIONS #1).
 - F003: MCP-server til Claude Desktop — søg i og læs transcripts — plan: 2026-12 — P1
 
 ## Senere
+- F004a: Adversus-probe — read-only CLI, der viser auth, felter og optagelser i Adversus' API før F004 — plan: 2026-11 — P1
 - F004: Adversus — hent opkald via API, samme flow som Zendesk — plan: 2026-12 — P2
 
 ## Backlog (ikke planlagt)
