@@ -310,14 +310,20 @@ H008 · Accepteret risiko (LOW, security-critic H008_v1):
   opkald mister forsøg. Værdien justeres i config efter DEV-loggen.
 Udløber: 2027-02-10
 
-## #51 — 2026-11-12 — H009-S1: Diagnose::raw() slipper tegnstrenge med cifre igennem
-H009-S1 · Accepteret risiko (LOW, security-critic H009_v1): `Diagnose::raw()` slipper strenge med kun cifre, +, - og
-mellemrum igennem, fx et nummer i et felt, der burde være et tal. Rettes i H009 PR 2 (stram til tidsstempelformat).
+## #51 — 2026-11-12 — H009: diagnosens output kan i sjældne tilfælde indeholde fri tekst
+H009 · Accepteret risiko (LOW, security-critic H009_v1, S1–S4):
+- S1: `Diagnose::raw()` slipper strenge med kun cifre, +, - og mellemrum igennem, fx et nummer i et felt, der burde være
+  et tal.
+- S2: `cron/adversus-diagnose.php` fanger ikke Throwable, så en DB- eller programfejl giver PHP's egen fejludskrift.
+- S3: den rensede fejltekst fra Adversus (op til 200 tegn) kan indeholde navne eller korte numre.
+- S4: der er ingen meddelelse ved `logs/deploying` og ingen kvote på tværs af kørsler.
+S1, S2 og S4 rettes i H009 PR 2. Ejeren ser linjerne med "afvist (" og "✘" igennem, før outputtet sendes.
 Udløber: 2027-02-10
 
 ## #52 — 2026-11-12 — H009-S2: diagnosen fanger ikke Throwable
 H009-S2 · Accepteret risiko (LOW, security-critic H009_v1): `cron/adversus-diagnose.php` fanger ikke Throwable. En DB-
-eller programfejl giver derfor PHP's egen fejludskrift. Rettes i H009 PR 2.
+eller programfejl giver derfor PHP's egen fejludskrift. Rettes i H009 PR 2. (#51 dækker S1. Fundene står her i hvert
+sit afsnit, fordi CI kræver ét afsnit pr. fund.)
 Udløber: 2027-02-10
 
 ## #53 — 2026-11-12 — H009-S3: renset fejltekst fra Adversus kan indeholde fri tekst
