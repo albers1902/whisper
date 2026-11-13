@@ -82,7 +82,11 @@ $run = static function (string $name, array $q, ?int $maxRows, float $maxSec) us
     $line = sprintf('%s %.0fms n=%s kort=%.0fms uden-lead=%.0fms(%d) %s L[%s] C[%s]', $name, $sec * 1000, $n, $secS * 1000, $secO * 1000, $orph,
         $walk ? 'gang' : 'gruppe', $plan, $cplan);
     echo $line . "\n";
-    $sum[] = $line;
+    // Kort form til resuméet (DEV's PR-kommentar viser kun loggens sidste linjer, 300 tegn hver)
+    $short = static fn(string $pl): string => trim((string) preg_replace(['/<derived[0-9]+>:[^|]*\| ?/', '/ \([^)]*\)/', '/ key=/', '/ rows=/'],
+        ['', '', ' ', ' r'], $pl));
+    $sum[] = sprintf('%s %.0f+%.0f+%.0fms n=%s %s L[%s] C[%s]', $name, $sec * 1000, $secS * 1000, $secO * 1000, $n, $walk ? 'gang' : 'grp',
+        $short($plan), $short($cplan));
     F008Check::that('AK8', !str_contains($plan, 'c:ALL') && !str_contains($cplan, 'c:ALL'), "$name: liste og antal bruger indeks");
     if ($maxRows !== null) {
         F008Check::that('AK8', $rows <= $maxRows && $crows <= $maxRows, "$name: få rækker i planen (liste $rows, antal $crows ≤ $maxRows)");
@@ -117,7 +121,7 @@ $one = (int) array_key_first($page);
 [$secL, $calls] = $time(static fn(): array => [Leads::exists($one), Leads::calls($one, 0, Leads::LEAD_PAGE), Leads::summaries([$one]), Leads::status($one)]);
 [$lplan, $lrows] = $explain("SELECT c.* FROM calls c WHERE c.`source` = 'adversus' AND c.lead_id = ? ORDER BY c.started_at, c.id LIMIT 100", [$one]);
 printf("A lead-side %.1f ms: %s\n", $secL * 1000, $lplan);
-$sum[] = sprintf('lead-side %.0fms %s', $secL * 1000, $lplan);
+$sum[] = sprintf('lead-side %.0fms %s', $secL * 1000, (string) preg_replace('/ ([^)]*)/', '', $lplan));
 F008Check::that('AK8', str_contains($lplan, 'calls_source_lead') && $lrows < 100 && $secL < 0.2, sprintf('lead-siden: indeks, %d rækker, %.0f ms', $lrows, $secL * 1000));
 
 // B. Få træf: næsten alt "ikke valgt" uden succes
@@ -158,6 +162,17 @@ F008Check::that('AK8', min($with, $with2) <= $without * 1.5 + 0.05, 'statusskift
 
 DB::exec('DELETE FROM adversus_leads');
 DB::exec('DELETE FROM calls');
-echo "== RESUME\n" . implode("\n", $sum) . "\n";
+// Resuméet pakket i linjer på højst 290 tegn
+$lines = [];
+$cur = '';
+foreach ($sum as $item) {
+    if ($cur !== '' && strlen($cur) + strlen($item) + 3 > 290) {
+        $lines[] = $cur;
+        $cur = '';
+    }
+    $cur .= ($cur !== '' ? ' ## ' : '') . $item;
+}
+$lines[] = $cur;
+echo "== RESUME\n" . implode("\n", $lines) . "\n";
 F008Check::that('AK8', false, 'MIDLERTIDIG: rød for at få planerne i DEV-loggen');
 F008Check::done();
