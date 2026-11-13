@@ -61,7 +61,7 @@ $extra = array_diff(array_map('basename', glob($assets . 'fonts/*') ?: []), arra
 F007Check::that('AK9', $bad === [] && $extra === [], 'fontfilerne har de verificerede sha256 og der er ingen andre (' . implode(', ', $bad + $extra) . ')');
 F007Check::that('AK9', str_contains((string) file_get_contents($assets . 'fonts/OFL-Inter.txt'), 'SIL Open Font License')
     && str_contains((string) file_get_contents($assets . 'fonts/OFL-Inter-Tight.txt'), 'SIL Open Font License'), 'OFL-licensfiler');
-F007Check::that('AK9', str_contains((string) file_get_contents(__DIR__ . '/../public_html/.htaccess'), 'AddType font/woff2 .woff2'), 'woff2 sendes som font/woff2');
+// woff2's MIME-type og cache kommer fra serveren, ikke .htaccess: DEV tillader kun rewrite der (H014)
 
 // Kontrast: tokens fra CSS'en, lyst og mørkt
 $block = static function (string $css, bool $dark): array {
