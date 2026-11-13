@@ -54,7 +54,7 @@
 
   /* 3. Afspilleren: egne kontroller over det native <audio>, klik på boble/tidsstempel spoler. */
   var audio = d.getElementById('afspiller');
-  var card = d.querySelector('.player-v2');
+  var card = d.getElementById('forloeb') ? null : d.querySelector('.player-v2');   /* lead-siden (F008) har sin egen blok, 7 */
   var stamps = Array.prototype.slice.call(d.querySelectorAll('.ts[data-start]'));
   var items = Array.prototype.slice.call(d.querySelectorAll('#transcript li[data-start]'));
   if (audio && card && audio.networkState !== 3 && !audio.error) {
@@ -290,6 +290,175 @@
       }, 0);
     });
   });
+  /* 7. Lead-siden (F008): én afspiller pr. opkaldssektion, kun én spiller ad gangen, og "Find i alle opkald" på tværs af
+     sektionerne ("opkald x af y"). Samme regler som 3 og 5: tekst sættes aldrig som HTML. */
+  var flow = d.getElementById('forloeb');
+  if (flow) {
+    var players = [];
+    Array.prototype.forEach.call(flow.querySelectorAll('.lead-call'), function (sec) {
+      var pcard = sec.querySelector('.player-v2');
+      var au = pcard ? pcard.querySelector('audio') : null;
+      var num = sec.getAttribute('data-num') || '';
+      var tsList = Array.prototype.slice.call(sec.querySelectorAll('.ts[data-start]'));
+      var lines = Array.prototype.slice.call(sec.querySelectorAll('.transcript li[data-start]'));
+      if (!au || au.networkState === 3 || au.error) {
+        if (pcard) { pcard.querySelectorAll('.pl-controls').forEach(function (el) { el.hidden = true; }); }
+        sec.querySelectorAll('.transcript.playable').forEach(function (t) { t.classList.remove('playable'); });
+        return;
+      }
+      var pPlay = pcard.querySelector('.pl-play'), pSeek = pcard.querySelector('.pl-seek'), pCur = pcard.querySelector('.pl-cur');
+      var pTotal = pcard.querySelector('.pl-total'), pErr = pcard.querySelector('.pl-error'), pRates = pcard.querySelectorAll('[data-rate]');
+      var ok = true, lastSec = -1, now = null;
+      pcard.classList.add('has-js');
+      au.controls = false;
+      players.push(au);
+      tsList.forEach(function (b) { b.disabled = false; });
+      var broken = function () {
+        if (!ok) { return; }
+        ok = false;
+        pErr.hidden = false;
+        [pPlay, pSeek].concat(Array.prototype.slice.call(pRates)).forEach(function (el) { el.disabled = true; });
+        tsList.forEach(function (b) { b.disabled = true; });
+        sec.querySelectorAll('.transcript.playable').forEach(function (t) { t.classList.remove('playable'); });
+        say('Lyden til opkald ' + num + ' kunne ikke afspilles.');
+      };
+      var go = function () {
+        players.forEach(function (o) { if (o !== au && !o.paused) { o.pause(); } });
+        var pr = au.play();
+        if (pr && pr.catch) { pr.catch(function (err) { if (!err || err.name !== 'AbortError') { broken(); } }); }
+      };
+      var len = function () { return isFinite(au.duration) && au.duration > 0 ? au.duration : parseFloat(pSeek.max) || 0; };
+      var tick = function () {
+        var t = au.currentTime;
+        pSeek.value = String(Math.floor(t));
+        pCur.textContent = fmt(t);
+        if (Math.floor(t) !== lastSec) {
+          lastSec = Math.floor(t);
+          pSeek.setAttribute('aria-valuetext', fmt(t) + ' af ' + fmt(len()));
+        }
+        var hit = null;
+        for (var i = 0; i < lines.length; i++) {
+          if (parseFloat(lines[i].getAttribute('data-start')) <= t + 0.05) { hit = lines[i]; } else { break; }
+        }
+        if (hit !== now) {
+          if (now) { now.classList.remove('is-current'); }
+          if (hit) { hit.classList.add('is-current'); }
+          now = hit;
+        }
+      };
+      au.addEventListener('error', broken);
+      au.addEventListener('loadedmetadata', function () {
+        if (isFinite(au.duration) && au.duration > 0) { pSeek.max = String(Math.ceil(au.duration)); pTotal.textContent = fmt(au.duration); }
+      });
+      au.addEventListener('play', function () {
+        players.forEach(function (o) { if (o !== au && !o.paused) { o.pause(); } });
+        pPlay.classList.add('is-playing');
+        pPlay.setAttribute('aria-label', 'Pause');
+      });
+      au.addEventListener('pause', function () { pPlay.classList.remove('is-playing'); pPlay.setAttribute('aria-label', 'Afspil'); });
+      au.addEventListener('waiting', function () { pCur.textContent = 'Indlæser …'; });
+      au.addEventListener('timeupdate', tick);
+      pPlay.addEventListener('click', function () { if (au.paused) { go(); } else { au.pause(); } });
+      pSeek.addEventListener('input', function () { au.currentTime = parseFloat(pSeek.value) || 0; tick(); });
+      pSeek.addEventListener('keydown', function (ev) {
+        var jump = { ArrowRight: 5, ArrowUp: 5, ArrowLeft: -5, ArrowDown: -5, PageUp: 30, PageDown: -30 }[ev.key];
+        if (jump === undefined) { return; }
+        ev.preventDefault();
+        au.currentTime = Math.min(len(), Math.max(0, au.currentTime + jump));
+        tick();
+      });
+      pRates.forEach(function (b) {
+        b.addEventListener('click', function () {
+          au.playbackRate = parseFloat(b.getAttribute('data-rate')) || 1;
+          pRates.forEach(function (o) { o.setAttribute('aria-pressed', o === b ? 'true' : 'false'); });
+        });
+      });
+      sec.addEventListener('click', function (ev) {
+        if (!ok) { return; }
+        var b = ev.target.closest('.ts[data-start]');
+        if (b && !b.disabled) { au.currentTime = parseFloat(b.getAttribute('data-start')) || 0; go(); return; }
+        var li = ev.target.closest('.transcript.chat li[data-start]');
+        var sel = window.getSelection ? String(window.getSelection()) : '';
+        if (li && sel === '') { au.currentTime = parseFloat(li.getAttribute('data-start')) || 0; go(); }
+      });
+    });
+
+    var lfInput = d.getElementById('lead-find-q');
+    var lfStatus = d.getElementById('lead-find-status');
+    if (lfInput && lfStatus) {
+      var marks = [], cur = -1, sections = Array.prototype.slice.call(flow.querySelectorAll('.lead-call'));
+      var lfClear = function () {
+        flow.querySelectorAll('mark.find-hit').forEach(function (m) {
+          var parent = m.parentNode;
+          parent.replaceChild(d.createTextNode(m.textContent), m);
+          parent.normalize();
+        });
+        flow.querySelectorAll('.lt-item.is-hit-current').forEach(function (it) { it.classList.remove('is-hit-current'); });
+        marks = [];
+        cur = -1;
+      };
+      var lfShow = function (i) {
+        if (!marks.length) { return; }
+        if (cur >= 0) {
+          marks[cur].classList.remove('is-active');
+          var oldItem = marks[cur].closest('.lt-item');
+          if (oldItem) { oldItem.classList.remove('is-hit-current'); }
+        }
+        cur = (i + marks.length) % marks.length;
+        marks[cur].classList.add('is-active');
+        var sec = marks[cur].closest('.lead-call');
+        var item = marks[cur].closest('.lt-item');
+        if (item) { item.classList.add('is-hit-current'); }
+        marks[cur].scrollIntoView({ block: 'center' });
+        lfStatus.textContent = (cur + 1) + ' af ' + marks.length + ' · opkald ' + (sec ? sec.getAttribute('data-num') : '?') + ' af ' + (flow.getAttribute('data-total') || sections.length);
+      };
+      var low = function (s) { return s.toLocaleLowerCase('da'); };
+      var lfRun = function () {
+        lfClear();
+        var q = low(lfInput.value.trim());
+        if (q === '') { lfStatus.textContent = ''; return; }
+        var nodes = [];
+        var walker = d.createTreeWalker(flow, NodeFilter.SHOW_TEXT, {
+          acceptNode: function (n) { return n.parentNode.closest('.say') ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT; }
+        });
+        while (walker.nextNode()) { nodes.push(walker.currentNode); }
+        nodes.forEach(function (node) {
+          var text = node.nodeValue, lower = low(text);
+          if (lower.length !== text.length) { return; }
+          var at = lower.indexOf(q);
+          while (at !== -1) {
+            var match = node.splitText(at);
+            node = match.splitText(q.length);
+            var m = d.createElement('mark');
+            m.className = 'find-hit';
+            m.textContent = match.nodeValue;
+            match.parentNode.replaceChild(m, match);
+            marks.push(m);
+            lower = low(node.nodeValue);
+            at = lower.indexOf(q);
+          }
+        });
+        if (marks.length) { lfShow(0); } else { lfStatus.textContent = 'Ingen træf'; }
+      };
+      var lfTimer = null;
+      lfInput.addEventListener('input', function () {
+        clearTimeout(lfTimer);
+        lfTimer = setTimeout(function () { lfTimer = null; lfRun(); }, 150);
+      });
+      lfInput.addEventListener('keydown', function (ev) {
+        if (ev.key === 'Enter' || ev.key === 'ArrowDown' || ev.key === 'ArrowUp') {
+          ev.preventDefault();
+          if (lfTimer) { clearTimeout(lfTimer); lfTimer = null; lfRun(); return; }
+          lfShow(ev.shiftKey || ev.key === 'ArrowUp' ? cur - 1 : cur + 1);
+        } else if (ev.key === 'Escape') {
+          lfInput.value = '';
+          lfClear();
+          lfStatus.textContent = '';
+        }
+      });
+    }
+  }
+
   window.addEventListener('pageshow', function (ev) {
     if (!ev.persisted) { return; }
     setMenu(false);

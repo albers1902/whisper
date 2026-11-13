@@ -89,7 +89,7 @@ final class Calls
      * @param array{fra: string, til: string, retning: string, agent: string, q: string, side: int, vis?: string, kilde?: string, status?: string} $f
      * @return array{0: string, 1: list<mixed>} WHERE-del (faste SQL-stykker) og parametre
      */
-    private static function where(array $f, bool $onlyDone = false): array
+    public static function where(array $f, bool $onlyDone = false): array
     {
         $sql = ['1 = 1'];
         $p = [];

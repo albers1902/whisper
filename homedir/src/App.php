@@ -155,6 +155,11 @@ final class App
             'call_audio' => CallPages::audio($id, $req, $user),
             'call_txt'   => CallPages::transcript($id, $user),
             'call_zip'   => CallPages::zip($req, $user, $csrf),
+            // F008: lead-siden viser kvitteringen fra "Transcribér dette opkald" (retur=lead)
+            'lead_show'    => CallPages::lead($id, $req, $user, $csrf, [$this->flash($s), $this->flash($s, 'flash_info')]),
+            'lead_orphans' => CallPages::leadOrphans($req, $user, $csrf),
+            'lead_txt'     => CallPages::leadDownload($id, false, $user, $csrf),
+            'lead_zip'     => CallPages::leadDownload($id, true, $user, $csrf),
             'konto'     => $method === 'POST' ? $this->accountPost($req, $s, $user, $now)
                 : Response::html(View::account($user, $csrf, $this->flash($s, 'flash_error'), $this->flash($s), $this->mcp($user, $req, null, null, $s))),
             'users'     => Response::html(View::users($user, $csrf, Users::all(), $this->flash($s))),
@@ -183,6 +188,10 @@ final class App
         'call_txt'     => ['GET'],
         'call_zip'     => ['GET'],
         'call_select'  => ['POST'],
+        'lead_show'    => ['GET'],
+        'lead_orphans' => ['GET'],
+        'lead_txt'     => ['GET'],
+        'lead_zip'     => ['GET'],
         'mcp_create'   => ['POST'],
         'mcp_revoke'   => ['POST'],
         'oauth_authorize' => ['GET', 'POST'],
@@ -210,6 +219,16 @@ final class App
             if (preg_match('#^/opkald/([1-9][0-9]{0,9})(/lyd|/transcript)?$#', $path, $m) === 1) {
                 $sub = $m[2] ?? '';
                 return [$sub === '/lyd' ? 'call_audio' : ($sub === '/transcript' ? 'call_txt' : 'call_show'), (int) $m[1], ''];
+            }
+            // F008: lead-siderne findes kun med F008_leads (og F007, F004); slukket: 404 som enhver ukendt sti
+            if (Leads::on()) {
+                if ($path === '/lead/uden') {
+                    return ['lead_orphans', 0, ''];
+                }
+                if (preg_match('#^/lead/([1-9][0-9]{0,17})(/transcript|/download)?$#', $path, $m) === 1) {
+                    $sub = $m[2] ?? '';
+                    return [$sub === '/transcript' ? 'lead_txt' : ($sub === '/download' ? 'lead_zip' : 'lead_show'), (int) $m[1], ''];
+                }
             }
         }
         if (OAuth::enabled()) {

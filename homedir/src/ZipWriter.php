@@ -43,6 +43,37 @@ final class ZipWriter
         $this->count++;
     }
 
+    /**
+     * En fil fra disken (F008: lyd i lead-zip'en), streamet: CRC med hash_file og indholdet kopieret i bidder, så filen
+     * aldrig ligger i hukommelsen.
+     */
+    public function addFile(string $name, string $path, int $mtime): void
+    {
+        $size = filesize($path);
+        $crcHex = hash_file('crc32b', $path);
+        $src = fopen($path, 'rb');
+        if ($size === false || $crcHex === false || $src === false) {
+            throw new RuntimeException('filen kunne ikke læses til zip');
+        }
+        try {
+            if ($this->count >= 65535 || $this->offset + $size > 0xFFFFFFF0) {
+                throw new RuntimeException('zip-filen er for stor');
+            }
+            [$time, $date] = self::dos($mtime);
+            $common = pack('vvvvvVVVvv', 20, 0x0800, 0, $time, $date, (int) hexdec($crcHex), $size, $size, strlen($name), 0);
+            $local = pack('V', 0x04034b50) . $common . $name;
+            $this->write($local);
+            if (stream_copy_to_stream($src, $this->fh) !== $size) {
+                throw new RuntimeException('zip-filen kunne ikke skrives (fuld disk?)');
+            }
+            $this->central .= pack('V', 0x02014b50) . pack('v', 20) . $common . pack('vvvVV', 0, 0, 0, 0, $this->offset) . $name;
+            $this->offset += strlen($local) + $size;
+            $this->count++;
+        } finally {
+            fclose($src);
+        }
+    }
+
     public function close(): void
     {
         $this->write($this->central . pack('VvvvvVVv', 0x06054b50, 0, 0, $this->count, $this->count,

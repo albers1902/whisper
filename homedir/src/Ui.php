@@ -153,7 +153,7 @@ final class Ui
      *
      * @param list<string> $terms  fra terms()
      */
-    public static function highlight(string $raw, array $terms, int &$count, bool $anchor = false): string
+    public static function highlight(string $raw, array $terms, int &$count, bool $anchor = false, string $prefix = 'fund-'): string
     {
         $parts = $terms === [] ? false : preg_split('/([\p{L}\p{N}]+)/u', $raw, -1, PREG_SPLIT_DELIM_CAPTURE);
         if ($parts === false) {
@@ -163,7 +163,7 @@ final class Ui
         foreach ($parts as $i => $p) {
             if ($i % 2 === 1 && self::matches($p, $terms)) {
                 $count++;
-                $out .= '<mark' . ($anchor && $count === 1 ? ' id="fund-1"' : '') . '>' . self::e($p) . '</mark>';
+                $out .= '<mark' . ($anchor && $count === 1 ? ' id="' . self::e($prefix) . '1"' : '') . '>' . self::e($p) . '</mark>';
             } else {
                 $out .= self::e($p);
             }

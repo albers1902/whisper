@@ -34,9 +34,10 @@ final class UiCallsV2
      * @param array<int, array{segments: list<array{start: float, end: float, text: string, speaker?: int, role?: string}>, text: string, cut: bool}> $excerpts
      * @param array{config: string, status: array{last_ok_at: ?string, last_error: ?string}|null, warning: ?string}|null $adversus  null = F004 slukket (ingen faner)
      * @param ?int $other  antal på den anden fane (det et klik giver); null = intet tal
+     * @param ?string $leadBody  F008: Adversus-fanen pr. lead (opsummering, kort, pager), bygget af UiLeads; null = opkaldskort
      */
     public static function list(array $user, string $csrf, ?string $flash, array $f, array $rows, int $total, array $agents, array $zendesk,
-        string $config, ?string $subdomain, array $snippets, array $excerpts, int $now, ?array $adversus, ?int $other): string
+        string $config, ?string $subdomain, array $snippets, array $excerpts, int $now, ?array $adversus, ?int $other, ?string $leadBody = null): string
     {
         $e = Ui::e(...);
         $admin = ($user['role'] ?? '') === 'admin';
@@ -97,7 +98,9 @@ final class UiCallsV2
         if ($adversus !== null) {
             $zMark = $zErr !== null && !$zRate ? 'error' : null;
             $aMark = $aErr !== null && !$aRate ? 'error' : ($admin && ($adversus['warning'] ?? null) !== null ? 'warn' : null);
-            $tab = static function (string $kilde, string $label, ?int $count, ?string $mark, bool $active) use ($f, $e): string {
+            // F008: Adversus-fanens tal er leads, når fanen viser leads
+            $leadsOn = Leads::on();
+            $tab = static function (string $kilde, string $label, ?int $count, ?string $mark, bool $active) use ($f, $e, $leadsOn): string {
                 $href = self::listUrl(['kilde' => $kilde, 'agent' => '', 'vis' => '', 'side' => 1] + $f);
                 $flag = '';
                 if (!$active && $mark !== null) {
@@ -105,13 +108,13 @@ final class UiCallsV2
                         . '<span class="sr-only">' . ($mark === 'error' ? ', hentningen er stoppet' : ', har en advarsel') . '</span></span>';
                 }
                 return '<li><a href="' . $e($href) . '"' . ($active ? ' aria-current="page"' : '') . '>' . $label
-                    . ($count !== null ? '<span class="tab-count">' . self::countText($count) . '<span class="sr-only"> opkald</span></span>' : '') . $flag . '</a></li>';
+                    . ($count !== null ? '<span class="tab-count">' . self::countText($count) . '<span class="sr-only"> ' . ($leadsOn && $kilde === 'adversus' ? 'leads' : 'opkald') . '</span></span>' : '') . $flag . '</a></li>';
             };
             $tabs = '<nav class="src-tabs" aria-label="Kilde"><ul>'
                 . $tab('zendesk', 'Zendesk', $adv ? $other : $total, $zMark, !$adv)
                 . $tab('adversus', 'Adversus', $adv ? $total : $other, $aMark, $adv) . '</ul></nav>';
         }
-        $tools = self::statusPills($f) . ($adv ? self::viewSwitch($f) : '');
+        $tools = self::statusPills($f) . ($adv ? self::viewSwitch($f, $leadBody !== null) : '');
 
         $first = ($f['side'] - 1) * Calls::PAGE_SIZE + 1;
         $last = min($total, $f['side'] * Calls::PAGE_SIZE);
@@ -131,11 +134,11 @@ final class UiCallsV2
 
         return Ui::layout('Opkald · ' . $name, '<div class="list-page">' . $head . Ui::message(null, $flash) . self::searchCard($f, $agents, $now)
             . '<div class="tab-row">' . $tabs . '<div class="tab-tools">' . $tools . '</div></div>' . $notes
-            . $summary . $tip . $list . self::pager($f, $total) . $capHint . '</div>', $user, $csrf, 'opkald');
+            . ($leadBody ?? $summary . $tip . $list . self::pager($f, $total) . $capHint) . '</div>', $user, $csrf, 'opkald');
     }
 
     /** @param Filter $f */
-    private static function filtered(array $f): bool
+    public static function filtered(array $f): bool
     {
         return $f['fra'] !== '' || $f['til'] !== '' || $f['retning'] !== '' || $f['agent'] !== '' || $f['q'] !== '' || ($f['status'] ?? '') !== '';
     }
@@ -204,7 +207,7 @@ final class UiCallsV2
     }
 
     /** @param Filter $f  "Nulstil filtre" bevarer fanen og visningen (og intet andet) */
-    private static function resetUrl(array $f): string
+    public static function resetUrl(array $f): string
     {
         return self::listUrl(['fra' => '', 'til' => '', 'retning' => '', 'agent' => '', 'q' => '', 'status' => '', 'side' => 1] + $f);
     }
@@ -225,13 +228,13 @@ final class UiCallsV2
         return '<div class="pill-group" role="group" aria-label="Status">' . $out . '</div>';
     }
 
-    /** @param Filter $f  Succes-vælgeren (kun Adversus) */
-    private static function viewSwitch(array $f): string
+    /** @param Filter $f  Succes-vælgeren (kun Adversus); F008: "Alle leads" */
+    private static function viewSwitch(array $f, bool $leads = false): string
     {
         $all = ($f['vis'] ?? '') === 'alle';
         $link = static fn(string $vis, string $label, bool $active): string => '<a class="fpill' . ($active ? ' fpill-success' : '') . '" href="'
             . Ui::e(self::listUrl(['vis' => $vis, 'side' => 1] + $f)) . '"' . ($active ? ' aria-current="true"' : '') . '>' . $label . '</a>';
-        return '<div class="pill-group" role="group" aria-label="Vis">' . $link('', 'Succes og valgte', !$all) . $link('alle', 'Alle opkald', $all) . '</div>';
+        return '<div class="pill-group" role="group" aria-label="Vis">' . $link('', 'Succes og valgte', !$all) . $link('alle', $leads ? 'Alle leads' : 'Alle opkald', $all) . '</div>';
     }
 
     /** @param Filter $f */
@@ -264,7 +267,7 @@ final class UiCallsV2
                 '<div class="actions"><a class="button secondary" href="/?kilde=adversus&amp;vis=alle">Vis alle opkald</a></div>');
     }
 
-    private static function empty(string $title, string $text, string $action): string
+    public static function empty(string $title, string $text, string $action): string
     {
         return '<div class="empty"><div class="empty-icon">' . Ui::icon('inbox', 24) . '</div><h2 class="empty-title">' . Ui::e($title)
             . '</h2><p class="empty-text">' . Ui::e($text) . '</p>' . $action . '</div>';
@@ -276,7 +279,7 @@ final class UiCallsV2
      * @param array<int, array{text: string, cut_start: bool, cut_end: bool}> $snippets
      * @param array<int, array{segments: list<array{start: float, end: float, text: string, speaker?: int, role?: string}>, text: string, cut: bool}> $excerpts
      */
-    private static function cards(array $rows, array $f, ?string $subdomain, array $snippets, array $excerpts, int $now): string
+    public static function cards(array $rows, array $f, ?string $subdomain, array $snippets, array $excerpts, int $now): string
     {
         $e = Ui::e(...);
         $ctx = CallView::query($f, $f['side']);
@@ -426,7 +429,7 @@ final class UiCallsV2
     }
 
     /** @param Filter $f  højst COUNT_CAP / PAGE_SIZE sider (Calls::searchCapped) */
-    private static function pager(array $f, int $total): string
+    public static function pager(array $f, int $total): string
     {
         $capped = $total > Calls::COUNT_CAP;
         $pages = max(1, (int) ceil(min($total, Calls::COUNT_CAP) / Calls::PAGE_SIZE));
@@ -446,7 +449,7 @@ final class UiCallsV2
     }
 
     /** @param array<string, mixed> $f */
-    private static function listUrl(array $f, ?int $side = null): string
+    public static function listUrl(array $f, ?int $side = null): string
     {
         /** @var Filter $f */
         $q = CallView::query($f, $side ?? (int) $f['side']);
@@ -461,9 +464,10 @@ final class UiCallsV2
      * @param array<string, mixed> $call
      * @param array{text: string, segments: list<array{start: float, end: float, text: string, speaker?: int, role?: string}>}|null $transcript
      * @param Filter $f
+     * @param ?int $leadCalls  F008: antal opkald på opkaldets lead (giver "Se hele leadet"); null = intet link
      */
     public static function show(array $user, string $csrf, array $call, ?array $transcript, bool $audioOnDisk, ?string $subdomain, array $f,
-        ?string $flash = null, ?string $info = null): string
+        ?string $flash = null, ?string $info = null, ?int $leadCalls = null): string
     {
         $e = Ui::e(...);
         $admin = ($user['role'] ?? '') === 'admin';
@@ -496,76 +500,33 @@ final class UiCallsV2
             . (!$adv && $ticket > 0 ? self::ticketTag($ticket, $subdomain) : '')
             . ($success ? Ui::successTag() : '') . $badge;
 
-        $meta = self::meta($call, $adv, $success, $subdomain, $badge);
-        $tStatus = (string) $call['transcript_status'];
-        $notChosen = $adv && $tStatus === 'ikke_valgt';
-        $rules = QueueRules::fromConfig();
-        $skip = $rules->skipReason($call, time());
-        $skipped = $skip !== null && $audioStatus === 'hentet';
-
-        // Afspillerkortet eller lydens tilstand
-        if ($notChosen) {
-            $audio = Ui::msg('info', '<p>Lyden er ikke hentet. Opkaldet er ikke på et succes-lead.</p>');
-        } elseif ($playable) {
-            $audio = self::player($id, (int) $call['duration_sec']);
-        } elseif ($audioStatus === 'hentet') {
-            $audio = Ui::msg('error', '<p>Lydfilen mangler på serveren. Kontakt en administrator.</p>');
-        } elseif ($audioStatus === 'fejlet') {
-            $audio = Ui::msg('error', '<p>Lyden kunne ikke hentes fra ' . $sourceName . ' (' . (int) $call['audio_attempts'] . ' forsøg).</p>'
-                . ((string) ($call['audio_error'] ?? '') !== '' ? '<details><summary>Teknisk besked</summary><p>' . $e((string) $call['audio_error'])
-                    . '</p></details>' : '')
-                . (!$adv && $ticket > 0 && $subdomain !== null ? '<p>Optagelsen kan måske afspilles direkte i ticket ' . Ui::ticket($ticket, $subdomain) . '.</p>' : ''));
-        } else {
-            $audio = Ui::msg('info', '<p>Lyden er ikke hentet fra ' . $sourceName . ' endnu. Det sker normalt inden for 10 minutter.</p>');
-        }
-
+        $meta = self::meta($call, $adv, $success, $subdomain, $badge, $leadCalls, $ctx);
+        $parts = self::parts($call, $transcript, $audioOnDisk, $subdomain, Ui::terms($f['q']), $csrf, $ctx, $admin);
+        $audio = $parts['audio'];
+        $body = $parts['body'];
+        $found = $parts['found'];
         $actions = '';
         $hits = '';
         $find = '';
-        $ctxField = $ctx !== '' ? '<input type="hidden" name="ctx" value="' . $e($ctx) . '">' : '';
-        $button = static fn(string $hint): string => '<form method="post" action="/opkald/' . $id . '/transcriber" class="actions select-call">'
-            . View::csrfField($csrf) . $ctxField
-            . '<button type="submit" class="button" aria-describedby="vaelg-hjaelp" data-busy="Sætter i kø …">Transcribér dette opkald</button></form>'
-            . '<p class="hint" id="vaelg-hjaelp">' . $hint . '</p>';
-        if ($notChosen) {
-            $body = Ui::msg('info', '<p>Opkaldet er ikke på et succes-lead og bliver derfor ikke transcriberet automatisk.</p>'
-                . $button('Lyden hentes fra Adversus, og opkaldet sættes i kø. Det tager normalt under 15 minutter.'));
-        } elseif ($skipped) {
-            $why = $skip === QueueRules::SKIP_SHORT ? 'kortere end ' . $rules->minSeconds . ' sekunder' : 'ældre end ' . $rules->maxAgeDays . ' dage';
-            $body = Ui::msg('info', '<p>Opkaldet er ' . $why . ' og bliver derfor ikke transcriberet automatisk.</p>'
-                . $button('Opkaldet sættes i kø og transcriberes, når opkaldene foran det er færdige.'));
-        } elseif ($adv && CallPages::selectable($call, $skip)) {
-            $body = Ui::msg('info', '<p>Der kan ikke laves et transcript uden lyd.</p>'
-                . $button('Lyden hentes igen fra Adversus, og opkaldet sættes i kø. Det tager normalt under 15 minutter.'));
-        } elseif ($audioStatus !== 'hentet') {
-            $body = '<p class="neutral">' . ($audioStatus === 'fejlet' ? 'Der kan ikke laves et transcript uden lyd.' : 'Transcriptet laves, når lyden er hentet.') . '</p>';
-        } elseif ($tStatus === 'faerdig' && $transcript !== null) {
-            [$body, $found] = self::conversation($transcript, Ui::terms($f['q']), $playable);
-            if ($body === '') {
-                $body = Ui::msg('info', '<p>Der blev ikke fundet tale i optagelsen.</p>');
-            } else {
-                $actions = '<div class="actions head-actions">' . Ui::copyButton('transcript', 'Kopiér tekst')
-                    . '<a class="button" href="/opkald/' . $id . '/transcript">' . Ui::icon('download') . 'Download .txt</a></div>';
-                $find = '<div class="find" data-js-only hidden><label for="find-q" class="sr-only">Find i samtalen</label>' . Ui::icon('search')
-                    . '<input type="search" id="find-q" placeholder="Find i samtalen" autocomplete="off" aria-describedby="find-status">'
-                    . '<span class="find-status" id="find-status" aria-live="polite"></span></div>';
-                if (Ui::terms($f['q']) !== []) {
-                    $hits = $found > 0
-                        ? '<p class="hits">' . $found . ' fund for «' . $e($f['q']) . '» · <a href="#fund-1">Gå til første fund</a></p>'
-                        : '<p class="hits">Ingen fund for «' . $e($f['q']) . '» i dette transcript.</p>';
-                }
+        if ($parts['conversation']) {
+            $actions = Ui::copyButton('transcript', 'Kopiér tekst')
+                . '<a class="button" href="/opkald/' . $id . '/transcript">' . Ui::icon('download') . 'Download .txt</a>';
+            $find = '<div class="find" data-js-only hidden><label for="find-q" class="sr-only">Find i samtalen</label>' . Ui::icon('search')
+                . '<input type="search" id="find-q" placeholder="Find i samtalen" autocomplete="off" aria-describedby="find-status">'
+                . '<span class="find-status" id="find-status" aria-live="polite"></span></div>';
+            if (Ui::terms($f['q']) !== []) {
+                $hits = $found > 0
+                    ? '<p class="hits">' . $found . ' fund for «' . $e($f['q']) . '» · <a href="#fund-1">Gå til første fund</a></p>'
+                    : '<p class="hits">Ingen fund for «' . $e($f['q']) . '» i dette transcript.</p>';
             }
-        } elseif ($tStatus === 'faerdig') {
-            $body = Ui::msg('info', '<p>' . $e(UiCalls::TRANSCRIPT_MISSING) . '</p>');
-        } elseif ($tStatus === 'fejlet') {
-            $body = Ui::msg('error', '<p>Transcriptet kunne ikke laves.</p>'
-                . ((string) ($call['transcript_error'] ?? '') !== '' ? '<details><summary>Teknisk besked</summary><p>'
-                    . $e((string) $call['transcript_error']) . '</p></details>' : '')
-                . ($admin ? '<p>En administrator kan sende opkaldet tilbage i køen.</p>' : ''));
-        } elseif ($tStatus === 'transcriberer') {
-            $body = Ui::msg('info', '<p>Transcriptet laves lige nu. Genindlæs siden om et par minutter.</p>');
-        } else {
-            $body = Ui::msg('info', '<p>Transcriptet er på vej. Opkald transcriberes ét ad gangen. Genindlæs siden om lidt.</p>');
+        }
+        if ($leadCalls !== null) {
+            // F008 (design §1.3): "Se hele leadet" først i handlingerne, også uden transcript
+            $actions = '<a class="button secondary" href="' . $e(self::leadUrl((int) $call['lead_id'], $ctx, $id)) . '">' . Ui::icon('users')
+                . 'Se hele leadet (' . UiV2::num($leadCalls) . ' opkald)</a>' . $actions;
+        }
+        if ($actions !== '') {
+            $actions = '<div class="actions head-actions">' . $actions . '</div>';
         }
 
         $claude = '';
@@ -588,8 +549,100 @@ final class UiCallsV2
         return Ui::layout($title, $html, $user, $csrf, 'opkald');
     }
 
+    /**
+     * Lyden og samtalen for ét opkald med tilstandene (F007 §2.8–2.9), delt af /opkald/{id} og lead-siden (F008). $ns = ''
+     * giver detaljens faste id'er (afspiller, transcript, t-{sek}, fund-1, vaelg-hjaelp); ellers får de opkaldets id som
+     * præfiks, så flere opkald kan stå på samme side. $num er opkaldets nummer på lead-siden (afspillerens aria-label).
+     *
+     * @param array<string, mixed> $call
+     * @param array{text: string, segments: list<array{start: float, end: float, text: string, speaker?: int, role?: string}>}|null $transcript
+     * @param list<string> $terms
+     * @return array{audio: string, body: string, found: int, conversation: bool}
+     */
+    public static function parts(array $call, ?array $transcript, bool $audioOnDisk, ?string $subdomain, array $terms, string $csrf, string $ctx,
+        bool $admin, string $ns = '', ?int $num = null): array
+    {
+        $e = Ui::e(...);
+        $id = (int) $call['id'];
+        $adv = Calls::isAdversus($call);
+        $ticket = (int) ($call['ticket_id'] ?? 0);
+        $sourceName = $adv ? 'Adversus' : 'Zendesk';
+        $audioStatus = (string) $call['audio_status'];
+        $playable = $audioStatus === 'hentet' && $audioOnDisk;
+        $tStatus = (string) $call['transcript_status'];
+        $notChosen = $adv && $tStatus === 'ikke_valgt';
+        $rules = QueueRules::fromConfig();
+        $skip = $rules->skipReason($call, time());
+        $skipped = $skip !== null && $audioStatus === 'hentet';
+
+        // Afspillerkortet eller lydens tilstand
+        if ($notChosen) {
+            $audio = Ui::msg('info', '<p>Lyden er ikke hentet. Opkaldet er ikke på et succes-lead.</p>');
+        } elseif ($playable) {
+            $audio = self::player($id, (int) $call['duration_sec'], $ns, $num);
+        } elseif ($audioStatus === 'hentet') {
+            $audio = Ui::msg('error', '<p>Lydfilen mangler på serveren. Kontakt en administrator.</p>');
+        } elseif ($audioStatus === 'fejlet') {
+            $audio = Ui::msg('error', '<p>Lyden kunne ikke hentes fra ' . $sourceName . ' (' . (int) $call['audio_attempts'] . ' forsøg).</p>'
+                . ((string) ($call['audio_error'] ?? '') !== '' ? '<details><summary>Teknisk besked</summary><p>' . $e((string) $call['audio_error'])
+                    . '</p></details>' : '')
+                . (!$adv && $ticket > 0 && $subdomain !== null ? '<p>Optagelsen kan måske afspilles direkte i ticket ' . Ui::ticket($ticket, $subdomain) . '.</p>' : ''));
+        } else {
+            $audio = Ui::msg('info', '<p>Lyden er ikke hentet fra ' . $sourceName . ' endnu. Det sker normalt inden for 10 minutter.</p>');
+        }
+
+        $found = 0;
+        $conversation = false;
+        $hintId = 'vaelg-hjaelp' . ($ns !== '' ? '-' . $ns : '');
+        // Lead-siden (F008): svaret skal tilbage til leadet; serveren bygger målet ud fra opkaldets egen lead_id
+        $ctxField = ($ctx !== '' ? '<input type="hidden" name="ctx" value="' . $e($ctx) . '">' : '')
+            . ($ns !== '' ? '<input type="hidden" name="retur" value="lead">' : '');
+        $button = static fn(string $hint): string => '<form method="post" action="/opkald/' . $id . '/transcriber" class="actions select-call">'
+            . View::csrfField($csrf) . $ctxField
+            . '<button type="submit" class="button" aria-describedby="' . $hintId . '" data-busy="Sætter i kø …">Transcribér dette opkald</button></form>'
+            . '<p class="hint" id="' . $hintId . '">' . $hint . '</p>';
+        if ($notChosen) {
+            $body = Ui::msg('info', '<p>Opkaldet er ikke på et succes-lead og bliver derfor ikke transcriberet automatisk.</p>'
+                . $button('Lyden hentes fra Adversus, og opkaldet sættes i kø. Det tager normalt under 15 minutter.'));
+        } elseif ($skipped) {
+            $why = $skip === QueueRules::SKIP_SHORT ? 'kortere end ' . $rules->minSeconds . ' sekunder' : 'ældre end ' . $rules->maxAgeDays . ' dage';
+            $body = Ui::msg('info', '<p>Opkaldet er ' . $why . ' og bliver derfor ikke transcriberet automatisk.</p>'
+                . $button('Opkaldet sættes i kø og transcriberes, når opkaldene foran det er færdige.'));
+        } elseif ($adv && CallPages::selectable($call, $skip)) {
+            $body = Ui::msg('info', '<p>Der kan ikke laves et transcript uden lyd.</p>'
+                . $button('Lyden hentes igen fra Adversus, og opkaldet sættes i kø. Det tager normalt under 15 minutter.'));
+        } elseif ($audioStatus !== 'hentet') {
+            $body = '<p class="neutral">' . ($audioStatus === 'fejlet' ? 'Der kan ikke laves et transcript uden lyd.' : 'Transcriptet laves, når lyden er hentet.') . '</p>';
+        } elseif ($tStatus === 'faerdig' && $transcript !== null) {
+            [$body, $found] = self::conversation($transcript, $terms, $playable, $ns);
+            if ($body === '') {
+                $body = Ui::msg('info', '<p>Der blev ikke fundet tale i optagelsen.</p>');
+            } else {
+                $conversation = true;
+            }
+        } elseif ($tStatus === 'faerdig') {
+            $body = Ui::msg('info', '<p>' . $e(UiCalls::TRANSCRIPT_MISSING) . '</p>');
+        } elseif ($tStatus === 'fejlet') {
+            $body = Ui::msg('error', '<p>Transcriptet kunne ikke laves.</p>'
+                . ((string) ($call['transcript_error'] ?? '') !== '' ? '<details><summary>Teknisk besked</summary><p>'
+                    . $e((string) $call['transcript_error']) . '</p></details>' : '')
+                . ($admin ? '<p>En administrator kan sende opkaldet tilbage i køen.</p>' : ''));
+        } elseif ($tStatus === 'transcriberer') {
+            $body = Ui::msg('info', '<p>Transcriptet laves lige nu. Genindlæs siden om et par minutter.</p>');
+        } else {
+            $body = Ui::msg('info', '<p>Transcriptet er på vej. Opkald transcriberes ét ad gangen. Genindlæs siden om lidt.</p>');
+        }
+        return ['audio' => $audio, 'body' => $body, 'found' => $found, 'conversation' => $conversation];
+    }
+
+    /** F008: lead-siden ved et opkald, med listens kontekst. */
+    public static function leadUrl(int $lead, string $ctx, ?int $call = null): string
+    {
+        return '/lead/' . $lead . ($ctx !== '' ? '?' . $ctx : '') . ($call !== null ? '#opkald-' . $call : '');
+    }
+
     /** @param array<string, mixed> $call */
-    private static function meta(array $call, bool $adv, bool $success, ?string $subdomain, string $badge): string
+    private static function meta(array $call, bool $adv, bool $success, ?string $subdomain, string $badge, ?int $leadCalls = null, string $ctx = ''): string
     {
         $e = Ui::e(...);
         $phone = (string) $call['customer_phone'];
@@ -602,7 +655,9 @@ final class UiCallsV2
             $html .= ($phone !== '' ? $row('Kunde', $e($phone)) : '') . $row('Agent', $e((string) $call['agent_name']))
                 . $row('Varighed', $e(Calls::duration((int) $call['duration_sec'])))
                 . ($campaign > 0 ? $row('Kampagne', '#' . $campaign) : '')
-                . ($lead > 0 ? $row('Lead', '#' . $lead . ($success ? ' · Succes-lead' : '')) : '');
+                . ($lead > 0 ? $row('Lead', $leadCalls !== null
+                    ? '<a href="' . $e(self::leadUrl($lead, $ctx, (int) $call['id'])) . '">#' . $lead . ($success ? ' · Succes-lead' : '') . '</a>'
+                    : '#' . $lead . ($success ? ' · Succes-lead' : '')) : '');
         } else {
             $html .= $row('Kunde', $e($phone)) . $row('Agent', $e((string) $call['agent_name']))
                 . $row('Varighed', $e(Calls::duration((int) $call['duration_sec'])))
@@ -612,15 +667,16 @@ final class UiCallsV2
     }
 
     /** Det mørke afspillerkort (§2.9): native <audio> uden JS; app-v2.js skjuler controls og viser de egne kontroller. */
-    private static function player(int $id, int $duration): string
+    public static function player(int $id, int $duration, string $ns = '', ?int $num = null): string
     {
         $rates = '';
         foreach ([['0.75', '0,75×'], ['1', '1×'], ['1.25', '1,25×'], ['1.5', '1,5×'], ['2', '2×']] as [$rate, $label]) {
             $rates .= '<button type="button" class="rate" data-rate="' . $rate . '" aria-pressed="' . ($rate === '1' ? 'true' : 'false') . '">' . $label . '</button>';
         }
         $total = Calls::duration($duration);
-        return '<section class="player-v2" aria-label="Optagelse">'
-            . '<audio id="afspiller" controls preload="metadata" src="/opkald/' . $id . '/lyd"></audio>'
+        // F008: flere afspillere på lead-siden; hver har sit eget id og sit opkaldsnummer i navnet
+        return '<section class="player-v2" aria-label="Optagelse' . ($num !== null ? ', opkald ' . $num : '') . '">'
+            . '<audio id="afspiller' . ($ns !== '' ? '-' . $ns : '') . '" controls preload="metadata" src="/opkald/' . $id . '/lyd"></audio>'
             . '<div class="pl-controls" data-js-only hidden>'
             . '<div class="pl-row"><button type="button" class="pl-play" aria-label="Afspil">' . Ui::icon('play', 18)
             . str_replace('<svg class="icon icon-18"', '<svg class="icon icon-18 icon-pause"', Ui::icon('pause', 18)) . '</button>'
@@ -639,8 +695,10 @@ final class UiCallsV2
      * @param list<string> $terms
      * @return array{0: string, 1: int} HTML og antal fund
      */
-    private static function conversation(array $t, array $terms, bool $playable): array
+    public static function conversation(array $t, array $terms, bool $playable, string $ns = ''): array
     {
+        // F008: på lead-siden får ankrene opkaldets id som præfiks (t-{id}-{sek}, fund-{id}-1, transcript-{id})
+        $pre = $ns !== '' ? $ns . '-' : '';
         $found = 0;
         $chat = false;
         foreach ($t['segments'] as $s) {
@@ -660,13 +718,13 @@ final class UiCallsV2
             }
             $sec = (int) floor($s['start']);
             $stamp = Calls::stamp($s['start']);
-            $idAttr = isset($ids[$sec]) ? '' : ' id="t-' . $sec . '"';
+            $idAttr = isset($ids[$sec]) ? '' : ' id="t-' . $pre . $sec . '"';
             $ids[$sec] = true;
             $start = sprintf('%.2f', $s['start']);
             $ts = $playable
                 ? '<button type="button" class="ts" data-start="' . $start . '" disabled aria-label="Afspil fra ' . $stamp . '">' . $stamp . '</button>'
                 : '<span class="ts">' . $stamp . '</span>';
-            $words = Ui::highlight($text, $terms, $found, true);
+            $words = Ui::highlight($text, $terms, $found, true, 'fund-' . $pre);
             if (!$chat) {
                 $items .= '<li' . $idAttr . ' data-start="' . $start . '">' . $ts . '<p class="say">' . $words . '</p></li>';
                 continue;
@@ -689,15 +747,16 @@ final class UiCallsV2
             }
         }
         if ($items !== '') {
-            return ['<ol class="transcript' . ($chat ? ' chat' : '') . ($playable ? ' playable' : '') . '" id="transcript">' . $items . '</ol>', $found];
+            return ['<ol class="transcript' . ($chat ? ' chat' : '') . ($playable ? ' playable' : '') . '" id="transcript' . ($ns !== '' ? '-' . $ns : '') . '">'
+                . $items . '</ol>', $found];
         }
         if (trim($t['text']) === '') {
             return ['', 0];
         }
         $paras = '';
         foreach (preg_split('/\R{2,}/u', trim($t['text'])) ?: [trim($t['text'])] as $p) {
-            $paras .= '<p class="say">' . Ui::highlight($p, $terms, $found, true) . '</p>';
+            $paras .= '<p class="say">' . Ui::highlight($p, $terms, $found, true, 'fund-' . $pre) . '</p>';
         }
-        return ['<div class="transcript-plain" id="transcript">' . $paras . '</div>', $found];
+        return ['<div class="transcript-plain" id="transcript' . ($ns !== '' ? '-' . $ns : '') . '">' . $paras . '</div>', $found];
     }
 }
