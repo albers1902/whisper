@@ -159,4 +159,5 @@ F008Check::that('AK8', min($with, $with2) <= $without * 1.5 + 0.05, 'statusskift
 DB::exec('DELETE FROM adversus_leads');
 DB::exec('DELETE FROM calls');
 echo "== RESUME\n" . implode("\n", $sum) . "\n";
+F008Check::that('AK8', false, 'MIDLERTIDIG: rød for at få planerne i DEV-loggen');
 F008Check::done();
