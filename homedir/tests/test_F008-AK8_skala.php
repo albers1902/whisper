@@ -121,7 +121,7 @@ $one = (int) array_key_first($page);
 [$secL, $calls] = $time(static fn(): array => [Leads::exists($one), Leads::calls($one, 0, Leads::LEAD_PAGE), Leads::summaries([$one]), Leads::status($one)]);
 [$lplan, $lrows] = $explain("SELECT c.* FROM calls c WHERE c.`source` = 'adversus' AND c.lead_id = ? ORDER BY c.started_at, c.id LIMIT 100", [$one]);
 printf("A lead-side %.1f ms: %s\n", $secL * 1000, $lplan);
-$sum[] = sprintf('lead-side %.0fms %s', $secL * 1000, (string) preg_replace('/ ([^)]*)/', '', $lplan));
+$sum[] = sprintf('lead-side %.0fms %s', $secL * 1000, (string) preg_replace('/ \([^)]*\)/', '', $lplan));
 F008Check::that('AK8', str_contains($lplan, 'calls_source_lead') && $lrows < 100 && $secL < 0.2, sprintf('lead-siden: indeks, %d rækker, %.0f ms', $lrows, $secL * 1000));
 
 // B. Få træf: næsten alt "ikke valgt" uden succes
