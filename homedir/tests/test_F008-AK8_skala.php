@@ -174,5 +174,4 @@ foreach ($sum as $item) {
 }
 $lines[] = $cur;
 echo "== RESUME\n" . implode("\n", $lines) . "\n";
-F008Check::that('AK8', false, 'MIDLERTIDIG: rød for at få planerne i DEV-loggen');
 F008Check::done();
