@@ -289,26 +289,8 @@ final class UiLeads
         $hitCalls = 0;
         $firstHit = null;
         $anyConv = false;
+        /** @var list<array{0: int, 1: array<string, mixed>}> $missRun */
         $missRun = [];
-        $flush = static function () use (&$missRun, &$items, $total): void {
-            if (count($missRun) >= 3) {
-                $firstCall = $missRun[0][1];
-                $lastCall = $missRun[count($missRun) - 1][1];
-                $items .= '<li class="lead-item lt-item lt-group"><span class="lt-dot lt-dot-miss" aria-hidden="true"></span><details class="lead-miss-group">'
-                    . '<summary>' . count($missRun) . ' ubesvarede opkald · ' . Ui::e(self::short((string) $firstCall['started_at'])) . ' – '
-                    . Ui::e(self::short((string) $lastCall['started_at'])) . '</summary><ul class="lead-miss-list">';
-                foreach ($missRun as [$n, $c]) {
-                    $items .= '<li>' . self::missLine($c, $n, $total) . '</li>';
-                }
-                $items .= '</ul></details></li>';
-            } else {
-                foreach ($missRun as [$n, $c]) {
-                    $items .= '<li class="lead-item lt-item lead-miss" id="opkald-' . (int) $c['id'] . '"><span class="lt-dot lt-dot-miss" aria-hidden="true"></span>'
-                        . self::missLine($c, $n, $total) . '</li>';
-                }
-            }
-            $missRun = [];
-        };
         foreach ($calls as $i => $c) {
             $n = $offset + $i + 1;
             $id = (int) $c['id'];
@@ -316,7 +298,8 @@ final class UiLeads
                 $missRun[] = [$n, $c];
                 continue;
             }
-            $flush();
+            $items .= self::misses($missRun, $total);
+            $missRun = [];
             $parts = UiCallsV2::parts($c, $transcripts[$id] ?? null, $onDisk[$id] ?? false, null, $terms, $csrf, $ctx, $admin, (string) $id, $n);
             $anyConv = $anyConv || $parts['conversation'];
             if ($parts['found'] > 0) {
@@ -342,7 +325,7 @@ final class UiLeads
                 . '<div class="lt-body' . (str_contains($parts['audio'], 'player-v2') ? ' has-player' : '') . '"><div class="lt-player">' . $parts['audio'] . '</div><div class="lt-conv">' . $parts['body'] . '</div></div>'
                 . '</section></li>';
         }
-        $flush();
+        $items .= self::misses($missRun, $total);
 
         $find = $anyConv ? '<div class="lead-tools"><div class="find lead-find" data-js-only hidden><label for="lead-find-q" class="sr-only">Find i alle opkald</label>'
             . Ui::icon('search') . '<input type="search" id="lead-find-q" placeholder="Find i alle opkald" autocomplete="off" aria-describedby="lead-find-status">'
@@ -363,6 +346,33 @@ final class UiLeads
             . $head . $find . '<section class="lead-flow" id="forloeb" data-total="' . $total . '" aria-labelledby="forloeb-h"><h2 id="forloeb-h">Forløb</h2>' . $hits . $many . $flow
             . '</section>' . self::leadPager($lead, $f, $side, $total) . '</div>';
         return Ui::layout('Lead #' . $lead . ' · Adversus', $html, $user, $csrf, 'opkald');
+    }
+
+    /**
+     * Ubesvarede opkald i træk: 3 eller flere samles i en lukket gruppe (design §2.5), ellers én linje hver.
+     *
+     * @param list<array{0: int, 1: array<string, mixed>}> $run  [nummer, opkald]
+     */
+    private static function misses(array $run, int $total): string
+    {
+        if ($run === []) {
+            return '';
+        }
+        $out = '';
+        if (count($run) >= 3) {
+            $out .= '<li class="lead-item lt-item lt-group"><span class="lt-dot lt-dot-miss" aria-hidden="true"></span><details class="lead-miss-group">'
+                . '<summary>' . count($run) . ' ubesvarede opkald · ' . Ui::e(self::short((string) $run[0][1]['started_at'])) . ' – '
+                . Ui::e(self::short((string) $run[count($run) - 1][1]['started_at'])) . '</summary><ul class="lead-miss-list">';
+            foreach ($run as [$n, $c]) {
+                $out .= '<li>' . self::missLine($c, $n, $total) . '</li>';
+            }
+            return $out . '</ul></details></li>';
+        }
+        foreach ($run as [$n, $c]) {
+            $out .= '<li class="lead-item lt-item lead-miss" id="opkald-' . (int) $c['id'] . '"><span class="lt-dot lt-dot-miss" aria-hidden="true"></span>'
+                . self::missLine($c, $n, $total) . '</li>';
+        }
+        return $out;
     }
 
     /** @param array<string, mixed> $c  én linje for et ubesvaret opkald */
