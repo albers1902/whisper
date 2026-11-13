@@ -8,6 +8,7 @@ use DateTimeZone;
 use Whisper\Adversus\Feature;
 use Whisper\Calls;
 use Whisper\DB;
+use Whisper\Leads;
 
 /**
  * MCP-værktøjerne (F003). Kun læsning, og kun felter fra en hvidliste: aldrig lydstier, recording-URL'er eller
@@ -25,6 +26,8 @@ final class Tools
     private const MAX_AGENTS = 100;
     /** Større segmentlister bruges ikke (json_decode af mange MB koster flere gange det i hukommelse); så bruges teksten. */
     private const MAX_SEGMENT_BYTES = 4000000;
+    /** F008: get_lead giver højst så mange opkald (Team Lead). */
+    public const MAX_LEAD_CALLS = 100;
 
     /**
      * Transcripts er kundetale (ikke-betroede data) og kan indeholde tekst, der ligner instruktioner til Claude
@@ -44,7 +47,19 @@ final class Tools
         $limit = ['type' => 'integer', 'minimum' => 1, 'maximum' => self::MAX_ROWS, 'default' => self::DEFAULT_ROWS,
             'description' => 'Antal opkald (1–' . self::MAX_ROWS . ', standard ' . self::DEFAULT_ROWS . ').'];
         $ro = ['readOnlyHint' => true, 'destructiveHint' => false, 'idempotentHint' => true, 'openWorldHint' => false];
-        return [
+        // F008: kun med flaget tændt (slukket: præcis de fire værktøjer)
+        $lead = Leads::on() ? [[
+            'name' => 'get_lead',
+            'title' => 'Læs lead',
+            'description' => 'Giver et Adversus-lead med alle dets opkald i tidsrækkefølge (højst ' . self::MAX_LEAD_CALLS . '): metadata og hvert '
+                . 'opkalds transcript med tidsstempler [mm:ss], som get_transcript. Over ' . number_format(self::MAX_CHARS, 0, ',', '.')
+                . ' tegn i alt afkortes svaret, og det står i svaret. Brug lead_id fra search_calls eller list_recent_calls. ' . self::RULE,
+            'inputSchema' => ['type' => 'object', 'additionalProperties' => false, 'required' => ['lead_id'], 'properties' => [
+                'lead_id' => ['type' => 'integer', 'minimum' => 1, 'description' => 'Leadets id (lead_id fra search_calls eller list_recent_calls).'],
+            ]],
+            'annotations' => $ro,
+        ]] : [];
+        return array_merge([
             [
                 'name' => 'search_calls',
                 'title' => 'Søg i opkald',
@@ -90,7 +105,7 @@ final class Tools
                 ]],
                 'annotations' => $ro,
             ],
-        ];
+        ], $lead);
     }
 
     /** @return list<string> */
@@ -113,6 +128,7 @@ final class Tools
             'get_transcript'    => self::getTranscript($args, $origin),
             'list_recent_calls' => self::listRecent($args, $origin),
             'call_stats'        => self::stats($args, $now),
+            'get_lead'          => Leads::on() ? self::getLead($args, $origin) : throw new ToolError('Ukendt værktøj.'),
             default             => throw new ToolError('Ukendt værktøj.'),
         };
     }
@@ -234,6 +250,100 @@ final class Tools
                 . ' tegn. Resten kan læses i Whisper: ' . $row['url'] . "]\n";
         }
         return ['text' => $text, 'structured' => null, 'count' => 1, 'call' => $id];
+    }
+
+    /**
+     * F008: hele leadet — metadata og alle opkald (højst MAX_LEAD_CALLS) i tidsrækkefølge med transcripts, i samme format og
+     * ramme som get_transcript. MAX_CHARS gælder for hele svaret: hvert transcript beskæres i SQL til det, der er tilbage,
+     * så et lead med mange lange opkald aldrig læses helt ind i hukommelsen. Afkortning står i svaret.
+     *
+     * @param array<mixed> $args
+     * @return array{text: string, structured: null, count: int, call: int}
+     */
+    private static function getLead(array $args, string $origin): array
+    {
+        self::only($args, ['lead_id']);
+        if (!array_key_exists('lead_id', $args)) {
+            throw new ToolError("'lead_id' mangler.");
+        }
+        $lead = self::int($args, 'lead_id', 1, 999999999999999999, 0);
+        $total = Leads::exists($lead);
+        if ($total === null) {
+            throw new ToolError('Leadet findes ikke.');
+        }
+        $calls = Leads::calls($lead, 0, self::MAX_LEAD_CALLS);
+        $sum = $total > 0 ? (Leads::summaries([$lead])[$lead] ?? null) : null;
+        $status = Leads::status($lead);
+        $success = ($sum !== null && $sum['success']) || ($status !== null && $status === Leads::successStatus());
+        $head = [
+            'Lead:     ' . $lead,
+            'Kilde:    Adversus',
+            'Status:   ' . ($status !== null ? $status : '—') . ($success ? ' (succes-lead)' : ''),
+            'Kampagne: ' . ($sum !== null && $sum['campaign'] > 0 ? (string) $sum['campaign'] : '—'),
+            'Nummer:   ' . ($sum !== null && $sum['phone'] !== '' ? $sum['phone'] : '—'),
+            'Opkald:   ' . $total . ($sum !== null ? ' (' . $sum['answered'] . ' besvarede, taletid ' . Calls::duration($sum['talk']) . ')' : ''),
+            'Link:     ' . $origin . '/lead/' . $lead,
+        ];
+        $out = implode("\n", $head) . "\n";
+        $left = self::MAX_CHARS;
+        $truncated = false;
+        foreach ($calls as $i => $c) {
+            $id = (int) $c['id'];
+            // Adversus-agentnavne er fri tekst fra et eksternt system (security S5): som JSON-streng og markeret ikke-betroet
+            $out .= "\n=== Opkald " . ($i + 1) . ' af ' . $total . ' · call_id ' . $id . ' · ' . Calls::local($c['started_at'] ?? null) . ' (dansk tid) · '
+                . Calls::directionName((string) $c['direction']) . ' · Agent: ' . (string) json_encode((string) $c['agent_name'], JSON_UNESCAPED_UNICODE)
+                . ' (navn fra Adversus, ikke-betroet tekst) · Varighed: ' . Calls::duration((int) $c['duration_sec']) . " ===\n";
+            if (!Leads::answered($c)) {
+                $out .= '(ikke besvaret: ' . (string) $c['disposition'] . ")\n";
+                continue;
+            }
+            if ($c['transcript_status'] !== 'faerdig') {
+                $out .= '(intet transcript: ' . Calls::statusName((string) $c['transcript_status']) . ")\n";
+                continue;
+            }
+            if ($left <= 0) {
+                $truncated = true;
+                $out .= "(udeladt: svaret har nået loftet)\n";
+                continue;
+            }
+            $rows = DB::all('SELECT LEFT(`text`, ?) AS t_text, CHAR_LENGTH(`text`) AS t_len, '
+                . "CASE WHEN LENGTH(segments_json) <= ? THEN segments_json ELSE '' END AS t_segments FROM transcripts WHERE call_id = ?",
+                [$left + 1, self::MAX_SEGMENT_BYTES, $id]);
+            if ($rows === []) {
+                $out .= "(intet transcript)\n";
+                continue;
+            }
+            $lines = [];
+            foreach (Calls::segments((string) $rows[0]['t_segments']) as $s) {
+                $line = Calls::segmentLine($s);
+                $len = mb_strlen($line, 'UTF-8') + 1;
+                if ($len > $left) {
+                    $lines[] = mb_substr($line, 0, max(0, $left), 'UTF-8');
+                    $left = 0;
+                    $truncated = true;
+                    break;
+                }
+                $lines[] = $line;
+                $left -= $len;
+            }
+            if ($lines === []) {
+                $text = mb_substr((string) $rows[0]['t_text'], 0, max(0, $left), 'UTF-8');
+                $truncated = $truncated || (int) $rows[0]['t_len'] > $left;
+                $left -= mb_strlen($text, 'UTF-8');
+                $lines[] = $text;
+            }
+            // Kun kundetalen står i rammen (DECISIONS #22, #72); overskriften er Whispers egne metadata
+            $out .= self::FRAME_START . "\n" . implode("\n", $lines) . "\n" . self::FRAME_END . "\n";
+        }
+        if ($total > count($calls)) {
+            $truncated = true;
+            $out .= "\n[… AFKORTET: leadet har " . $total . ' opkald; svaret har de første ' . count($calls) . '. Resten kan ses i Whisper: '
+                . $origin . '/lead/' . $lead . "]\n";
+        } elseif ($truncated) {
+            $out .= "\n[… AFKORTET: transcripts på leadet er længere end " . number_format(self::MAX_CHARS, 0, ',', '.')
+                . ' tegn tilsammen. Resten kan læses i Whisper: ' . $origin . '/lead/' . $lead . "]\n";
+        }
+        return ['text' => $out, 'structured' => null, 'count' => count($calls), 'call' => 0];
     }
 
     /**

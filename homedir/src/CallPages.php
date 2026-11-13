@@ -69,8 +69,11 @@ final class CallPages
     private static function listV2(Request $req, array $user, string $csrf, ?string $flash): Response
     {
         $f = Calls::uiFilter($req->query);
-        $res = Calls::searchCapped($f);
-        $f['side'] = $res['side'];
+        $leadView = Leads::on() && ($f['kilde'] ?? '') === 'adversus';
+        // F008: Adversus-fanen viser leads; opkaldslisten hentes da ikke
+        $res = $leadView ? ['rows' => [], 'total' => 0, 'side' => 1] : Calls::searchCapped($f);
+        $lead = $leadView ? Leads::search($f) : null;
+        $f['side'] = $lead !== null ? $lead['side'] : $res['side'];
         [$cfg, $cfgError] = self::zendesk();
         $ids = array_map(static fn(array $r): int => (int) $r['id'], $res['rows']);
         $snippets = $f['q'] !== '' && $ids !== [] ? Calls::snippets($ids, $f['q']) : [];
@@ -79,16 +82,34 @@ final class CallPages
         $other = null;
         if (Feature::on()) {
             $adversus = ['config' => self::adversusConfig(), 'status' => Calls::adversusStatus(), 'warning' => Calls::adversusWarning(time())];
-            $other = Calls::count(['kilde' => ($f['kilde'] ?? '') === 'adversus' ? 'zendesk' : 'adversus', 'agent' => '', 'vis' => ''] + $f);
+            $otherF = ['kilde' => ($f['kilde'] ?? '') === 'adversus' ? 'zendesk' : 'adversus', 'agent' => '', 'vis' => ''] + $f;
+            $other = Leads::on() && $otherF['kilde'] === 'adversus' ? Leads::count($otherF) : Calls::count($otherF);
+        }
+        $leadBody = null;
+        if ($lead !== null) {
+            $now = time();
+            $ids = array_keys($lead['leads']);
+            $snip = [];
+            if ($f['q'] !== '' && $ids !== []) {
+                $first = Leads::firstMatches($f, $ids);
+                $texts = Calls::snippets(array_map(static fn(array $m): int => $m['id'], array_values($first)), $f['q']);
+                foreach ($first as $l => $m) {
+                    if (isset($texts[$m['id']])) {
+                        $snip[$l] = $texts[$m['id']] + ['started_at' => $m['started_at']];
+                    }
+                }
+            }
+            $leadBody = UiLeads::listBody($f, $lead['leads'], Leads::summaries($ids, $now), $lead['total'], Leads::orphanCount($f), $snip, $now,
+                $adversus !== null, $other, Leads::successStatus());
         }
         // Zendesk' linje læses frisk (én række); kø-tallene kommer fra kortets cache
         $z = DB::all('SELECT last_ok_at, last_error FROM sync_state WHERE `source` = ?', ['zendesk'])[0] ?? [];
         $status = ['last_ok_at' => is_string($z['last_ok_at'] ?? null) ? $z['last_ok_at'] : null,
             'last_error' => is_string($z['last_error'] ?? null) ? $z['last_error'] : null];
         $config = $cfgError === null ? 'ok' : ($cfgError === self::CFG_INVALID ? 'invalid' : 'missing');
-        return Response::html(UiCallsV2::list($user, $csrf, $flash, $f, $res['rows'], $res['total'], UiV2::agents((string) ($f['kilde'] ?? '')),
-            ['last_ok_at' => $status['last_ok_at'], 'last_error' => $status['last_error']], $config, $cfg?->subdomain, $snippets, $excerpts, time(),
-            $adversus, $other));
+        return Response::html(UiCallsV2::list($user, $csrf, $flash, $f, $res['rows'], $lead !== null ? $lead['total'] : $res['total'],
+            UiV2::agents((string) ($f['kilde'] ?? '')), ['last_ok_at' => $status['last_ok_at'], 'last_error' => $status['last_error']], $config,
+            $cfg?->subdomain, $snippets, $excerpts, time(), $adversus, $other, $leadBody));
     }
 
     /**
@@ -110,7 +131,10 @@ final class CallPages
         [$cfg] = self::zendesk();
         $onDisk = Calls::audioFile(is_string($call['audio_path'] ?? null) ? $call['audio_path'] : null) !== null;
         if (UiV2::on()) {
-            return Response::html(UiCallsV2::show($user, $csrf, $call, Calls::transcript($id), $onDisk, $cfg?->subdomain, $f, $flash[0], $flash[1]));
+            // F008: "Se hele leadet" for Adversus-opkald med lead
+            $lead = (int) ($call['lead_id'] ?? 0);
+            $leadCalls = Leads::on() && Calls::isAdversus($call) && $lead > 0 ? Leads::exists($lead) : null;
+            return Response::html(UiCallsV2::show($user, $csrf, $call, Calls::transcript($id), $onDisk, $cfg?->subdomain, $f, $flash[0], $flash[1], $leadCalls));
         }
         if ($modern) {
             return Response::html(UiCalls::show($user, $csrf, $call, Calls::transcript($id), $onDisk, $cfg?->subdomain, $f, $flash[0], $flash[1]));
@@ -258,7 +282,7 @@ final class CallPages
     /** Zip-filer, som en afbrudt request efterlod. */
     private static function cleanTmp(string $dir): void
     {
-        foreach (glob($dir . '/transcripts-*.zip') ?: [] as $old) {
+        foreach (array_merge(glob($dir . '/transcripts-*.zip') ?: [], glob($dir . '/transcripts-*.txt') ?: []) as $old) {   // .txt: F008
             if (is_file($old) && filemtime($old) < time() - self::ZIP_TMP_MAX_AGE) {
                 @unlink($old);
             }
@@ -294,6 +318,11 @@ final class CallPages
         $f = Calls::uiFilter($q);
         $back = CallView::query($f, $f['side']);
         $url = '/opkald/' . $id . ($back !== '' ? '?' . $back : '');
+        // F008: fra lead-siden tilbage til opkaldets eget lead; målet bygges kun af opkaldets lead_id og den rensede kontekst
+        $lead = (int) ($call['lead_id'] ?? 0);
+        if ($req->str('retur') === 'lead' && $adv && $lead > 0 && Leads::on()) {
+            $url = UiCallsV2::leadUrl($lead, $back, $id);
+        }
         $retry = $adv && $call['audio_status'] === 'fejlet' && $call['transcript_status'] === 'ventende';
         if (!self::selectable($call, $skip)) {
             return [0, $url, $call['transcript_status'] === 'faerdig' ? 'faerdig' : 'koe'];
@@ -367,6 +396,189 @@ final class CallPages
         }
         return Calls::isAdversus($call) && ($call['transcript_status'] === 'ikke_valgt'
             || ($call['audio_status'] === 'fejlet' && $call['transcript_status'] === 'ventende'));
+    }
+
+    /**
+     * GET /lead/{id} (F008): leadets opkald i tidsrækkefølge, Leads::LEAD_PAGE pr. side (?lside=), med listens kontekst.
+     *
+     * @param array<string, mixed> $user
+     * @param array{0: ?string, 1: ?string} $flash
+     */
+    public static function lead(int $lead, Request $req, array $user, string $csrf, array $flash = [null, null]): Response
+    {
+        $f = Calls::uiFilter(['kilde' => 'adversus'] + $req->query);
+        $total = Leads::exists($lead);
+        if ($total === null) {
+            $ctx = CallView::query($f, $f['side']);
+            return Response::html(UiPages::error(404, 'Leadet findes ikke.', $csrf, $user, $ctx !== '' ? '/?' . $ctx : '/?kilde=adversus'), 404);
+        }
+        $raw = $req->query['lside'] ?? '';
+        $side = is_string($raw) && ctype_digit($raw) ? (int) $raw : 1;
+        $side = max(1, min($side, max(1, (int) ceil($total / Leads::LEAD_PAGE))));
+        $calls = $total > 0 ? Leads::calls($lead, ($side - 1) * Leads::LEAD_PAGE, Leads::LEAD_PAGE) : [];
+        $transcripts = [];
+        $onDisk = [];
+        foreach ($calls as $c) {
+            $id = (int) $c['id'];
+            $onDisk[$id] = Calls::audioFile(is_string($c['audio_path'] ?? null) ? $c['audio_path'] : null) !== null;
+            if ($c['transcript_status'] === 'faerdig' && Leads::answered($c)) {
+                $t = Calls::transcript($id);
+                if ($t !== null) {
+                    $transcripts[$id] = $t;
+                }
+            }
+        }
+        $now = time();
+        $sum = $total > 0 ? (Leads::summaries([$lead], $now)[$lead] ?? null) : null;
+        return Response::html(UiLeads::page($user, $csrf, $lead, Leads::status($lead), $sum, $calls, $side, $total, $transcripts, $onDisk, $f,
+            $flash[0], $flash[1], Leads::successStatus(), $now));
+    }
+
+    /**
+     * GET /lead/uden (F008, AK10): Adversus-opkald uden lead i fanens filter, som F007's kort.
+     *
+     * @param array<string, mixed> $user
+     */
+    public static function leadOrphans(Request $req, array $user, string $csrf): Response
+    {
+        $f = Calls::uiFilter(['kilde' => 'adversus'] + $req->query);
+        $res = Leads::orphans($f);
+        $f['side'] = $res['side'];
+        $ids = array_map(static fn(array $r): int => (int) $r['id'], $res['rows']);
+        $snippets = $f['q'] !== '' && $ids !== [] ? Calls::snippets($ids, $f['q']) : [];
+        $excerpts = $f['q'] === '' && $ids !== [] ? Calls::excerpts($ids) : [];
+        return Response::html(UiLeads::orphans($user, $csrf, $f, $res['rows'], $res['total'], $snippets, $excerpts, time()));
+    }
+
+    /**
+     * GET /lead/{id}/transcript og /lead/{id}/download (F008, AK5): hele leadet (højst Leads::ZIP_MAX_CALLS opkald) som én
+     * .txt med en overskrift pr. opkald, eller som zip med lyd og .txt pr. opkald. Filen bygges på disken og streames, så
+     * hukommelsen er flad; lyd læses aldrig ind i PHP. Samme lås som listens zip: én ad gangen på hele sitet.
+     *
+     * @param array<string, mixed> $user
+     */
+    public static function leadDownload(int $lead, bool $zip, array $user, string $csrf): Response
+    {
+        $total = Leads::exists($lead);
+        if ($total === null || $total === 0) {
+            return new Response(404, "Leadet findes ikke\n", ['Content-Type' => 'text/plain; charset=utf-8']);
+        }
+        $lock = Lock::tryAcquire('zip');
+        if ($lock === null) {
+            $r = Response::html(View::layout('Download', '<section class="card narrow"><h1>Download</h1>'
+                . '<p class="msg info">Der laves allerede en zip-fil. Prøv igen om et øjeblik.</p>'
+                . '<p><a href="/lead/' . $lead . '">Tilbage</a></p></section>', $user, $csrf, 'opkald'), 429);
+            $r->headers['Retry-After'] = '30';
+            return $r;
+        }
+        $dir = Paths::dir('tmp');
+        self::cleanTmp($dir);
+        $file = $dir . '/transcripts-' . bin2hex(random_bytes(8)) . ($zip ? '.zip' : '.txt');
+        $old = umask(077);
+        $count = 0;
+        try {
+            $writer = $zip ? new ZipWriter($file) : null;
+            $txt = $zip ? null : fopen($file, 'xb');
+            if (!$zip && $txt === false) {
+                throw new \RuntimeException('txt-filen kunne ikke oprettes');
+            }
+            $bytes = 0;
+            $skippedAudio = 0;
+            $used = [];
+            $n = min($total, Leads::ZIP_MAX_CALLS);
+            for ($offset = 0; $offset < $n; $offset += Calls::ZIP_BATCH) {
+                foreach (Leads::calls($lead, $offset, min(Calls::ZIP_BATCH, $n - $offset)) as $c) {
+                    $count++;
+                    $id = (int) $c['id'];
+                    $t = $c['transcript_status'] === 'faerdig' ? Calls::transcript($id) : null;
+                    if ($writer === null) {
+                        self::put($txt, self::leadSection($c, $count, $total, $t));
+                        continue;
+                    }
+                    $name = substr(Calls::fileName($c), 0, -4);
+                    if (isset($used[$name])) {
+                        $name .= '_' . $id;
+                    }
+                    $used[$name] = true;
+                    $mtime = (int) strtotime((string) $c['started_at'] . ' UTC');
+                    if ($t !== null) {
+                        $writer->add($name . '.txt', Calls::transcriptText($c, $t['segments'], $t['text'], null), $mtime);
+                    }
+                    $audio = $c['audio_status'] === 'hentet' ? Calls::audioFile(is_string($c['audio_path'] ?? null) ? $c['audio_path'] : null) : null;
+                    if ($audio !== null) {
+                        $size = (int) filesize($audio);
+                        if ($bytes + $size > Leads::ZIP_MAX_BYTES) {
+                            $skippedAudio++;
+                        } else {
+                            $writer->addFile($name . '.' . pathinfo($audio, PATHINFO_EXTENSION), $audio, $mtime);
+                            $bytes += $size;
+                        }
+                    }
+                }
+            }
+            $note = [];
+            if ($total > Leads::ZIP_MAX_CALLS) {
+                $note[] = 'Leadet har ' . $total . ' opkald. Filen har de første ' . Leads::ZIP_MAX_CALLS . ' (ældste først). Resten kan ses i Whisper: /lead/' . $lead;
+            }
+            if ($skippedAudio > 0) {
+                $note[] = $skippedAudio . ' lydfiler er udeladt, fordi filen højst må have ' . intdiv(Leads::ZIP_MAX_BYTES, 1048576) . ' MB lyd.';
+            }
+            if ($writer !== null) {
+                if ($note !== []) {
+                    $writer->add('LÆS-MIG.txt', implode("\n", $note) . "\n", time());
+                }
+                $writer->close();
+            } else {
+                if ($note !== []) {
+                    self::put($txt, "\n" . implode("\n", $note) . "\n");
+                }
+                if (is_resource($txt)) {
+                    fclose($txt);
+                }
+            }
+        } catch (Throwable $e) {
+            @unlink($file);
+            throw $e;
+        } finally {
+            umask($old);
+            $lock->release();
+        }
+        AccessLog::write((int) $user['id'], $zip ? 'lead-zip' : 'lead-transcript', ['lead' => $lead, 'antal' => $count]);
+        return Response::file(200, $file, 0, (int) filesize($file), [
+            'Content-Type'        => $zip ? 'application/zip' : 'text/plain; charset=utf-8',
+            'Content-Disposition' => 'attachment; filename="lead_' . $lead . ($zip ? '.zip' : '.txt') . '"',
+        ], true);
+    }
+
+    /**
+     * Ét opkald i leadets .txt: en overskrift med nummer, tid, retning og agent, og derefter transcriptet eller hvorfor
+     * der intet er, så rækkefølgen er hel (design §2.8).
+     *
+     * @param array<string, mixed> $c
+     * @param array{text: string, segments: list<array{start: float, end: float, text: string, speaker?: int, role?: string}>}|null $t
+     */
+    public static function leadSection(array $c, int $n, int $total, ?array $t): string
+    {
+        $head = '=== Opkald ' . $n . ' af ' . $total . ' · ' . Calls::local($c['started_at'] ?? null) . ' (dansk tid) · '
+            . Calls::directionName((string) $c['direction']) . ' · Agent: ' . (string) $c['agent_name'] . ' · '
+            . Calls::duration((int) $c['duration_sec']) . ' ===';
+        if (!Leads::answered($c)) {
+            $body = '(ikke besvaret' . (isset(UiLeads::MISSED[(string) $c['disposition']]) ? ': ' . UiLeads::MISSED[(string) $c['disposition']] : '') . ')';
+        } elseif ($t === null) {
+            $body = '(intet transcript)';
+        } else {
+            $lines = array_map(static fn(array $s): string => Calls::segmentLine($s), $t['segments']);
+            $body = $lines !== [] ? implode("\n", $lines) : ($t['text'] !== '' ? $t['text'] : '(ingen tale)');
+        }
+        return $head . "\n" . $body . "\n\n";
+    }
+
+    /** @param resource|false|null $h */
+    private static function put($h, string $data): void
+    {
+        if (!is_resource($h) || fwrite($h, $data) !== strlen($data)) {
+            throw new \RuntimeException('txt-filen kunne ikke skrives (fuld disk?)');
+        }
     }
 
     /** F004: 'ok' | 'missing' | 'invalid' for [adversus] i config.ini. */
